@@ -180,7 +180,7 @@ To debug the first boot on the Pi, use `cloud-init status --long`,
     password. A hash can be brute-forced offline, so use a strong password or none.
   - `network-config`: the **Wi-Fi password in plain text** until the first boot has applied
     it. `firstboot.sh` then replaces the file with a pointer to the live copy in
-    `/etc/netplan/50-cloud-init.yaml`. The built `.img` in `.pi-image/out/` still has it.
+    `/etc/netplan/` (NetworkManager keeps it as `90-NM-<uuid>.yaml`). The built `.img` in `.pi-image/out/` still has it.
   - `gizmo/secrets/tailscale.key` is shredded from the boot partition at the start of
     `firstboot.sh`. If the Pi is offline, a root-only copy waits in `/var/lib/gizmo/secrets/`
     and is shredded once Tailscale is up, or after 5 failed attempts. To be safe, use a short-lived or one-off auth key anyway.
@@ -215,7 +215,7 @@ Then rebuild.
 - installs the helpers below to `/usr/local/bin`
 - creates `~/gizmo/{logs,shots}`
 - installs the extra apt packages and Tailscale, if configured
-- removes the Wi-Fi password from `/boot/firmware/network-config` once it has been applied (the live copy is in `/etc/netplan/50-cloud-init.yaml`)
+- removes the Wi-Fi password from `/boot/firmware/network-config` once it has been applied (the live copy is in `/etc/netplan/`, kept by NetworkManager as `90-NM-<uuid>.yaml`)
 - shreds the Tailscale key
 
 If the network is down at first boot, `gizmo-firstboot-net.service` retries the package and Tailscale steps every 2 minutes, including on later boots, and then disables itself.

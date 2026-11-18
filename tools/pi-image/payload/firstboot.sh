@@ -291,27 +291,36 @@ setup_desktop() {
 }
 
 # The Wi-Fi password is in /boot/firmware/network-config (world-readable FAT).
-# cloud-init renders it once per instance-id to /etc/netplan/50-cloud-init.yaml
-# (root only). NoCloud's default update events are BOOT_NEW_INSTANCE only and
-# build.py emits no `updates:` key, so later boots never re-read it: once the
-# rendered file has the Wi-Fi config, the bootfs copy can go.
+# cloud-init renders it once per instance-id into netplan. On Raspberry Pi OS
+# NetworkManager then takes the connection over and keeps it as
+# /etc/netplan/90-NM-<uuid>.yaml; 50-cloud-init.yaml may never exist (seen on
+# the 2026-10-06 image). All of these are root only. NoCloud's default update
+# events are BOOT_NEW_INSTANCE only and build.py emits no `updates:` key, so
+# later boots never re-read the bootfs copy: once any file in /etc/netplan holds
+# the Wi-Fi config, the bootfs copy can go.
 scrub_wifi() {
-    local nc="$BOOTFS/network-config" np=/etc/netplan/50-cloud-init.yaml
+    local nc="$BOOTFS/network-config" np="" f
     [ -f "$nc" ] || return 10
     grep -qE '^[[:space:]]*(wifis|password)[[:space:]]*:' "$nc" || return 10
-    if [ ! -s "$np" ] || ! grep -q 'wifis' "$np"; then
-        log "WARNING: $np has no Wi-Fi config yet; leaving $nc untouched"
+    for f in /etc/netplan/*.yaml; do
+        if [ -s "$f" ] && grep -qE '^[[:space:]]*wifis[[:space:]]*:' "$f"; then
+            np="$f"
+            break
+        fi
+    done
+    if [ -z "$np" ]; then
+        log "WARNING: no file in /etc/netplan has Wi-Fi config yet; leaving $nc untouched"
         return 1
     fi
     cat >"$nc.tmp" <<EOF || return 1
 # Wi-Fi settings from this file were applied on first boot and removed by
 # gizmo firstboot.sh so the password does not sit on the FAT partition.
-# The live copy is /etc/netplan/50-cloud-init.yaml (root only).
-# To change Wi-Fi on the Pi: sudo nmtui  (or edit that file + sudo netplan apply)
+# The live copy is in /etc/netplan/ (root only), kept by NetworkManager.
+# To change Wi-Fi on the Pi: sudo nmtui, or the network icon on the desktop.
 EOF
     mv -f "$nc.tmp" "$nc" || return 1
     sync
-    log "removed the Wi-Fi password from $nc"
+    log "removed the Wi-Fi password from $nc (live copy: $np)"
     return 0
 }
 
