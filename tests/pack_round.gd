@@ -235,6 +235,10 @@ func guest() -> void:
 	if role == "webguest":
 		# The browser build's menu and join, minus the browser.
 		main.on_web = true
+		# On the website (https) the browser build plays solo and points to the download.
+		main._show_menu()
+		check(main.screen.find_child("JoinPage", true, false) == null and main.screen.find_child("GetGame", true, false) != null, "The website build offers the download instead of joining")
+		main.web_party = true
 		main._show_menu()
 		main.name_field.text = "WEBGUEST"
 		await press("JoinPage")

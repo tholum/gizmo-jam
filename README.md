@@ -609,25 +609,31 @@ in `export_presets.cfg` are empty, so exports take the project version.
 To cut a release:
 
 1. Bump `config/version` and `config/build` in `project.godot`, and commit.
-2. Dry run: `python3 tools/release.py --godot <godot> --notes "What's new"`.
+2. Publish the browser build first (see **Game packs** below):
+   `python3 tools/release_games.py --web --publish`. New hosts look for it in
+   the catalog as soon as they update, and the website plays it.
+3. Dry run: `python3 tools/release.py --godot <godot> --notes "What's new"`.
    It builds all three platforms with `tools/build.py`, writes and signs the
    manifest under `builds/release/<version>/`, checks the live manifest and the
    release folder, and prints every upload without making any.
-3. Publish: run the same command with `--publish`. It loads the Wasabi
+4. Publish: run the same command with `--publish`. It loads the Wasabi
    credentials from `~/.config/wasabi-timholum/publisher.env` (never from
    `~/.aws`), refuses to run if `releases/<version>/` already exists or the
    version and build are not newer than the live manifest, uploads the three
    builds, checks them over public HTTPS, and uploads the manifest **last**.
-4. Point the website's download links at the new release folder. The links in
-   the separate site repo still use the dated
-   `games/gizmo-jam/2026-11-17/` folder and must be changed by hand to
-   `games/gizmo-jam/releases/<version>/` when the first release ships.
+5. In the separate site repo (`Timholumcom`, `games/gizmo-jam/index.html`),
+   point the three download links at `releases/<version>/` and the **Play on
+   the web** button at `web/<version>/play/index.html`.
 
 Wasabi layout, bucket `timholum.com`, region `us-central-1`, public base
 `https://s3.us-central-1.wasabisys.com/timholum.com/`:
 
 - `games/gizmo-jam/releases/<version>/GizmoJam-Windows.exe`,
   `GizmoJam-Linux.x86_64` and `GizmoJam-macOS.zip`: immutable, never overwritten.
+- `games/gizmo-jam/web/<version>/GizmoJam-web-<version>.zip`: the browser
+  build party hosts serve; `web/<version>/play/`: the same build unpacked for
+  the website, wasm, pck and js gzipped (`Content-Encoding: gzip`).
+- `games/gizmo-jam/updates/catalog-stable.json`: the signed game catalog.
 - `games/gizmo-jam/updates/stable.json`: the signed manifest, `Cache-Control:
   no-cache`. Its URL is a constant in `scripts/update_core.gd`.
 
@@ -707,11 +713,18 @@ whenever the new version cannot play online with the old one. Games marked
 `"publish": false` (the example) are refused.
 
 Party hosts serve the browser version to browser guests, and it must be
-exactly the host's build, so after every core release also publish it:
+exactly the host's build, so publish it with every core release (before
+`tools/release.py --publish`):
 
 ```sh
 python3 tools/release_games.py --web --publish
 ```
+
+It also uploads the build unpacked to `web/<version>/play/` for the website's
+**Play on the web** button. Opened over https rather than from a party host,
+the browser build plays solo against bots, and its party button opens the
+download page instead: an https page cannot open a plain WebSocket to a
+computer on the LAN.
 
 `tools/build.py --web` builds it alone into `builds/web/` and
 `builds/GizmoJam-web-<version>.zip`. `tests/run_browser.py` (also run by

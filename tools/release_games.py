@@ -16,7 +16,10 @@ upload: packs first (never overwritten), the catalog last.
     python3 tools/release_games.py --web --publish             # the browser build
 
 The browser build that party hosts serve must be the host's exact core build,
-so publish it with --web after every core release (tools/release.py).
+so publish it with --web for every core release (tools/release.py). --web also
+uploads the unpacked build to games/gizmo-jam/web/<version>/play/ (wasm, pck
+and js gzipped, served with Content-Encoding: gzip): the website's "Play on
+the web" button opens play/index.html there, where the game plays solo.
 
 Each publish raises the catalog's serial; the game refuses a catalog with a
 lower serial than one it has seen, so an old catalog cannot be replayed to
@@ -27,6 +30,7 @@ example game) are refused.
 Signing reuses tools/release.py: the same key, envelope and trusted keys.
 """
 import argparse
+import gzip
 import hashlib
 import json
 from pathlib import Path
@@ -40,6 +44,12 @@ import release  # noqa: E402
 
 ROOT = release.ROOT
 PACKS_PREFIX = "games/gizmo-jam/packs"
+WEB_PREFIX = "games/gizmo-jam/web"
+IMMUTABLE = "public, max-age=31536000, immutable"
+# Browser build file types; the big ones are uploaded gzipped.
+WEB_TYPES = {".html": "text/html; charset=utf-8", ".js": "application/javascript", ".wasm": "application/wasm",
+             ".pck": "application/octet-stream", ".png": "image/png"}
+GZIPPED = {".js", ".wasm", ".pck"}
 MAX_PACK = 64 * 1024 * 1024
 
 
@@ -62,6 +72,30 @@ def live_catalog(url, trusted):
             return None
         raise SystemExit(f"could not read the live catalog: HTTP {error.code}")
     return release.verify_envelope(json.loads(body), trusted)
+
+
+def play_url(version):
+    return f"{release.PUBLIC_BASE}/{WEB_PREFIX}/{version}/play/index.html"
+
+
+def play_files(web_dir, version):
+    """(local, key, content type, cache, encoding) for the unpacked browser
+    build, gzipping the big files into builds/release/play-gz/."""
+    out = ROOT / "builds/release/play-gz"
+    out.mkdir(parents=True, exist_ok=True)
+    files = []
+    for path in sorted(web_dir.iterdir()):
+        if path.suffix not in WEB_TYPES or not path.is_file():
+            continue
+        local, encoding = path, ""
+        if path.suffix in GZIPPED:
+            local = out / (path.name + ".gz")
+            local.write_bytes(gzip.compress(path.read_bytes(), compresslevel=9, mtime=0))
+            encoding = "gzip"
+        files.append((local, f"{WEB_PREFIX}/{version}/play/{path.name}", WEB_TYPES[path.suffix], IMMUTABLE, encoding))
+    if not any(f[1].endswith("/index.html") for f in files):
+        raise SystemExit(f"{web_dir} has no index.html")
+    return files
 
 
 def pack_entry(game, pack, base_url):
@@ -151,9 +185,9 @@ def main(argv=None):
         if not archive.exists():
             raise SystemExit(f"missing {archive}; run without --skip-build")
         data = archive.read_bytes()
-        web_key = f"{release.RELEASES_PREFIX}/{version}/{archive.name}"
+        web_key = f"{WEB_PREFIX}/{version}/{archive.name}"
         web = {"build": build, "size": len(data), "sha256": hashlib.sha256(data).hexdigest(), "url": f"{base_url}/{web_key}"}
-        web_upload = [(archive, web_key, "application/zip", "public, max-age=31536000, immutable")]
+        web_upload = [(archive, web_key, "application/zip", IMMUTABLE, "")] + play_files(ROOT / "builds/web", version)
 
     live = live_catalog(f"{base_url}/{catalog_key(args.channel)}", trusted)
     print("No live catalog yet: this will be the first." if live is None else f"Live catalog: serial {live['serial']}, {len(live['games'])} games")
@@ -166,32 +200,42 @@ def main(argv=None):
     (out / f"catalog-{args.channel}.payload.json").write_text(json.dumps(catalog, indent=2) + "\n")
     print(json.dumps(catalog, indent=2))
 
-    plan = [(packs[g], pack_key(g, added[g]["version"]), "application/octet-stream", "public, max-age=31536000, immutable") for g in added] + web_upload
-    for local, key_name, _type, _cache in plan:
+    plan = [(packs[g], pack_key(g, added[g]["version"]), "application/octet-stream", IMMUTABLE, "") for g in added] + web_upload
+    for local, key_name, _type, _cache, _encoding in plan:
         try:
             with urllib.request.urlopen(urllib.request.Request(f"{base_url}/{key_name}", method="HEAD"), timeout=15):
                 raise SystemExit(f"{base_url}/{key_name} already exists; packs are never overwritten. Bump the version.")
         except urllib.error.HTTPError as error:
             if error.code not in (403, 404):
                 raise SystemExit(f"could not check {base_url}/{key_name}: HTTP {error.code}")
-    plan.append((out / f"catalog-{args.channel}.json", catalog_key(args.channel), "application/json", "no-cache"))
-    for local, key_name, content_type, cache in plan:
-        print(f"{'UPLOAD' if args.publish else 'would upload'}  {local.relative_to(ROOT)}  ->  s3://{release.BUCKET}/{key_name}  ({content_type}; {cache})")
+    plan.append((out / f"catalog-{args.channel}.json", catalog_key(args.channel), "application/json", "no-cache", ""))
+    for local, key_name, content_type, cache, encoding in plan:
+        print(f"{'UPLOAD' if args.publish else 'would upload'}  {local.relative_to(ROOT)}  ->  s3://{release.BUCKET}/{key_name}  ({content_type}; {cache}{'; ' + encoding if encoding else ''})")
     if not args.publish:
         print("Dry run: nothing uploaded. Re-run with --publish to upload.")
         return
     env = release.publisher_env()
     bucket = env.get("S3_BUCKET", release.BUCKET)
-    for local, key_name, content_type, cache in plan[:-1]:
-        release.upload(env, bucket, local, key_name, content_type, cache)
+    for local, key_name, content_type, cache, encoding in plan[:-1]:
+        if encoding:
+            release.aws(env, "s3", "cp", str(local), f"s3://{bucket}/{key_name}", "--content-type", content_type,
+                        "--cache-control", cache, "--content-encoding", encoding, "--only-show-errors")
+        else:
+            release.upload(env, bucket, local, key_name, content_type, cache)
         print(f"uploaded {key_name}")
     for entry in list(added.values()) + ([web] if web else []):
         with urllib.request.urlopen(urllib.request.Request(entry["url"], method="HEAD"), timeout=30) as response:
             if int(response.headers.get("Content-Length", -1)) != entry["size"]:
                 raise SystemExit(f"{entry['url']} has the wrong size; catalog NOT published")
-    local, key_name, content_type, cache = plan[-1]
+    if web:
+        with urllib.request.urlopen(urllib.request.Request(play_url(version), method="HEAD"), timeout=30) as response:
+            if response.status != 200:
+                raise SystemExit(f"{play_url(version)} is not readable; catalog NOT published")
+    local, key_name, content_type, cache, _encoding = plan[-1]
     release.upload(env, bucket, local, key_name, content_type, cache)
     print(f"uploaded {key_name} (last). Catalog serial {catalog['serial']} is live.")
+    if web:
+        print(f"Play on the web: {play_url(version)}")
 
 
 if __name__ == "__main__":

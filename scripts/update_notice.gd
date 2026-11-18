@@ -57,7 +57,8 @@ func _build_tag() -> void:
 	label.add_theme_color_override("font_outline_color", Kit.OUTLINE)
 	label.add_theme_constant_override("outline_size", 6)
 	row.add_child(label)
-	if where == "menu":
+	# The browser build never updates itself: the page always serves the current one.
+	if where == "menu" and not OS.has_feature("web"):
 		var toggle := _key(row, "CHECK FOR UPDATES: ON" if updater.enabled else "CHECK FOR UPDATES: OFF", Vector2(0, 32), func(): updater.set_enabled(not updater.enabled), false, 12)
 		toggle.name = "UpdateToggle"
 		toggle.tooltip_text = "Look for a new version of Gizmo Jam each time it starts."

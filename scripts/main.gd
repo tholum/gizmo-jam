@@ -136,6 +136,10 @@ var browser_guests := false
 ## Running as the browser build: it joins the party of the computer it was
 ## loaded from, and never hosts.
 var on_web := OS.has_feature("web")
+## The browser build served by a party host (plain http on the LAN). Anywhere
+## else, such as the website over https, it is solo play only: an https page
+## cannot open a plain WebSocket to a computer on the LAN.
+var web_party := on_web and str(JavaScriptBridge.eval("location.protocol", true)) == "http:"
 const WEB_TYPES := {"html": "text/html; charset=utf-8", "js": "application/javascript", "wasm": "application/wasm",
 	"pck": "application/octet-stream", "png": "image/png", "ico": "image/x-icon", "json": "application/json", "svg": "image/svg+xml"}
 
@@ -756,10 +760,14 @@ func _show_menu(message: String = "") -> void:
 	y += solo_h + (8.0 if tight else 14.0)
 	var half := (COL - 14) / 2.0
 	var party_h := 46.0 if tight else 56.0
-	if on_web:
+	if web_party:
 		var join_page := _button(actions, "JOIN THE PARTY  →", Rect2(LEFT, y, COL, party_h), _join_from_page, false, 22)
 		join_page.name = "JoinPage"
 		join_page.tooltip_text = "Join the party on the computer this page came from"
+	elif on_web:
+		var get_game := _button(actions, "PLAY WITH FRIENDS  ·  GET THE GAME  ↗", Rect2(LEFT, y, COL, party_h), OS.shell_open.bind(Updater.Core.DOWNLOAD_PAGE), false, 20)
+		get_game.name = "GetGame"
+		get_game.tooltip_text = "Parties need the downloaded game. Friends can join a party from a browser at the address the host shows."
 	else:
 		_button(actions, "HOST PARTY", Rect2(LEFT, y, half, party_h), _open_host, false, 22)
 		_button(actions, "JOIN PARTY", Rect2(LEFT + half + 14, y, half, party_h), _open_join, false, 22)
@@ -777,7 +785,8 @@ func _show_menu(message: String = "") -> void:
 ## Developer mode, beside the version tag in the corner of the menu.
 func _dev_toggle() -> void:
 	var row: Control = screen.find_child("VersionTag", true, false)
-	if row == null: return
+	# The browser build has no developer packs folder.
+	if row == null or on_web: return
 	var key := _button(row, "DEVELOPER MODE: ON" if dev_mode else "DEVELOPER MODE: OFF", Rect2(0, 0, 0, 32), _toggle_dev_mode, false, 12)
 	key.name = "DevModeToggle"
 	key.custom_minimum_size = Vector2(Kit.text_width(key.text, 12) + 44, 32)
@@ -1489,7 +1498,7 @@ func _page_options() -> void:
 	if options.has("name"):
 		player_name = session.clean_name(str(options.name))
 		if is_instance_valid(name_field): name_field.text = player_name
-	if options.get("join", "") == "1":
+	if options.get("join", "") == "1" and web_party:
 		_join_from_page.call_deferred()
 
 # --- Game library -------------------------------------------------------------
