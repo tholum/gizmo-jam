@@ -19,7 +19,7 @@ SSH in and run the game on the Pi's real GPU.
 - **Tailscale:** optional. It joins your tailnet with an auth key, and can enable Tailscale SSH.
 - **Godot:** 4.5.1 arm64 at `/opt/godot`, with the `godot` command on the PATH. The zip is
   carried on the card, so this step needs no network on first boot.
-- **Display:** HDMI output is forced (default 1920x1080@60 on the HDMI port next to USB-C), so
+- **Display:** HDMI output is forced (default 1280x720@60 on the HDMI port next to USB-C; the TV scales it up, and a Pi 4 only holds ~30 fps at 720p), so
   the desktop renders to HDMI even when the TV is off or switched to another input.
 - **Helper commands** for an agent working over SSH: `gizmo-env`, `gizmo-run`, `gizmo-shot`,
   `gizmo-health`, and `gizmo-kiosk`. See [On the Pi](#on-the-pi).

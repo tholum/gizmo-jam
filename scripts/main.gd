@@ -1681,6 +1681,10 @@ static func default_graphics(adapter_name: String) -> String:
 	if adapter.is_empty(): return "balanced"
 	for software in ["llvmpipe", "softpipe", "swiftshader", "lavapipe", "software", "microsoft basic render", "gdi generic"]:
 		if software in adapter: return "low"
+	# Raspberry Pi GPUs (Mesa reports "V3D 4.2" on a Pi 4, "V3D 7.1" on a Pi 5,
+	# "VC4" on older boards): only Low holds 30 fps on a Pi 4.
+	for small in ["v3d", "vc4"]:
+		if adapter.begins_with(small): return "low"
 	return "high"
 
 ## Graphics level stored in a settings file. Files written before Low existed

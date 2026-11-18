@@ -169,18 +169,23 @@ network simulation.
   panels).
 - **Balanced** uses a lighter robot mesh (about 5,700 triangles) and soft blob
   shadows.
-- **Low** is for old or weak integrated GPUs and software rendering. It draws
-  the 3D scene at 67% of the window's resolution and stretches it up, while the
-  HUD and menus stay at full resolution. It uses the lightest robot mesh (about
-  2,100 triangles; the podium robot keeps Balanced's), a lighter cut of Spin
-  Cycle's ramp and reactor frame (half the triangles), one ring of plain
-  gantries instead of three, the key light only (with brighter ambient light),
-  no fog, and no shade band behind the HUD. Rods keep their orange and violet,
-  runners keep their team colours, and the jump, duck and hit poses are the same
-  clips on the same clock as on the other levels.
+- **Low** is for old or weak integrated GPUs, the Raspberry Pi and software
+  rendering. It draws the 3D scene at 67% of the window's resolution and
+  stretches it up, while the HUD and menus stay at full resolution; if the
+  machine cannot hold 30 fps, the 3D resolution steps down, never below 50%,
+  and climbs back when there is room (each round starts at 67%). It uses the
+  lightest robot mesh (about 2,100 triangles; the podium robot keeps
+  Balanced's), a lighter cut of Spin Cycle's ramp and reactor frame (half the
+  triangles), one ring of plain gantries instead of three, the key light only
+  (with brighter ambient light) worked out ahead of time for the scenery, a
+  plainer deck pattern (no rivets), no fog, and no shade band behind the HUD.
+  Rods keep their orange and violet, runners keep their team colours, and the
+  jump, duck and hit poses are the same clips on the same clock as on the other
+  levels.
 
 A new installation picks **High** on a hardware GPU and **Low** on a software
-renderer (an adapter named llvmpipe, softpipe, SwiftShader, lavapipe or similar).
+renderer (an adapter named llvmpipe, softpipe, SwiftShader, lavapipe or similar)
+or a Raspberry Pi GPU (V3D or VC4).
 The choice is saved as `graphics/level` in `user://settings.cfg`. A settings file
 from an older build has only `graphics/detailed`, which is read as High (true) or
 Balanced (false); new builds still write it for older builds to read.
@@ -200,6 +205,26 @@ Low's 95th-percentile frame in Spin Cycle on two threads is 28 ms, against 44
 ms on Balanced. Live Wire's room is already baked, unlit geometry, so Low gains
 less there. The two-thread rows come from `LP_NUM_THREADS=2`, which stands in
 for an old or heavily loaded machine.
+
+On a Raspberry Pi 4 B (Mesa V3D, OpenGL ES 3.1; fan-cooled, no throttling),
+Low at 1280x720 runs Spin Cycle at 31 fps (32 ms a frame) and Live Wire at 37
+fps (27 ms). Run the Pi's output at 720p and let the TV scale it: at 1920x1080
+Low drops to 16 and 20 fps. What it took, measured with `tests/perf_diag.gd`
+(an A/B breakdown of a running round) and `tests/spike_trace.gd` (slow frames
+and what changed around them):
+
+- On V3D any lit material costs ~4 ms, whether lit per pixel or per vertex, so
+  Low bakes the key and ambient light into unshaded scenery shaders
+  (`BAKED_LIGHT` in `scripts/arena_kit.gd`; `tests/low_bake_compare.gd` shows the
+  result is within 1.4/255 of the lit one).
+- The root viewport's own reduced-resolution 3D costs ~9 ms there even with an
+  empty scene, so Low renders it through a SubViewport (`scripts/scaled_view.gd`),
+  which also does the dynamic resolution.
+- The HUD's shapes are batched (`Kit.Batch`): a player plate is 7 draw calls
+  instead of ~60, on every level.
+- Spin Cycle compiles its rod and burst shaders during the countdown, and the
+  countdown rasterises the call-outs' glyphs, so the first rod and the first
+  "CLEAR +1" no longer hitch (they cost 150 and 75 ms on the Pi).
 
 The levers that made no measurable difference on llvmpipe (a cheaper deck
 shader, vertex lighting, unshaded robots, fewer particles, hiding the sky dome)

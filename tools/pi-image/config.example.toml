@@ -32,8 +32,9 @@ hostname = ""                    # tailnet machine name; default: hostname
 ssh = false                      # true = enable Tailscale SSH (tailscale up --ssh)
 
 [display]
-force_hdmi_mode = "1920x1080@60" # forces HDMI-A-1 (port next to USB-C) on even with the TV off;
-                                 # empty = no forcing (the TV's EDID decides)
+force_hdmi_mode = "1280x720@60"  # forces HDMI-A-1 (port next to USB-C) on even with the TV off;
+                                 # empty = no forcing (the TV's EDID decides). 720p: a Pi 4 holds
+                                 # ~30 fps there on Low; at 1080p it does not. The TV upscales.
 
 [extras]
 packages = ["mesa-utils", "htop"]  # apt packages installed at first boot if online
