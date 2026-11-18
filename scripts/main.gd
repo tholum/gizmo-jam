@@ -1,0 +1,1741 @@
+extends Node
+
+const Arena = preload("res://scripts/arena.gd")
+const LiveArena = preload("res://scripts/livewire_arena.gd")
+const Network = preload("res://scripts/session.gd")
+const Kit = preload("res://scripts/ui_kit.gd")
+const Cue = preload("res://scripts/hud_cue.gd")
+const Slam = preload("res://scripts/hud_slam.gd")
+## One module per id in Network.GAMES. Everything a game shows, hears or reads
+## from the keyboard during a round lives in its module; this file only knows
+## the shared surface described at the top of game_spin_cycle.gd.
+const GAME_MODULES := {
+	"twisted": preload("res://scripts/game_spin_cycle.gd"),
+	"livewire": preload("res://scripts/game_livewire.gd"),
+}
+const Updater = preload("res://scripts/updater.gd")
+const INK := Kit.INK
+const MUTED := Kit.MUTED
+const DIM := Kit.DIM
+const LIME := Kit.LIME
+const PANEL := Kit.NAVY
+const LINE := Color("4458a8")
+const JUMP_COLOR := Kit.JUMP
+const DUCK_COLOR := Kit.DUCK
+const WARN := Color("ffc46b")
+## Layout. The canvas is laid out in design units: 1440x900 at a scale of 1.
+## The window shows `area` of them (see _fit_canvas), which changes with the
+## window's size and shape, so screens place themselves against `area` and
+## the grid below, and re-lay out when the window is resized.
+const DESIGN := Vector2(1440, 900)
+## Design-unit size in screen pixels: at least UI_SCALE_MIN so 14 px text is
+## still about 12 px on a 1024-wide window, at most UI_SCALE_MAX so the UI
+## does not balloon on a 2560x1440 screen.
+const UI_SCALE_MIN := 0.85
+const UI_SCALE_MAX := 1.5
+## Smallest and default window sizes, in screen pixels.
+const MIN_WINDOW := Vector2i(1024, 576)
+const DEFAULT_WINDOW := Vector2i(1280, 800)
+## Visible canvas in design units, and the column grid derived from it.
+var area := DESIGN
+var LEFT := 64.0
+var COL := 528.0
+var RIGHT_X := 784.0
+var RIGHT_W := 592.0
+## True on a short canvas (a 16:9 window under about 760 pixels high): menus
+## use their compact vertical rhythm.
+var tight := false
+## Set while a screen is rebuilt for a resize: no sounds, no camera reset.
+var relayout := false
+var layout_queued := false
+const ALIGN_LEFT := HORIZONTAL_ALIGNMENT_LEFT
+const ALIGN_CENTER := HORIZONTAL_ALIGNMENT_CENTER
+const ALIGN_RIGHT := HORIZONTAL_ALIGNMENT_RIGHT
+
+var session: Node
+## Spin Cycle's spiral arena and Live Wire's hex floor. Only the one that
+## belongs to the game on screen is shown; see _set_stage().
+var arena: Node3D
+var live_arena: Node3D
+## Game id -> module instance.
+var games: Dictionary = {}
+## The module of the round being played or shown in the results.
+var play: RefCounted
+var model: RefCounted
+var canvas: CanvasLayer
+var screen: Control
+var overlay: Control
+var theme: Theme
+var display_font: Font
+var body_font: Font
+var view := "menu"
+var paused := false
+## The shared frame of the round HUD; the game modules add their own widgets
+## to hud_root. All of it floats directly on the 3D scene.
+var hud_root: Control
+var hud_intro: Control
+var hud_count: Control
+var hud_feedback: Control
+var damage_shade: ColorRect
+var hud_menu: Button
+var hud_names: Label
+var name_field: LineEdit
+var address_field: LineEdit
+var port_field: LineEdit
+var status_label: Label
+var menu_status: Label
+var player_name := "PLAYER"
+var address := "127.0.0.1"
+var server_port := 7777
+var sound_enabled := true
+var snapshot_clock := 0.0
+var hud_clock := 0.0
+var last_count := 4
+## Seconds left on the finished board before the results; negative until the round ends.
+var finish_clock := -1.0
+var tone_player: AudioStreamPlayer
+var tone_phase := 0.0
+## Tests set this. It also fast-forwards UI motion so captures show settled frames.
+var test_mode := false:
+	set(value):
+		test_mode = value
+		Kit.speed = 12.0 if value else 1.0
+var feedback_time := 0.0
+## "low", "balanced" or "high"; see Arena.set_level().
+var graphics_level := "balanced"
+var audio: Node
+var last_member_count := 0
+## The game this player last picked themselves; kept in the settings file.
+## session.game can differ while they are a guest in somebody else's party.
+var preferred_game := "twisted"
+## Round whose result has been announced, so a redraw of the results screen
+## (roster changes, host votes) does not replay the fanfare.
+var announced_round := -1
+## Tests only: every sound id that would have played, in order.
+var sound_log: Array = []
+## True while a screen is being built for the first time, so it animates in.
+var entering := true
+var quiet_modal := false
+## Results table: where the column captions sit, for the game modules.
+var result_header_y := 336.0
+## Update checker (scripts/updater.gd) and its persisted "check for updates" setting.
+var updater: Node
+var check_updates := true
+
+func _ready() -> void:
+	_load_settings()
+	_make_theme()
+	session = Network.new()
+	session.name = "Session"
+	add_child(session)
+	session.roster_changed.connect(_roster_changed)
+	session.round_started.connect(_round_started)
+	session.snapshot_received.connect(_snapshot_received)
+	session.input_received.connect(func(slot, action, pressed):
+		if model: model.command(slot, action, pressed))
+	session.seat_disconnected.connect(func(slot):
+		if model and session.playing: model.take_over(slot))
+	session.returned_to_lobby.connect(func():
+		_end_round()
+		_show_lobby() if session.is_online() else _show_menu())
+	session.failed.connect(func(message):
+		_end_round()
+		# Back on their own: the menu shows the game they last picked themselves.
+		session.select_game(preferred_game)
+		_show_menu(message))
+	session.select_game(preferred_game)
+	_fit_window()
+	get_tree().root.size_changed.connect(_window_resized)
+	arena = Arena.new()
+	add_child(arena)
+	live_arena = LiveArena.new()
+	add_child(live_arena)
+	_apply_graphics()
+	for id in Network.GAMES:
+		games[id] = GAME_MODULES[id].new(self)
+	canvas = CanvasLayer.new()
+	add_child(canvas)
+	screen = Control.new()
+	screen.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	screen.theme = theme
+	canvas.add_child(screen)
+	overlay = Control.new()
+	overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	overlay.theme = theme
+	canvas.add_child(overlay)
+	_fit_canvas()
+	tone_player = AudioStreamPlayer.new()
+	tone_player.volume_db = -18
+	add_child(tone_player)
+	if ResourceLoader.exists("res://scripts/audio.gd"):
+		audio = load("res://scripts/audio.gd").new()
+		audio.name = "Audio"
+		add_child(audio)
+		audio.enabled = sound_enabled
+	updater = Updater.new()
+	updater.setup(check_updates, _set_check_updates, func(): return not session.is_online() and view != "game")
+	add_child(updater)
+	_show_menu()
+	_voice("welcome")
+	if "--smoke-menu" in OS.get_cmdline_user_args():
+		test_mode = true
+		_capture_after("menu")
+	elif "--smoke-game" in OS.get_cmdline_user_args():
+		test_mode = true
+		session.solo("PLAYER ONE")
+		session.start_round()
+		model.countdown = 0.0
+		model.phase = "running"
+		_capture_after("game")
+
+## First launch: size the window to fit inside the usable area of its screen
+## (taskbars and docks excluded) and centre it. Explicit sizes, fullscreen and
+## test runs are left alone.
+func _fit_window() -> void:
+	if DisplayServer.get_name() == "headless": return
+	var window := get_window()
+	window.min_size = MIN_WINDOW
+	for arg in OS.get_cmdline_args():
+		if arg in ["--script", "-s", "-f", "--fullscreen", "-m", "--maximized", "--position", "--resolution"] or arg.begins_with("--resolution="):
+			return
+	if window.mode != Window.MODE_WINDOWED: return
+	var usable := DisplayServer.screen_get_usable_rect(window.current_screen)
+	if usable.size.x < 64 or usable.size.y < 64: return
+	# Room for the title bar and window border.
+	var room := Vector2(usable.size) - Vector2(32, 64)
+	var fit := minf(1.0, minf(room.x / DEFAULT_WINDOW.x, room.y / DEFAULT_WINDOW.y))
+	var size := Vector2i((Vector2(DEFAULT_WINDOW) * fit).round())
+	size = size.max(MIN_WINDOW).min(usable.size)
+	window.min_size = MIN_WINDOW.min(usable.size)
+	window.size = size
+	window.position = usable.position + (usable.size - size) / 2
+
+## The scale rule. Godot's `expand` stretch shows at least the 1440x900 design
+## and scales it by min(width / 1440, height / 900); this clamps that scale to
+## [UI_SCALE_MIN, UI_SCALE_MAX] through the window's content scale factor.
+static func ui_scale_for(window_size: Vector2) -> float:
+	var natural := minf(window_size.x / DESIGN.x, window_size.y / DESIGN.y)
+	return clampf(natural, UI_SCALE_MIN, UI_SCALE_MAX)
+
+func _fit_canvas() -> void:
+	var window := get_window()
+	var pixels := Vector2(window.size)
+	if pixels.x < 1.0 or pixels.y < 1.0: return
+	var natural := minf(pixels.x / DESIGN.x, pixels.y / DESIGN.y)
+	var factor := ui_scale_for(pixels) / natural
+	if not is_equal_approx(window.content_scale_factor, factor):
+		window.content_scale_factor = factor
+	_layout_grid()
+
+## Column grid for the visible canvas. At the 1440 design width it is the
+## original grid: a 528-wide column at x 64, and a 592-wide right column.
+func _layout_grid() -> void:
+	area = get_viewport().get_visible_rect().size
+	var narrow := area.x < 1400.0
+	LEFT = 44.0 if narrow else 64.0
+	COL = clampf(area.x * 0.42, 470.0, 528.0) if narrow else 528.0
+	RIGHT_W = clampf(area.x - LEFT - COL - LEFT * 2.0, 500.0, 592.0)
+	RIGHT_X = area.x - LEFT - RIGHT_W
+	tight = area.y < 880.0
+
+func _window_resized() -> void:
+	if layout_queued: return
+	layout_queued = true
+	_apply_layout.call_deferred()
+
+## Follows a window resize: rescales the canvas, then moves the HUD or rebuilds
+## the current 2D screen in place. The 3D scene is never rebuilt.
+func _apply_layout() -> void:
+	layout_queued = false
+	_fit_canvas()
+	if not is_instance_valid(screen): return
+	_layout_modals()
+	if view == "game":
+		_layout_hud()
+		return
+	var keep_name: String = name_field.text if is_instance_valid(name_field) else ""
+	var name_focus := is_instance_valid(name_field) and name_field.has_focus()
+	relayout = true
+	if view == "menu": _show_menu(menu_status.text if is_instance_valid(menu_status) else "")
+	elif view == "lobby": _show_lobby()
+	elif view == "results" and model: _show_results()
+	relayout = false
+	if view == "menu" and is_instance_valid(name_field) and not keep_name.is_empty():
+		name_field.text = keep_name
+		if name_focus: name_field.grab_focus()
+
+## Lets tests watch feedback at real speed (1.0) or skip through it.
+func set_motion_speed(value: float) -> void:
+	Kit.speed = value
+
+func _make_theme() -> void:
+	Kit.setup()
+	body_font = Kit.body
+	display_font = Kit.display
+	theme = Theme.new()
+	theme.default_font = body_font
+	theme.default_font_size = 18
+	theme.set_color("font_color", "Label", INK)
+	theme.set_font("font", "LineEdit", display_font)
+	theme.set_font_size("font_size", "LineEdit", 24)
+	theme.set_color("font_color", "LineEdit", INK)
+	theme.set_color("font_placeholder_color", "LineEdit", DIM)
+	theme.set_color("caret_color", "LineEdit", LIME)
+	theme.set_color("selection_color", "LineEdit", Color(LIME, 0.35))
+	theme.set_constant("caret_width", "LineEdit", 3)
+	theme.set_stylebox("normal", "LineEdit", Kit.box(Color("0a1122"), LINE, 4, 0, 0.0, 8, false))
+	# Godot draws the focus box on top of the normal one, so it is border-only.
+	theme.set_stylebox("focus", "LineEdit", Kit.ring_box(LIME, 4, 0.0, 8, 0.0))
+	# Secondary buttons: cobalt keys with a dark lip. Primary ones override to lime.
+	theme.set_font("font", "Button", display_font)
+	theme.set_font_size("font_size", "Button", 20)
+	theme.set_stylebox("normal", "Button", Kit.box(Kit.COBALT))
+	theme.set_stylebox("hover", "Button", Kit.box(Kit.CYAN))
+	theme.set_stylebox("pressed", "Button", Kit.box(INK, Kit.OUTLINE, 4, 1))
+	theme.set_stylebox("focus", "Button", Kit.ring_box(INK))
+	theme.set_stylebox("disabled", "Button", Kit.box(Color("232d49"), Color("0c1224"), 4, 4, 0.16, 5, false))
+	theme.set_color("font_color", "Button", INK)
+	theme.set_color("font_hover_color", "Button", Kit.OUTLINE)
+	theme.set_color("font_pressed_color", "Button", Kit.OUTLINE)
+	theme.set_color("font_hover_pressed_color", "Button", Kit.OUTLINE)
+	theme.set_color("font_focus_color", "Button", INK)
+	theme.set_color("font_disabled_color", "Button", DIM)
+	theme.set_stylebox("panel", "TooltipPanel", Kit.box(Kit.OUTLINE, INK, 3, 0, 0.0, 6, false))
+	theme.set_color("font_color", "TooltipLabel", INK)
+
+func _label(parent: Control, text_value: String, rect: Rect2, size: int = 18, color: Color = INK, heavy: bool = false, align: HorizontalAlignment = ALIGN_LEFT) -> Label:
+	var label := Label.new()
+	label.text = text_value
+	label.position = rect.position
+	label.size = rect.size
+	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	label.horizontal_alignment = align
+	label.add_theme_font_size_override("font_size", size)
+	label.add_theme_color_override("font_color", color)
+	if heavy:
+		label.add_theme_font_override("font", display_font)
+	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	label.set_meta("box", rect.size)
+	parent.add_child(label)
+	return label
+
+## Dark outline plus a hard drop shadow, for text that sits on the 3D scene.
+func _outlined(label: Label, px: int = 8) -> Label:
+	label.add_theme_color_override("font_outline_color", Kit.OUTLINE)
+	label.add_theme_constant_override("outline_size", px)
+	label.add_theme_color_override("font_shadow_color", Color(Kit.OUTLINE, 0.55))
+	label.add_theme_constant_override("shadow_offset_x", 0)
+	label.add_theme_constant_override("shadow_offset_y", maxi(2, px / 2))
+	label.add_theme_constant_override("shadow_outline_size", px)
+	return label
+
+## Enables word wrap. A label grows to its unwrapped text width when added, so
+## restore the intended box afterwards or long text spills out of its panel.
+func _wrap(label: Label) -> Label:
+	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	# The cached minimum size refreshes deferred, so apply the box after it.
+	label.set_deferred("size", label.get_meta("box", label.size))
+	return label
+
+## Short heavy caption above a group of controls.
+func _eyebrow(parent: Control, text_value: String, rect: Rect2, color: Color = MUTED, align: HorizontalAlignment = ALIGN_LEFT) -> Label:
+	return _outlined(_label(parent, text_value, rect, 15, color, true, align), 6)
+
+## Slanted solid tag with its text punched in. `pos` is the top-left corner,
+## or the top-right one when `from_right` is set.
+func _tab(parent: Control, text_value: String, pos: Vector2, fill: Color = LIME, ink: Color = Kit.OUTLINE, font_size: int = 15, from_right: bool = false) -> Control:
+	var w := Kit.text_width(text_value, font_size) + font_size * 1.5
+	var h := font_size + 12.0
+	var lean := h * Kit.SLANT
+	var tab := Control.new()
+	tab.position = pos - Vector2(w + lean, 0) if from_right else pos
+	tab.size = Vector2(w + lean, h)
+	tab.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	tab.draw.connect(func():
+		Kit.plate(tab, Kit.slab(Rect2(0, 0, w, h)), fill, 3.0, 3.0)
+		Kit.text(tab, text_value, Vector2((w + lean) * 0.5, Kit.baseline(h * 0.5, font_size)), font_size, ink, 0, 0.5))
+	parent.add_child(tab)
+	return tab
+
+func _button(parent: Control, text_value: String, rect: Rect2, callback: Callable, primary: bool = false, font_size: int = 0) -> Button:
+	var button := Button.new()
+	button.text = text_value
+	button.position = rect.position
+	button.size = rect.size
+	button.pivot_offset = rect.size * 0.5
+	button.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	if font_size > 0:
+		button.add_theme_font_size_override("font_size", font_size)
+	if primary:
+		button.add_theme_stylebox_override("normal", Kit.box(LIME))
+		button.add_theme_stylebox_override("hover", Kit.box(Color("e9ffbd")))
+		button.add_theme_stylebox_override("pressed", Kit.box(INK, Kit.OUTLINE, 4, 1))
+		button.add_theme_stylebox_override("disabled", Kit.box(Color("27341f"), Color("0c1224"), 4, 4, 0.16, 5, false))
+		for state in ["font_color", "font_hover_color", "font_pressed_color", "font_hover_pressed_color", "font_focus_color"]:
+			button.add_theme_color_override(state, Kit.OUTLINE)
+		button.add_theme_color_override("font_disabled_color", Color("7d9468"))
+	button.mouse_entered.connect(func():
+		if button.disabled: return
+		_ui_sound("ui_hover")
+		_scale_to(button, 1.045))
+	button.mouse_exited.connect(func(): _scale_to(button, 1.0))
+	button.button_down.connect(func(): _scale_to(button, 0.94, 0.07))
+	button.button_up.connect(func(): _scale_to(button, 1.045 if button.is_hovered() else 1.0))
+	button.focus_entered.connect(func():
+		if button.is_hovered(): return
+		button.scale = Vector2(1.06, 1.06)
+		_scale_to(button, 1.0, 0.2))
+	button.pressed.connect(func():
+		_ui_sound("ui_click")
+		callback.call())
+	parent.add_child(button)
+	return button
+
+## Dark key for use on top of a player-coloured plate.
+func _dark_button(button: Button) -> Button:
+	button.add_theme_stylebox_override("normal", Kit.box(Kit.OUTLINE, Kit.OUTLINE, 3, 0, 0.16, 5, false))
+	button.add_theme_stylebox_override("hover", Kit.box(INK, Kit.OUTLINE, 3, 0, 0.16, 5, false))
+	button.add_theme_stylebox_override("pressed", Kit.box(LIME, Kit.OUTLINE, 3, 0, 0.16, 5, false))
+	button.add_theme_stylebox_override("focus", Kit.ring_box(INK, 3, 0.16, 6, 3.0))
+	return button
+
+## Springy scale change used for hover, press and focus response.
+func _scale_to(node: Control, target: float, duration: float = 0.14) -> void:
+	if not is_instance_valid(node) or not node.is_inside_tree(): return
+	if node.has_meta("scale_tween"):
+		var running: Variant = node.get_meta("scale_tween")
+		if running is Tween and running.is_valid():
+			running.kill()
+	var t := Kit.tween(node)
+	t.tween_property(node, "scale", Vector2(target, target), duration).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	node.set_meta("scale_tween", t)
+
+## Slides a freshly built control into place. Only runs on real screen changes.
+func _enter(node: Control, order: int = 0, from: Vector2 = Vector2(-80, 0)) -> void:
+	if not entering: return
+	var home := node.position
+	var wait := order * 0.04
+	node.position = home + from
+	node.modulate.a = 0.0
+	var t := Kit.tween(node)
+	t.set_parallel(true)
+	t.tween_property(node, "position", home, 0.3).set_delay(wait).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	t.tween_property(node, "modulate:a", 1.0, 0.14).set_delay(wait)
+
+## Scales a control down onto the screen with an overshoot.
+func _land(node: Control, from_scale: float = 1.5, order: int = 0) -> void:
+	if not entering: return
+	var wait := order * 0.04
+	var rest := node.scale
+	node.scale = rest * from_scale
+	node.modulate.a = 0.0
+	var t := Kit.tween(node)
+	t.set_parallel(true)
+	t.tween_property(node, "scale", rest, 0.26).set_delay(wait).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	t.tween_property(node, "modulate:a", 1.0, 0.12).set_delay(wait)
+
+## Full-screen group that enters as one piece.
+func _section(order: int, from: Vector2 = Vector2(-80, 0)) -> Control:
+	var group := Control.new()
+	group.size = area
+	group.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	screen.add_child(group)
+	_enter(group, order, from)
+	return group
+
+func _panel(parent: Control, rect: Rect2, color: Color = PANEL, border: Color = LINE, width: int = 4, radius: int = 8) -> Panel:
+	var panel := Panel.new()
+	panel.position = rect.position
+	panel.size = rect.size
+	panel.add_theme_stylebox_override("panel", Kit.box(color, border, width, 0, 0.0, radius))
+	parent.add_child(panel)
+	return panel
+
+func _field(parent: Control, value: String, placeholder: String, rect: Rect2, max_length: int = 64) -> LineEdit:
+	var field := LineEdit.new()
+	field.text = value
+	field.placeholder_text = placeholder
+	field.position = rect.position
+	field.size = rect.size
+	field.max_length = max_length
+	parent.add_child(field)
+	return field
+
+func _clear_screen() -> void:
+	for child in screen.get_children():
+		screen.remove_child(child)
+		child.queue_free()
+
+func _clear_overlay() -> void:
+	for child in overlay.get_children():
+		overlay.remove_child(child)
+		child.queue_free()
+	overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	# Modal-only fields are gone; menu actions fall back to saved settings.
+	address_field = null
+	port_field = null
+	status_label = null
+
+## Menu backdrop: a dark slanted wedge for the left column, edged with two
+## neon stripes, leaving the arena visible on the right.
+func _backdrop() -> void:
+	var bg := Control.new()
+	bg.size = area
+	bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	# The edge runs from `top` at y 0 to `bottom` at the foot of the screen.
+	var top := LEFT + COL + 150.0
+	var bottom := LEFT + COL + 36.0
+	var h := area.y
+	var lean := (top - bottom) / h
+	var x_at := func(y: float) -> float: return top - y * lean
+	bg.draw.connect(func():
+		var y0 := -200.0
+		var y1 := h + 200.0
+		var a: float = x_at.call(y0)
+		var b: float = x_at.call(y1)
+		bg.draw_rect(Rect2(-200, y0, area.x + 400, y1 - y0), Color(0.02, 0.03, 0.08, 0.30))
+		bg.draw_colored_polygon(PackedVector2Array([Vector2(-200, y0), Vector2(a, y0), Vector2(b, y1), Vector2(-200, y1)]), Color(0.035, 0.05, 0.11, 0.95))
+		for band in [[0.0, 14.0, LIME], [22.0, 6.0, Kit.CYAN]]:
+			var x0: float = band[0]
+			var x1: float = x0 + float(band[1])
+			bg.draw_colored_polygon(PackedVector2Array([Vector2(a + x0, y0), Vector2(a + x1, y0), Vector2(b + x1, y1), Vector2(b + x0, y1)]), band[2])
+		bg.draw_line(Vector2(a, y0), Vector2(b, y1), Kit.OUTLINE, 4.0, true))
+	screen.add_child(bg)
+	for stage in [arena, live_arena]:
+		stage.set_inset((top + bottom) * 0.5 / area.x)
+
+## Title treatment: the coil in all six player colours beside a stacked wordmark.
+func _brand(parent: Control) -> Control:
+	var logo := Control.new()
+	# Compact screens shrink the wordmark about the coil to free some height.
+	logo.position = Vector2(LEFT - 12, -6 if tight else 22)
+	logo.size = Vector2(COL + 24, 116)
+	logo.pivot_offset = Vector2(60, 58)
+	if tight: logo.scale = Vector2(0.82, 0.82)
+	logo.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var fills: Array = []
+	fills.append_array(Kit.colors)
+	fills.append(INK)
+	logo.draw.connect(func():
+		logo.draw_set_transform(Vector2.ZERO, -0.035)
+		Kit.text(logo, "GIZMO", Vector2(124, 52), 64, INK, 12, 0.0, 6.0)
+		Kit.text(logo, "JAM", Vector2(150, 108), 64, LIME, 12, 0.0, 6.0)
+		logo.draw_set_transform(Vector2.ZERO)
+		Kit.coil(logo, Vector2(60, 58), 21.0, 10.0, 28.0, 7, fills, Kit.OUTLINE, 5.0)
+		logo.draw_circle(Vector2(60, 58), 18.0, Kit.OUTLINE, true, -1.0, true)
+		logo.draw_circle(Vector2(60, 58), 9.0, LIME, true, -1.0, true))
+	parent.add_child(logo)
+	_tab(logo, "PARTY MINIGAMES", Vector2(312, 72), Kit.CYAN, Kit.OUTLINE, 16 if tight else 14)
+	return logo
+
+## Top of the content below the wordmark.
+func _below_brand() -> float:
+	return 108.0 if tight else 150.0
+
+## The game that is on stage: the round being played or shown in the results,
+## otherwise the one picked for the next round.
+func _stage_id() -> String:
+	if play != null and model != null and (view == "game" or view == "results"):
+		return play.ID
+	return session.game
+
+## Puts that game's arena on screen and hides the other one, whose lights
+## would otherwise reach these runners and whose geometry would be drawn.
+## `menu` is the pulled-back framing behind the menu, lobby and results.
+func _set_stage(menu: bool) -> void:
+	var id := _stage_id()
+	for key in games:
+		if key != id:
+			games[key].stage(false, menu)
+	games[id].stage(true, menu)
+
+func _game_title(id: String = "") -> String:
+	return str(games[id if games.has(id) else session.game].INFO.title)
+
+## The leader's pick. Offline it applies at once; in a party the server answers
+## with a roster, which redraws the lobby for everyone.
+func _select_game(id: String) -> void:
+	if id == session.game or not session.select_game(id):
+		return
+	preferred_game = id
+	_voice(games[id].INFO.voice)
+	if not session.is_online():
+		_read_fields()
+		_show_menu()
+	_save_settings()
+
+## How-to-play dialog for one game.
+func _rules(id: String = "") -> void:
+	if not games.has(id): id = session.game
+	_clear_overlay()
+	_voice(games[id].INFO.voice)
+	games[id].build_rules()
+
+## The game list. Returns the y below it. Compact screens use shorter cards
+## and drop the "coming soon" tiles.
+func _game_cards(parent: Control, y: float) -> float:
+	_eyebrow(parent, "CHOOSE A GAME", Rect2(LEFT, y, COL, 20))
+	var top := y + 26
+	var card_h := 92.0 if tight else 106.0
+	var c := 1.0 if tight else 0.0
+	for id in Network.GAMES:
+		var info: Dictionary = games[id].INFO
+		var chosen: bool = id == session.game
+		var card := _button(parent, "", Rect2(LEFT, top, COL, card_h), _select_game.bind(id))
+		card.name = "Card_" + id
+		card.tooltip_text = "%s is selected" % info.title.capitalize() if chosen else "Play %s" % info.title.capitalize()
+		if chosen:
+			card.add_theme_stylebox_override("normal", Kit.box(Kit.NAVY_LIGHT, LIME, 4, 4, 0.05, 6))
+			card.add_theme_stylebox_override("hover", Kit.box(Color("2c4284"), INK, 4, 4, 0.05, 6))
+			card.add_theme_stylebox_override("pressed", Kit.box(Color("2c4284"), LIME, 4, 1, 0.05, 6))
+		else:
+			card.add_theme_stylebox_override("normal", Kit.box(Color("0e1730"), Color("2b3866"), 4, 4, 0.05, 6))
+			card.add_theme_stylebox_override("hover", Kit.box(Kit.NAVY_LIGHT, Kit.CYAN, 4, 4, 0.05, 6))
+			card.add_theme_stylebox_override("pressed", Kit.box(Color("2c4284"), LIME, 4, 1, 0.05, 6))
+		card.add_theme_stylebox_override("focus", Kit.ring_box(INK, 4, 0.05, 9))
+		_outlined(_label(card, info.number, Rect2(14, 10 - 6 * c, 104, 80), 62 - int(8 * c), LIME if chosen else Color("54649a"), true, ALIGN_CENTER), 10)
+		_label(card, info.tags, Rect2(130, 9 - 4 * c, 240, 18), 13, Kit.CYAN if chosen else DIM, true)
+		_label(card, info.title, Rect2(128, 23 - 6 * c, 240, 36 - 4 * c), 28 - int(2 * c), INK if chosen else MUTED, true)
+		_label(card, info.blurb, Rect2(130, 55 - 10 * c, COL - 152, 38), 14, MUTED if chosen else DIM)
+		# Right-hand column: the rules, and which game is picked.
+		var how := _button(card, "HOW TO PLAY  ›", Rect2(COL - 158, 10, 140, 30), _rules.bind(id), false, 13)
+		how.name = "How"
+		how.tooltip_text = "How to play %s" % info.title.capitalize()
+		if chosen:
+			_tab(card, "SELECTED", Vector2(COL - 22, 48 - 6 * c), LIME, Kit.OUTLINE, 13, true)
+		top += card_h + (8.0 if tight else 10.0)
+	if tight: return top - 8.0
+	var titles := ["SUMO", "ORB RACING"]
+	var tile_w := (COL - 12) / 2.0
+	for i in 2:
+		var tile := _panel(parent, Rect2(LEFT + i * (tile_w + 12), top, tile_w, 44), Color(0.06, 0.09, 0.18, 0.92), Color("2b3866"), 3, 5)
+		tile.add_theme_stylebox_override("panel", Kit.box(Color(0.06, 0.09, 0.18, 0.92), Color("2b3866"), 3, 0, 0.12, 5, false))
+		tile.tooltip_text = "Planned for a later update. Spin Cycle and Live Wire are playable now."
+		_label(tile, titles[i], Rect2(22, 0, 160, 44), 19, DIM, true)
+		_tab(tile, "SOON", Vector2(tile_w - 14, 10), Color("2b3866"), MUTED, 13, true)
+	return top + 44.0
+
+func _show_menu(message: String = "") -> void:
+	entering = view != "menu" or screen.get_child_count() == 0
+	view = "menu"
+	_clear_screen()
+	if not relayout:
+		_clear_overlay()
+		_set_stage(true)
+	_backdrop()
+	_land(_brand(screen), 1.35)
+	# One column, top to bottom; compact screens tighten every gap.
+	var y := _game_cards(_section(1), _below_brand() - 4.0) + (10.0 if tight else 16.0)
+	var actions := _section(2)
+	_eyebrow(actions, "PLAYER NAME", Rect2(LEFT, y, COL, 20))
+	var field_h := 46.0 if tight else 50.0
+	name_field = _field(actions, player_name, "Your name", Rect2(LEFT, y + 24, COL, field_h), 16)
+	y += 24 + field_h + (8.0 if tight else 16.0)
+	var solo_h := 56.0 if tight else 68.0
+	var solo := _button(actions, "PLAY SOLO  ·  VS 5 BOTS", Rect2(LEFT, y, COL, solo_h), _solo, true, 28)
+	solo.tooltip_text = "Play %s against five bots" % _game_title().capitalize()
+	y += solo_h + (8.0 if tight else 14.0)
+	var half := (COL - 14) / 2.0
+	var party_h := 46.0 if tight else 56.0
+	_button(actions, "HOST PARTY", Rect2(LEFT, y, half, party_h), _open_host, false, 22)
+	_button(actions, "JOIN PARTY", Rect2(LEFT + half + 14, y, half, party_h), _open_join, false, 22)
+	y += party_h + (6.0 if tight else 10.0)
+	menu_status = _label(actions, message, Rect2(LEFT, y, COL, 36 if tight else 48), 16, WARN)
+	_wrap(menu_status)
+	var footer := _section(3)
+	_settings_row(footer, area.y - (106.0 if tight else 112.0))
+	updater.decorate(screen, "menu")
+	solo.grab_focus()
+
+## Graphics level, sound and quit along the foot of the menu column.
+func _settings_row(parent: Control, y: float) -> void:
+	_eyebrow(parent, "GRAPHICS", Rect2(LEFT, y, 200, 20))
+	var specs := [
+		["LOW", func(): _set_graphics("low"), graphics_level == "low", "Lightest: for old or software graphics. Lower 3D resolution, plainer scenery."],
+		["BALANCED", func(): _set_graphics("balanced"), graphics_level == "balanced", "Lighter robots and soft shadows."],
+		["HIGH", func(): _set_graphics("high"), graphics_level == "high", "Antialiasing, full-detail robots, true shadows and atmosphere."],
+		["SOUND: ON" if sound_enabled else "SOUND: OFF", _toggle_sound, false, ""],
+		["QUIT", func(): get_tree().quit(), false, ""]]
+	# Widths follow the labels; any slack goes to every key alike.
+	var gaps := [6.0, 6.0, 14.0, 14.0]
+	var need := 0.0
+	for spec in specs: need += Kit.text_width(spec[0], 15) + 32.0
+	for gap in gaps: need += gap
+	var extra := maxf(0.0, COL - need) / specs.size()
+	var x := LEFT
+	for i in specs.size():
+		var spec: Array = specs[i]
+		var w: float = Kit.text_width(spec[0], 15) + 32.0 + extra
+		var key := _button(parent, spec[0], Rect2(x, y + 26, w, 46), spec[1], spec[2], 15)
+		key.tooltip_text = spec[3]
+		if i < 3: key.set_meta("graphics", ["low", "balanced", "high"][i])
+		x += w + (gaps[i] if i < gaps.size() else 0.0)
+
+func _read_fields() -> bool:
+	if is_instance_valid(name_field):
+		player_name = session.clean_name(name_field.text)
+	if is_instance_valid(address_field):
+		address = address_field.text.strip_edges()
+		if address.is_empty():
+			_set_status("Enter the host’s IP address or hostname.")
+			return false
+	if is_instance_valid(port_field):
+		var port_text := port_field.text.strip_edges()
+		if not port_text.is_valid_int() or int(port_text) < 1024 or int(port_text) > 65535:
+			_set_status("Choose a UDP port between 1024 and 65535.")
+			return false
+		server_port = int(port_text)
+	_save_settings()
+	return true
+
+## Shows an error in the open dialog, or on the menu when no dialog is open.
+func _set_status(text_value: String) -> void:
+	var target: Label = status_label if is_instance_valid(status_label) else menu_status
+	if is_instance_valid(target):
+		target.text = text_value
+
+func _open_host() -> void:
+	if not _read_fields(): return
+	_clear_overlay()
+	var panel := _modal("HOST A PARTY", "Friends join with your IP address. Open seats are filled by bots.", 340)
+	_eyebrow(panel, "UDP PORT", Rect2(32, 132, 160, 20))
+	port_field = _field(panel, str(server_port), "7777", Rect2(32, 158, 148, 54), 5)
+	port_field.text_submitted.connect(func(_t): _host())
+	var hint := _label(panel, "Allow the game through your firewall. For internet play, forward this UDP port.", Rect2(200, 158, 328, 54), 14, MUTED)
+	_wrap(hint)
+	status_label = _label(panel, "", Rect2(32, 218, 496, 26), 15, WARN)
+	_button(panel, "OPEN LOBBY  →", Rect2(32, 254, 300, 56), _host, true, 22).grab_focus()
+	_button(panel, "CANCEL", Rect2(350, 254, 170, 56), _clear_overlay)
+
+func _host() -> void:
+	if not _read_fields(): return
+	var err: Error = session.host_game(player_name, server_port)
+	if err != OK:
+		_set_status("Could not open UDP port %d. Try a different port." % server_port)
+	else:
+		_advertise_party()
+		last_member_count = session.members.size()
+		_show_lobby()
+		_voice("lobby")
+
+func _open_join() -> void:
+	if not _read_fields(): return
+	_clear_overlay()
+	# Sized for the LAN party list from the start, so the dialog is centred
+	# and fitted to the screen with it (see _place_modal).
+	var panel := _modal("JOIN A PARTY", "Pick a party on your network, or type the host’s join address.", 340 + LAN_LIST_H)
+	_eyebrow(panel, "HOST ADDRESS", Rect2(32, 132, 320, 20))
+	_eyebrow(panel, "UDP PORT", Rect2(380, 132, 148, 20))
+	address_field = _field(panel, address, "IP or hostname", Rect2(32, 158, 336, 54), 253)
+	port_field = _field(panel, str(server_port), "7777", Rect2(380, 158, 148, 54), 5)
+	for field in [address_field, port_field]:
+		field.text_submitted.connect(func(_t): _join())
+	status_label = _label(panel, "", Rect2(32, 218, 496, 26), 15, WARN)
+	_button(panel, "CONNECT  →", Rect2(32, 254, 300, 56), _join, true, 22)
+	_button(panel, "CANCEL", Rect2(350, 254, 170, 56), _clear_overlay)
+	_join_browser(panel)
+	address_field.grab_focus()
+	address_field.select_all()
+
+func _join() -> void:
+	if not _read_fields(): return
+	var err: Error = session.join_game(player_name, address, server_port)
+	if err != OK:
+		_set_status("Enter a valid host address and UDP port.")
+		return
+	_clear_overlay()
+	var panel := _modal("CONNECTING", "Joining %s : %d …" % [address, server_port], 228)
+	_button(panel, "CANCEL", Rect2(36, 138, 480, 56), _cancel_join).grab_focus()
+
+func _cancel_join() -> void:
+	session.close()
+	_clear_overlay()
+
+func _solo() -> void:
+	if not _read_fields(): return
+	session.solo(player_name)
+	session.start_round()
+
+func _lan_ips() -> Array:
+	var ips: Array = []
+	for iface in IP.get_local_interfaces():
+		var preferred: bool = str(iface.name).begins_with("en") or str(iface.name).begins_with("eth") or str(iface.name).begins_with("wl")
+		if preferred:
+			for ip in iface.addresses:
+				if ":" not in ip and not ip.begins_with("127."):
+					ips.append(ip)
+	if ips.is_empty():
+		for ip in IP.get_local_addresses():
+			if ":" not in ip and not ip.begins_with("127."):
+				ips.append(ip)
+	return ips
+
+# --- LAN party discovery ----------------------------------------------------
+# Self-contained: the host's beacon, the Join dialog's list of nearby parties
+# and the lobby's visibility tag. scripts/discovery.gd does the networking.
+
+const Discovery = preload("res://scripts/discovery.gd")
+## How much taller the Join dialog grows to fit the list of nearby parties.
+const LAN_LIST_H := 316.0
+const LAN_ROWS := 4
+var beacon: Node
+var lan_browser: Node
+var lan_rows: Array = []
+var lan_parties: Array = []
+var lan_empty: Control
+var lan_count: Label
+var lan_autofocus := false
+
+## Lets players on the same network find this party. The beacon follows the
+## session and goes quiet by itself when the session stops hosting.
+func _advertise_party() -> void:
+	if not is_instance_valid(beacon):
+		beacon = Discovery.new()
+		beacon.name = "LanBeacon"
+		add_child(beacon)
+	beacon.game_label = func() -> String: return _game_title().capitalize()
+	beacon.advertise(session, _game_title().capitalize())
+
+## Lobby tag beside the join address: whether nearby players can see the party.
+func _lobby_visibility(join: Control) -> void:
+	var shown: bool = is_instance_valid(beacon) and beacon.is_advertising()
+	_tab(join, "VISIBLE ON YOUR NETWORK" if shown else "NOT VISIBLE ON LAN", Vector2(join.size.x - 28, 82), Kit.CYAN if shown else DIM, Kit.OUTLINE, 13, true)
+
+## Fills the top of the Join dialog with the parties found on the local network
+## and moves the manual address form below it as the fallback. The listener
+## lives inside the dialog, so closing the dialog closes its socket.
+func _join_browser(panel: Panel) -> void:
+	for child in panel.get_children():
+		if child.position.y >= 120.0:
+			child.position.y += LAN_LIST_H
+	var box := Control.new()
+	box.name = "LanParties"
+	box.size = Vector2(panel.size.x, 120.0 + LAN_LIST_H)
+	box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	panel.add_child(box)
+	_eyebrow(box, "PARTIES ON YOUR NETWORK", Rect2(32, 128, 320, 22), LIME)
+	lan_count = _eyebrow(box, "", Rect2(328, 128, 200, 22), MUTED, ALIGN_RIGHT)
+	lan_empty = _lan_searching(box, Rect2(32, 160, 496, 232))
+	lan_rows.clear()
+	lan_parties.clear()
+	for i in LAN_ROWS:
+		lan_rows.append(_lan_row(box, i, Rect2(32, 160 + i * 60, 496, 52)))
+	# Divider above the manual form.
+	var rule := Control.new()
+	rule.position = Vector2(32, 104 + LAN_LIST_H)
+	rule.size = Vector2(496, 22)
+	rule.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	rule.draw.connect(func():
+		var caption := "OR TYPE AN ADDRESS"
+		var w := Kit.text_width(caption, 13) + 28.0
+		rule.draw_line(Vector2(0, 11), Vector2((rule.size.x - w) * 0.5, 11), LINE, 2.0)
+		rule.draw_line(Vector2((rule.size.x + w) * 0.5, 11), Vector2(rule.size.x, 11), LINE, 2.0)
+		Kit.text(rule, caption, Vector2(rule.size.x * 0.5, Kit.baseline(11, 13)), 13, MUTED, 0, 0.5))
+	box.add_child(rule)
+	lan_browser = Discovery.new()
+	lan_browser.name = "LanBrowser"
+	box.add_child(lan_browser)
+	lan_browser.changed.connect(_refresh_lan)
+	if lan_browser.browse() != OK:
+		lan_empty.set_meta("busy", lan_browser.port)
+	# Entries also age out silently, so redraw on a steady one-second beat.
+	var beat := Timer.new()
+	beat.wait_time = 1.0
+	beat.autostart = true
+	beat.timeout.connect(_refresh_lan)
+	box.add_child(beat)
+	# Move focus to the first party once, unless the player starts typing.
+	lan_autofocus = true
+	address_field.text_changed.connect(func(_t): lan_autofocus = false)
+	_refresh_lan()
+
+## The empty list: a dark socket with a radar ping while searching, or a short
+## note when the discovery port is taken (manual joining still works then).
+func _lan_searching(parent: Control, rect: Rect2) -> Control:
+	var empty := Control.new()
+	empty.position = rect.position
+	empty.size = rect.size
+	empty.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	empty.draw.connect(func():
+		var h := empty.size.y
+		Kit.plate(empty, Kit.slab(Rect2(0, 0, empty.size.x - h * 0.06, h), h * 0.06), Color(0.045, 0.07, 0.15, 0.9), 3.0, 0.0, Color(LINE, 0.7))
+		var mid := Vector2(empty.size.x * 0.5, 70)
+		if empty.has_meta("busy"):
+			Kit.text(empty, "LAN SEARCH UNAVAILABLE", Vector2(mid.x, 118), 24, WARN, 0, 0.5)
+			Kit.text(empty, "Another program on this computer is using UDP port %d," % int(empty.get_meta("busy")), Vector2(mid.x, 150), 15, MUTED, 0, 0.5, 0.0, Kit.body)
+			Kit.text(empty, "often a second copy of the game. Type the address below.", Vector2(mid.x, 172), 15, MUTED, 0, 0.5, 0.0, Kit.body)
+			return
+		var t := float(empty.get_meta("t", 0.0))
+		for k in 3:
+			var phase := fmod(t + k / 3.0, 1.0)
+			empty.draw_arc(mid, 8.0 + phase * 44.0, 0, TAU, 48, Color(Kit.CYAN, (1.0 - phase) * 0.8), 3.0, true)
+		empty.draw_circle(mid, 7.0, LIME)
+		var dots := ".".repeat(1 + int(t * 3.0) % 3)
+		Kit.text(empty, "SEARCHING YOUR NETWORK" + dots, Vector2(mid.x - Kit.text_width("SEARCHING YOUR NETWORK...", 24) * 0.5, 160), 24, INK)
+		Kit.text(empty, "Parties hosted on this Wi-Fi or LAN show up here by themselves.", Vector2(mid.x, 192), 15, MUTED, 0, 0.5, 0.0, Kit.body))
+	parent.add_child(empty)
+	var spin := Kit.tween(empty).set_loops()
+	spin.tween_method(func(v: float):
+		empty.set_meta("t", v)
+		empty.queue_redraw(), 0.0, 1.0, 1.8)
+	return empty
+
+## One slot in the list. The face is redrawn from the party it currently shows.
+func _lan_row(parent: Control, index: int, rect: Rect2) -> Button:
+	var row := _button(parent, "", rect, func(): _join_lan_row(index), false, 20)
+	row.add_theme_stylebox_override("normal", Kit.box(Color("13204a"), LINE, 3, 3))
+	row.add_theme_stylebox_override("hover", Kit.box(Kit.NAVY_LIGHT, Kit.CYAN, 3, 3))
+	row.add_theme_stylebox_override("pressed", Kit.box(Kit.COBALT, Kit.OUTLINE, 3, 1))
+	row.add_theme_stylebox_override("focus", Kit.ring_box(LIME))
+	row.add_theme_stylebox_override("disabled", Kit.box(Color("0c1530"), Color("1d2a52"), 3, 3, 0.16, 5, false))
+	row.visible = false
+	var face := Control.new()
+	face.size = rect.size
+	face.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	face.draw.connect(func():
+		var p: Dictionary = row.get_meta("party", {})
+		if p.is_empty(): return
+		var open := _lan_joinable(p)
+		var state := "OTHER VERSION"
+		var fill := Kit.DANGER
+		if p.compatible:
+			if p.round:
+				state = "IN ROUND"
+				fill = JUMP_COLOR
+			elif int(p.players) >= int(p.max):
+				state = "FULL"
+			else:
+				state = "LOBBY  ·  JOIN"
+				fill = LIME
+		var right := face.size.x - 16.0
+		right = _lan_chip(face, state, right, fill)
+		if p.compatible:
+			right = _lan_chip(face, "%d/%d" % [int(p.players), int(p.max)], right - 8.0, Kit.OUTLINE, INK)
+		var name_w := right - 34.0
+		var name_size := Kit.fit(str(p.name), 22, name_w)
+		Kit.text(face, str(p.name).to_upper(), Vector2(22, 27), name_size, INK if open else MUTED)
+		var where := "%s  ·  %s" % [str(p.game).to_upper() if not str(p.game).is_empty() else "GIZMO JAM", "THIS COMPUTER" if p.local else str(p.ip)]
+		Kit.text(face, where, Vector2(23, 44), 12, MUTED if open else DIM, 0, 0.0, 0.0, Kit.body))
+	row.add_child(face)
+	return row
+
+## Slanted status chip drawn right-aligned at `right`. Returns its left edge.
+func _lan_chip(ci: CanvasItem, text_value: String, right: float, fill: Color, ink: Color = Kit.OUTLINE) -> float:
+	var w := Kit.text_width(text_value, 14) + 22.0
+	var h := 26.0
+	var left := right - w - h * Kit.SLANT
+	Kit.plate(ci, Kit.slab(Rect2(left, 11, w, h)), fill, 3.0, 0.0)
+	Kit.text(ci, text_value, Vector2(left + (w + h * Kit.SLANT) * 0.5, Kit.baseline(11 + h * 0.5, 14)), 14, ink, 0, 0.5)
+	return left
+
+func _lan_joinable(p: Dictionary) -> bool:
+	return p.compatible and not p.round and int(p.players) < int(p.max) and int(p.port) > 0
+
+func _refresh_lan() -> void:
+	if not is_instance_valid(lan_browser) or not lan_browser.is_inside_tree(): return
+	var found: Array = lan_browser.party_list()
+	lan_parties = found.slice(0, LAN_ROWS)
+	lan_count.text = "" if found.is_empty() else ("%d FOUND" % found.size() if found.size() <= LAN_ROWS else "%d FOUND  ·  SHOWING %d" % [found.size(), LAN_ROWS])
+	lan_empty.visible = lan_parties.is_empty()
+	var lost_focus := false
+	for i in LAN_ROWS:
+		var row: Button = lan_rows[i]
+		var focused := row.has_focus()
+		row.visible = i < lan_parties.size()
+		if row.visible:
+			row.set_meta("party", lan_parties[i])
+			row.disabled = not _lan_joinable(lan_parties[i])
+			row.get_child(0).queue_redraw()
+		if focused and (not row.visible or row.disabled):
+			lost_focus = true
+	var first: Button = null
+	for i in lan_parties.size():
+		if not lan_rows[i].disabled:
+			first = lan_rows[i]
+			break
+	if lost_focus:
+		if first: first.grab_focus()
+		elif is_instance_valid(address_field): address_field.grab_focus()
+	elif lan_autofocus and first and is_instance_valid(address_field) and address_field.has_focus():
+		lan_autofocus = false
+		first.grab_focus()
+
+func _join_lan_row(index: int) -> void:
+	if index < lan_parties.size():
+		_join_discovered(lan_parties[index])
+
+## Joins a discovered party at the address its beacon came from.
+func _join_discovered(p: Dictionary) -> void:
+	if not _lan_joinable(p) or not is_instance_valid(address_field) or not is_instance_valid(port_field): return
+	address_field.text = str(p.ip)
+	port_field.text = str(p.port)
+	_join()
+
+func _show_lobby() -> void:
+	entering = view != "lobby"
+	view = "lobby"
+	_clear_screen()
+	if not relayout:
+		_clear_overlay()
+		_set_stage(true)
+	_backdrop()
+	_land(_brand(screen), 1.35)
+	var host_name := _member_name(session.leader_id)
+	var host_tint := INK
+	for m in session.members:
+		if int(m.peer) == session.leader_id:
+			host_tint = Kit.colors[clampi(int(m.slot), 0, 5)]
+	# Vertical rhythm: the design grid, or a compact one on short screens.
+	var top := _below_brand()
+	var c := 1.0 if tight else 0.0
+	var info := _section(1)
+	_tab(info, "%s  ·  ONLINE PARTY" % _game_title(), Vector2(LEFT, top), Kit.CYAN, Kit.OUTLINE, 14)
+	_outlined(_label(info, "PARTY LOBBY", Rect2(LEFT, top + 22 - 2 * c, COL + 40, 70 - 18 * c), 62 - int(14 * c), INK, true), 12)
+	_label(info, "Everyone starts together. Open seats are filled by bots.", Rect2(LEFT, top + 104 - 30 * c, COL, 28 - 4 * c), 17, MUTED)
+	var host_card := _panel(info, Rect2(LEFT, top + 156 - 42 * c, COL, 80 - 12 * c))
+	_tab(host_card, "PARTY HOST", Vector2(18, -14), host_tint, Kit.OUTLINE, 14)
+	_label(host_card, host_name.to_upper(), Rect2(24, 20 - 6 * c, 290, 48), 28, host_tint, true).text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	_label(host_card, "Starts each round\nfor the whole party", Rect2(COL - 224, 14 - 6 * c, 200, 52), 14, MUTED, false, ALIGN_RIGHT)
+	var join := _panel(info, Rect2(LEFT, top + 260 - 64 * c, COL, 170 - 34 * c))
+	if session.mode == "host":
+		_lobby_visibility(join)
+		var ips := _lan_ips()
+		var host_ip: String = str(ips[0]) if not ips.is_empty() else "Your LAN IP"
+		_tab(join, "JOIN ADDRESS  ·  LAN", Vector2(18, -14), LIME, Kit.OUTLINE, 14)
+		_label(join, host_ip, Rect2(24, 20 - 8 * c, COL - 200, 50 - 6 * c), 38, INK, true).text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+		_label(join, "UDP PORT  %d" % session.port, Rect2(24, 70 - 16 * c, 300, 28), 19, LIME, true)
+		if not ips.is_empty():
+			_button(join, "COPY IP", Rect2(COL - 154, 28 - 8 * c, 126, 48 - 4 * c), func(): DisplayServer.clipboard_set(host_ip), false, 16)
+		var note := _label(join, "Internet play: share your public IP and forward this UDP port. Keep this computer running for the whole party.", Rect2(24, 106 - 22 * c, COL - 48, 48 - 8 * c), 14, MUTED)
+		_wrap(note)
+	else:
+		_tab(join, "CONNECTED TO", Vector2(18, -14), LIME, Kit.OUTLINE, 14)
+		_label(join, address, Rect2(24, 20 - 8 * c, COL - 48, 50 - 6 * c), 38, INK, true).text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+		_label(join, "UDP PORT  %d" % server_port, Rect2(24, 70 - 16 * c, 300, 28), 19, LIME, true)
+		var note := _label(join, "The party ends if the server computer closes the game. Host controls can still be voted over to anyone.", Rect2(24, 106 - 22 * c, COL - 48, 48 - 8 * c), 14, MUTED)
+		_wrap(note)
+	var actions := _section(2)
+	_game_picker(actions, top + 456 - 110 * c)
+	var foot := area.y - (66.0 if tight else 88.0)
+	var start_text: String = "START FOR EVERYONE  →" if session.is_leader() else "WAITING FOR %s" % host_name.to_upper()
+	var start := _button(actions, start_text, Rect2(LEFT, foot - 106 + 40 * c, COL, 70 - 16 * c), func(): session.start_round(), true, 28 if session.is_leader() else 22)
+	start.name = "Start"
+	start.disabled = not session.is_leader()
+	if not start.disabled: start.grab_focus()
+	_button(actions, "LEAVE PARTY", Rect2(LEFT, foot, 168, 46), _leave, false, 15)
+	var notice := _label(actions, session.notice, Rect2(LEFT + 190, foot, COL - 190, 46), 14, MUTED)
+	_wrap(notice)
+	var seats := _section(3, Vector2(90, 0))
+	_eyebrow(seats, "PLAYERS", Rect2(RIGHT_X + 16, top - 2, 200, 24), LIME)
+	_eyebrow(seats, "%d OF 6 CONNECTED" % session.members.size(), Rect2(RIGHT_X, top - 2, RIGHT_W, 24), INK, ALIGN_RIGHT)
+	_roster_panel(seats, Vector2(RIGHT_X, top + 34), RIGHT_W, tight)
+	updater.decorate(screen, "lobby")
+
+## Lobby: the game the next round will be. Everyone sees the choice; only the
+## party host's copy has live buttons.
+func _game_picker(parent: Control, y: float) -> void:
+	var leader: bool = session.is_leader()
+	var c := 1.0 if tight else 0.0
+	var box := _panel(parent, Rect2(LEFT, y, COL, 86 - 12 * c))
+	_tab(box, "NEXT GAME  ·  YOU CHOOSE" if leader else "NEXT GAME  ·  THE HOST CHOOSES", Vector2(18, -14), LIME, Kit.OUTLINE, 14)
+	var how := _button(box, "HOW TO PLAY  ›", Rect2(COL - 162, -15, 148, 30), _rules, false, 13)
+	how.name = "How"
+	var width := (COL - 48 - 12) / 2.0
+	var column := 0
+	for id in Network.GAMES:
+		var info: Dictionary = games[id].INFO
+		var chosen: bool = id == session.game
+		var pick := _button(box, "%s  %s" % [info.number, info.title], Rect2(24 + column * (width + 12), 26 - 6 * c, width, 46 - 6 * c), _select_game.bind(id), chosen, 17)
+		pick.name = "Pick_" + id
+		# The chosen game stays lit for everyone; the other is a live key for the host only.
+		pick.disabled = not leader and not chosen
+		if not leader:
+			pick.mouse_default_cursor_shape = Control.CURSOR_ARROW
+			pick.focus_mode = Control.FOCUS_NONE
+		pick.tooltip_text = ("%s is up next" % info.title.capitalize()) if chosen else ("Switch the party to %s" % info.title.capitalize() if leader else "Only the party host can switch games")
+		column += 1
+
+func _member_name(peer: int) -> String:
+	for m in session.members:
+		if int(m.peer) == peer:
+			return m.name
+	return "Host"
+
+## Draws the six seats and any open host vote. Returns the y below the last element.
+## A taken seat is a solid plate in that player's colour; an open one is a dark socket.
+func _roster_panel(parent: Control, origin: Vector2, width: float, compact: bool) -> float:
+	var row_h := 42.0 if compact else 60.0
+	var pitch := 50.0 if compact else 72.0
+	var lean := row_h * Kit.SLANT
+	var body_w := width - lean
+	var own := multiplayer.get_unique_id()
+	for i in 6:
+		var member: Dictionary = {}
+		for m in session.members:
+			if int(m.slot) == i:
+				member = m
+		var filled := not member.is_empty()
+		var mine: bool = filled and int(member.peer) == own
+		var tint: Color = Kit.colors[i]
+		var number_size := 24 if compact else 34
+		var tile := Control.new()
+		tile.position = Vector2(origin.x, origin.y + i * pitch)
+		tile.size = Vector2(width, row_h)
+		tile.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		tile.draw.connect(func():
+			var shape := Kit.slab(Rect2(0, 0, body_w, row_h))
+			if filled:
+				if mine: Kit.stroke(tile, shape, INK, 11.0)
+				Kit.plate(tile, shape, tint, 4.0, 5.0)
+				tile.draw_colored_polygon(Kit.slab(Rect2(8, 6, row_h * 0.95, row_h - 12)), Kit.OUTLINE)
+			else:
+				Kit.plate(tile, shape, Color(0.045, 0.07, 0.15, 0.9), 3.0, 0.0, tint.darkened(0.45))
+			Kit.text(tile, str(i + 1), Vector2(8 + row_h * 0.475 + (row_h - 12) * Kit.SLANT * 0.5, Kit.baseline(row_h * 0.5, number_size)), number_size, tint if filled else tint.darkened(0.35), 0, 0.5))
+		parent.add_child(tile)
+		_enter(tile, i + 4, Vector2(70, 0))
+		var font_size := 19 if compact else 26
+		var name_x := row_h * 0.95 + 30.0
+		var name_w := body_w - name_x - 220.0
+		var name_text: String = str(member.get("name", ""))
+		var name_label := _label(tile, name_text if filled else "OPEN SEAT  ·  CPU", Rect2(name_x, 0, name_w if filled else body_w - name_x - 20, row_h), font_size if filled else font_size - 4, Kit.OUTLINE if filled else DIM, true)
+		name_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+		if not filled: continue
+		var chip_y := (row_h - 25.0) / 2.0
+		if mine:
+			var name_px := minf(Kit.text_width(name_text, font_size), name_w)
+			_tab(tile, "YOU", Vector2(name_x + name_px + 12, chip_y), INK, Kit.OUTLINE, 13)
+		if int(member.peer) == session.leader_id:
+			_tab(tile, "HOST", Vector2(body_w - 12, chip_y), Kit.OUTLINE, LIME, 13, true)
+		elif session.election.is_empty():
+			var peer: int = member.peer
+			_dark_button(_button(tile, "PASS HOST" if session.is_leader() else "VOTE HOST", Rect2(body_w - 146, (row_h - 32) / 2.0, 128, 32), func(): session.propose_host(peer), false, 13))
+	var y := origin.y + 6 * pitch
+	if not session.election.is_empty():
+		var e: Dictionary = session.election
+		_outlined(_label(parent, "Make %s host?  %d / %d votes" % [_member_name(e.candidate), e.yes.size(), session.votes_needed()], Rect2(origin.x, y + 2, width, 28), 18, LIME, true), 6)
+		if own != session.leader_id and own not in e.yes and own not in e.no:
+			_button(parent, "YES", Rect2(origin.x + 4, y + 36, 120, 40), func(): session.cast_vote(true), true, 17)
+			_button(parent, "NO", Rect2(origin.x + 140, y + 36, 120, 40), func(): session.cast_vote(false), false, 17)
+		else:
+			_outlined(_label(parent, "Waiting for votes  ·  closes after 25 seconds", Rect2(origin.x, y + 36, width, 36), 15, MUTED), 5)
+		y += 80
+	return y
+
+func _roster_changed() -> void:
+	if not is_instance_valid(screen): return
+	var count: int = session.members.size()
+	if count > last_member_count and last_member_count > 0 and view != "game":
+		_voice("player_joined")
+	last_member_count = count
+	if view == "menu" and session.mode == "client":
+		_show_lobby()
+	elif view == "lobby":
+		_show_lobby()
+	elif view == "results":
+		_show_results()
+	elif paused:
+		# Refreshing an open menu: rebuild it in place without replaying its entrance.
+		quiet_modal = true
+		_show_pause()
+		quiet_modal = false
+
+func _round_started(seed_value: int, slots: Array, number: int) -> void:
+	# session.game is already the game of this launch, on every peer.
+	play = games[session.game]
+	model = play.make_model()
+	model.begin(seed_value, slots, number)
+	paused = false
+	last_count = 4
+	snapshot_clock = 0.0
+	finish_clock = -1.0
+	announced_round = -1
+	play.round_started()
+	_sfx("round_start")
+	_clear_overlay()
+	_show_game()
+
+## The round is gone (lobby, leaving, a lost connection): nothing stays held.
+func _end_round() -> void:
+	if play: play.release()
+	model = null
+	paused = false
+	finish_clock = -1.0
+	_clear_overlay()
+
+## The round HUD: the shared frame here, the game's own widgets from its module.
+func _show_game() -> void:
+	entering = true
+	view = "game"
+	_clear_screen()
+	_set_stage(false)
+	feedback_time = 0.0
+	hud_root = Control.new()
+	hud_root.size = area
+	hud_root.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	screen.add_child(hud_root)
+	play.build_hud()
+	_update_hud()
+
+## Places the round HUD against the visible canvas: the shared frame here,
+## the game's own widgets through its layout_hud(). The modules build their
+## widgets in 1440x900 design positions; centred pieces keep their offset from
+## the middle of the screen, corner pieces stick to their corner.
+func _layout_hud() -> void:
+	if not is_instance_valid(hud_root): return
+	hud_root.size = area
+	var mid := area.x * 0.5
+	if is_instance_valid(hud_feedback):
+		hud_feedback.position.x = roundf(mid - hud_feedback.size.x * 0.5)
+	if is_instance_valid(hud_count):
+		hud_count.position = Vector2(roundf(mid - hud_count.size.x * 0.5), roundf(area.y * 0.262))
+	if is_instance_valid(hud_menu):
+		hud_menu.position = Vector2(area.x - 194, 22)
+		hud_names.position = Vector2(area.x - 260, 76)
+	if is_instance_valid(hud_intro):
+		hud_intro.size = area
+		for child in hud_intro.get_children():
+			if not child.has_meta("home_x"): child.set_meta("home_x", child.position.x)
+			child.position.x = float(child.get_meta("home_x")) + mid - DESIGN.x * 0.5
+		hud_intro.queue_redraw()
+	if is_instance_valid(damage_shade):
+		damage_shade.material.set_shader_parameter("aspect", area.x / maxf(area.y, 1.0))
+	if play and play.has_method("layout_hud"):
+		play.layout_hud()
+
+## Where six bottom plates of `plate_size` go on a canvas of `size`, as drawn
+## rectangles, `bottom` units above the foot. The local player's plate is
+## drawn 10% larger. On a narrow (4:3) canvas the row scales down so no plate
+## overlaps another; on a wide one it stays centred instead of spreading out.
+static func plate_rects(size: Vector2, own_slot: int, plate_size: Vector2, bottom: float = 16.0) -> Array:
+	var margin := 20.0
+	var gap := 9.6
+	var units := 6.0 + 0.1
+	var k := clampf((size.x - margin * 2.0 - gap * 5.0) / (plate_size.x * units), 0.3, 1.0)
+	var row := plate_size.x * k * units + gap * 5.0
+	var x := roundf((size.x - row) * 0.5)
+	var rects: Array = []
+	for i in 6:
+		var grow := 1.1 if i == own_slot else 1.0
+		var w := plate_size.x * k * grow
+		var h := plate_size.y * k * grow
+		rects.append(Rect2(x, size.y - bottom - h, w, h))
+		x += w + gap
+	return rects
+
+## Puts plates (pivot at the bottom centre) on the rectangles from plate_rects().
+static func place_plates(plates: Array, rects: Array, plate_size: Vector2) -> void:
+	for i in mini(plates.size(), rects.size()):
+		var plate: Control = plates[i]
+		var r: Rect2 = rects[i]
+		var k: float = r.size.x / plate_size.x
+		plate.scale = Vector2(k, k)
+		plate.position = Vector2(r.position.x - plate.pivot_offset.x * (1.0 - k), r.end.y - plate_size.y)
+
+## Feedback call-out (hit, clear, zapped, loop): big text that pops under the cue.
+func _hud_feedback(rect: Rect2, font_size: int, outline_px: int) -> Control:
+	hud_feedback = Slam.new()
+	hud_feedback.position = rect.position
+	hud_feedback.size = rect.size
+	hud_feedback.font_size = font_size
+	hud_feedback.outline_px = outline_px
+	hud_root.add_child(hud_feedback)
+	return hud_feedback
+
+## Menu button and the names hint, top-right. The button never takes keyboard
+## focus, so Space always reaches the game.
+func _hud_corner() -> void:
+	hud_menu = _button(hud_root, "ESC  ·  MENU", Rect2(area.x - 194, 22, 162, 46), _toggle_pause, false, 16)
+	hud_menu.focus_mode = Control.FOCUS_NONE
+	hud_names = _outlined(_label(hud_root, "HOLD TAB  ·  NAMES", Rect2(area.x - 260, 76, 232, 22), 14, INK, true, ALIGN_RIGHT), 6)
+
+## A hard hazard-striped frame that snaps in on a hit and shrinks away.
+func _hud_shade() -> ColorRect:
+	damage_shade = ColorRect.new()
+	damage_shade.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	damage_shade.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	damage_shade.visible = false
+	var damage_shader := Shader.new()
+	# `aspect` keeps the frame and stripes even on any window shape.
+	damage_shader.code = "shader_type canvas_item; uniform float strength=0.0; uniform float aspect=1.6; void fragment(){vec2 p=UV*vec2(aspect,1.0); float d=min(min(p.x,aspect-p.x),min(p.y,1.0-p.y)); float band=0.005+0.02*strength; float frame=1.0-smoothstep(band-0.003,band,d); float stripe=step(0.5,fract((p.x+p.y)*18.0)); vec3 col=mix(vec3(1.0,0.16,0.24),vec3(1.0,0.42,0.36),stripe); float wash=strength*strength*0.16; COLOR=vec4(mix(vec3(1.0,0.2,0.26),col,frame),clamp(max(frame*min(1.0,strength*1.6),wash),0.0,1.0));}"
+	var damage_material := ShaderMaterial.new()
+	damage_material.shader = damage_shader
+	damage_shade.material = damage_material
+	screen.add_child(damage_shade)
+	return damage_shade
+
+## The 3-2-1-GO slam, in the middle of the screen.
+func _hud_count() -> Control:
+	hud_count = Slam.new()
+	hud_count.position = Vector2(370, 236)
+	hud_count.size = Vector2(700, 300)
+	hud_count.font_size = 230
+	hud_count.outline_px = 26
+	hud_root.add_child(hud_count)
+	return hud_count
+
+## Holder for the game's controls reminder; shown until GO.
+func _hud_intro() -> Control:
+	hud_intro = Control.new()
+	hud_intro.size = area
+	hud_intro.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	hud_root.add_child(hud_intro)
+	return hud_intro
+
+func _role(slot: int, p: Dictionary, my_slot: int) -> String:
+	return "YOU" if slot == my_slot else ("CPU" if p.bot else "P%d" % (slot + 1))
+
+## Short rattle of the whole HUD layer when the local runner is hit.
+func _shake_hud() -> void:
+	if not is_instance_valid(hud_root): return
+	var t := Kit.tween(hud_root)
+	for offset in [Vector2(-12, 7), Vector2(10, -6), Vector2(-6, 4), Vector2(3, -2), Vector2.ZERO]:
+		t.tween_property(hud_root, "position", offset, 0.045)
+
+func _physics_process(delta: float) -> void:
+	if model and session.playing:
+		if session.is_server() and not (paused and not session.is_online()):
+			model.step(delta)
+			snapshot_clock += delta
+			if snapshot_clock >= 0.05:
+				snapshot_clock = 0.0
+				session.send_snapshot(model.snapshot())
+		if model.phase == "finished" and view == "game":
+			# A game may hold the finished board for a beat before the results.
+			if finish_clock < 0.0:
+				finish_clock = play.finish_hold()
+				play.finished()
+			finish_clock -= delta
+			if finish_clock <= 0.0:
+				_show_results()
+
+func _process(delta: float) -> void:
+	if arena:
+		var on_stage: RefCounted = games[_stage_id()]
+		var in_round: bool = model != null and session.playing and on_stage == play
+		# Between rounds the game decides what its arena shows behind the menus.
+		var state: RefCounted = model if in_round else on_stage.backdrop(delta)
+		on_stage.arena().update_visuals(state, 0.0 if paused and not session.is_online() else delta, session.my_slot() if in_round or state == null else -1)
+	if view == "game" and model:
+		feedback_time = maxf(0.0, feedback_time - delta)
+		play.frame(delta)
+		hud_clock += delta
+		if hud_clock > 0.033:
+			hud_clock = 0.0
+			_update_hud()
+
+func _snapshot_received(data: Dictionary) -> void:
+	if model:
+		model.apply_snapshot(data)
+
+func _update_hud() -> void:
+	if not model or view != "game" or not is_instance_valid(hud_count): return
+	play.update_hud()
+	var count := int(ceil(model.countdown))
+	var go: bool = model.phase == "running" and model.elapsed < 0.6
+	hud_intro.visible = model.countdown > 0
+	if count != last_count:
+		last_count = count
+		if count > 0:
+			hud_count.slam(str(count), INK)
+			_sfx("countdown_tick", 360 + count * 100)
+			_voice(["", "one", "two", "three"][mini(count, 3)])
+		else:
+			hud_count.slam("GO!", LIME)
+			_sfx("countdown_go", 880)
+			_voice("go")
+	if not (model.countdown > 0 or go or model.phase == "finished"):
+		hud_count.visible = false
+	if feedback_time <= 0.0:
+		hud_feedback.visible = false
+	else:
+		hud_feedback.alpha = clampf(feedback_time / 0.12, 0.0, 1.0)
+
+func _unhandled_key_input(event: InputEvent) -> void:
+	if not event is InputEventKey or event.echo: return
+	if event.physical_keycode == KEY_F11 and event.pressed:
+		var fullscreen := DisplayServer.window_get_mode() == DisplayServer.WINDOW_MODE_FULLSCREEN
+		DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_WINDOWED if fullscreen else DisplayServer.WINDOW_MODE_FULLSCREEN)
+		return
+	if view == "game" and play:
+		if event.physical_keycode == KEY_TAB:
+			play.arena().show_identities = event.pressed
+			get_viewport().set_input_as_handled()
+			return
+		if event.physical_keycode == KEY_ESCAPE:
+			if event.pressed: _toggle_pause()
+			return
+		if play.key(event):
+			get_viewport().set_input_as_handled()
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_APPLICATION_FOCUS_OUT and session and session.playing and not test_mode:
+		_focus_lost()
+
+## The window lost focus mid-round: key-up events will not arrive, so let go of
+## everything, and pause a solo game.
+func _focus_lost() -> void:
+	if play:
+		play.release()
+		play.forget_keys()
+		play.arena().show_identities = false
+	if not session.is_online() and view == "game" and not paused:
+		_toggle_pause()
+
+func _toggle_pause() -> void:
+	paused = not paused
+	if play: play.release()
+	if paused: _show_pause()
+	else: _clear_overlay()
+
+
+func _show_pause() -> void:
+	_clear_overlay()
+	entering = not quiet_modal
+	if not session.is_online():
+		var panel := _modal("PAUSED", "Take a breather. The round is frozen until you come back.", 290)
+		_button(panel, "RESUME", Rect2(36, 132, 480, 60), _toggle_pause, true, 24).grab_focus()
+		_button(panel, "RESTART", Rect2(36, 210, 232, 52), func(): session.start_round())
+		_button(panel, "QUIT TO MENU", Rect2(284, 210, 232, 52), _leave)
+		return
+	var roster_h := 6 * 50.0 + (80.0 if not session.election.is_empty() else 0.0)
+	var panel := _modal("PARTY MENU", "The round keeps running while this menu is open.", 236 + roster_h + 16 + 52 + 36)
+	_button(panel, "BACK TO GAME", Rect2(36, 126, 480, 58), _toggle_pause, true, 24).grab_focus()
+	_eyebrow(panel, "PLAYERS", Rect2(36, 204, 480, 20), LIME)
+	var y := _roster_panel(panel, Vector2(32, 234), 500, true)
+	_button(panel, "RETURN ALL TO LOBBY", Rect2(36, y + 16, 250, 52), func(): session.lobby(), false, 16).disabled = not session.is_leader()
+	_button(panel, "LEAVE PARTY", Rect2(304, y + 16, 212, 52), _leave, false, 16)
+
+## Dialog: a thick-edged slab with its title on a ribbon that overhangs the corner.
+func _modal(title: String, description: String, height: float = 250) -> Panel:
+	overlay.mouse_filter = Control.MOUSE_FILTER_STOP
+	var shade := ColorRect.new()
+	shade.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	shade.color = Color(0.01, 0.02, 0.05, 0.8)
+	overlay.add_child(shade)
+	var panel := _panel(overlay, Rect2(0, 0, 560, height), Kit.NAVY, INK, 4, 10)
+	panel.pivot_offset = Vector2(280, height * 0.5)
+	panel.set_meta("modal_height", height)
+	_place_modal(panel)
+	_tab(panel, title, Vector2(-18, 18), LIME, Kit.OUTLINE, 30)
+	var desc := _label(panel, description, Rect2(32, 74, 496, 44), 16, MUTED)
+	_wrap(desc)
+	if not quiet_modal:
+		var fit := panel.scale
+		panel.scale = fit * 0.86
+		panel.modulate.a = 0.0
+		var t := Kit.tween(panel)
+		t.set_parallel(true)
+		t.tween_property(panel, "scale", fit, 0.2).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+		t.tween_property(panel, "modulate:a", 1.0, 0.1)
+	return panel
+
+## Centres a dialog on the visible canvas and, if it is taller than the
+## canvas, scales it down about its centre until it fits. Every dialog goes
+## through here, so content added to one is fitted with it.
+func _place_modal(panel: Control) -> void:
+	var h: float = panel.get_meta("modal_height", panel.size.y)
+	panel.size.y = h
+	panel.pivot_offset = Vector2(280, h * 0.5)
+	panel.position = ((area - Vector2(560, h)) * 0.5).round()
+	var fit := minf(1.0, minf((area.y - 32.0) / h, (area.x - 32.0) / 560.0))
+	panel.scale = Vector2(fit, fit)
+
+func _layout_modals() -> void:
+	if not is_instance_valid(overlay): return
+	for child in overlay.get_children():
+		if child is Control and child.has_meta("modal_height"):
+			_place_modal(child)
+
+## One control, shown with the exact plate the round HUD uses for it.
+func _rule_row(panel: Control, y: float, kind: String, keys: String, text_value: String, plate_scale: float = 0.74) -> void:
+	var sample := Cue.new()
+	sample.pivot_offset = Vector2.ZERO
+	sample.scale = Vector2(plate_scale, plate_scale)
+	sample.position = Vector2(22, y)
+	sample.show_demo(kind, keys)
+	panel.add_child(sample)
+	var text_x := 36.0 + 470.0 * plate_scale
+	_label(panel, text_value, Rect2(text_x, y + 108.0 * plate_scale - 72.0, 534.0 - text_x, 64), 17, INK)
+
+func _show_results() -> void:
+	entering = view != "results"
+	view = "results"
+	paused = false
+	finish_clock = -1.0
+	# The round is over: nothing stays held into the results or the next round.
+	play.release()
+	_clear_screen()
+	if not relayout:
+		_clear_overlay()
+	_backdrop()
+	if not relayout: _set_stage(true)
+	_land(_brand(screen), 1.35)
+	var order: Array = model.ranking()
+	var winner: Dictionary = model.players[order[0]]
+	var single_winner: bool = model.winners().size() == 1
+	var my_slot: int = session.my_slot()
+	# The table may run past the column, but never into the party roster.
+	var table_w := minf(COL + 72.0, RIGHT_X - LEFT - 28.0) if session.is_online() else COL + 72.0
+	var win_tint: Color = Kit.colors[order[0]]
+	var top := _below_brand()
+	var c := 1.0 if tight else 0.0
+	var row_h := 46.0 - 8.0 * c
+	var pitch := 57.0 - 13.0 * c
+	var rows_y := top + 226.0 - 90.0 * c
+	_enter(_tab(screen, "ROUND %d COMPLETE" % model.round_id, Vector2(LEFT, top), Kit.CYAN, Kit.OUTLINE, 14), 1)
+	# Headline: the winner's name, in their colour, thrown onto the screen.
+	var headline := Control.new()
+	headline.position = Vector2(LEFT, top + 36 - 12 * c)
+	headline.size = Vector2(640, 140)
+	headline.pivot_offset = Vector2(0, 0) if tight else Vector2(240, 70)
+	if tight: headline.scale = Vector2(0.55, 0.55)
+	headline.rotation = -0.03
+
+	headline.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var winner_name := str(winner.name).to_upper()
+	headline.draw.connect(func():
+		if single_winner:
+			var name_size := Kit.fit(winner_name, 84, 610.0, 30)
+			Kit.text(headline, winner_name, Vector2(0, 68), name_size, win_tint, 14, 0.0, 7.0)
+			Kit.text(headline, "TAKES THE WIN!", Vector2(4, 130), 50, INK, 12, 0.0, 6.0)
+		else:
+			Kit.text(headline, "IT’S A DRAW!", Vector2(0, 68), 80, INK, 14, 0.0, 7.0)
+			Kit.text(headline, "RUN IT BACK.", Vector2(4, 130), 50, LIME, 12, 0.0, 6.0))
+	screen.add_child(headline)
+	_land(headline, 1.8, 2)
+	_enter(_outlined(_label(screen, play.result_summary(), Rect2(LEFT + 4, rows_y - 44 + 10 * c, table_w, 26), 17, MUTED, true), 6), 3)
+	result_header_y = rows_y - 40 + 10 * c
+	for rank in 6:
+		var i: int = order[rank]
+		var p: Dictionary = model.players[i]
+		var mine: bool = i == my_slot
+		var champ: bool = rank == 0 and single_winner
+		var tint: Color = play.result_tint(i, champ)
+		var lean := row_h * Kit.SLANT
+		var body_w := table_w - lean - rank * 12.0
+		var tile := Control.new()
+		tile.position = Vector2(LEFT, rows_y + rank * pitch)
+		tile.size = Vector2(body_w + lean, row_h)
+		tile.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		tile.draw.connect(func():
+			var shape := Kit.slab(Rect2(0, 0, body_w, row_h))
+			if mine: Kit.stroke(tile, shape, INK, 11.0)
+			Kit.plate(tile, shape, tint, 4.0, 5.0)
+			tile.draw_colored_polygon(Kit.slab(Rect2(8, 6, 46, row_h - 12)), Kit.OUTLINE)
+			Kit.text(tile, str(rank + 1), Vector2(8 + 23 + (row_h - 12) * Kit.SLANT * 0.5, Kit.baseline(row_h * 0.5, 26 - int(3 * c))), 26 - int(3 * c), Kit.GOLD if champ else tint, 0, 0.5))
+		screen.add_child(tile)
+		_enter(tile, rank + 4)
+		var name_text := str(p.name)
+		# The game fills in the numbers; the name gets what is left of the row.
+		var name_w: float = body_w - 78.0 - play.result_row(tile, i, champ, body_w, row_h, mine)
+		_label(tile, name_text, Rect2(78, 0, name_w, row_h), 22, Kit.OUTLINE, true).text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+		if mine:
+			_tab(tile, "YOU", Vector2(78 + minf(Kit.text_width(name_text, 22), name_w) + 10, (row_h - 26.0) * 0.5), INK, Kit.OUTLINE, 13)
+	play.result_headers(screen, table_w)
+	var actions := _section(10)
+	var half := (table_w - 14) / 2.0
+	var foot := area.y - 88.0
+	var action_h := 66.0 - 16.0 * c
+	# Compact screens put the buttons straight under the table.
+	var action_y := rows_y + 5 * pitch + row_h + 14.0 if tight else foot - action_h - 16.0
+	var again := _button(actions, "PLAY AGAIN  →", Rect2(LEFT, action_y, half, action_h), func(): session.start_round(), true, 26)
+	again.name = "Again"
+	again.disabled = not session.is_leader()
+	var back := _button(actions, "PARTY LOBBY" if session.is_online() else "GAME MENU", Rect2(LEFT + half + 14, action_y, half, action_h), func(): session.lobby(), false, 22)
+	back.name = "Back"
+	back.disabled = not session.is_leader()
+	if not again.disabled: again.grab_focus()
+	if session.is_online():
+		var note := _label(actions, session.notice if session.is_leader() else "Waiting for %s to start the next round." % _member_name(session.leader_id), Rect2(LEFT, foot, table_w, 44), 14, MUTED)
+		_wrap(note)
+		var seats := _section(3, Vector2(90, 0))
+		_eyebrow(seats, "PARTY  ·  SWITCH HOST", Rect2(RIGHT_X + 16, top - 2, RIGHT_W, 24), LIME)
+		_roster_panel(seats, Vector2(RIGHT_X, top + 34), RIGHT_W, tight)
+		_button(seats, "LEAVE PARTY", Rect2(RIGHT_X + RIGHT_W - 172, foot, 168, 46), _leave, false, 15)
+	updater.decorate(screen, "results")
+	# The screen is rebuilt when the roster changes; the result is announced once.
+	if announced_round != model.round_id:
+		announced_round = model.round_id
+		if not single_winner:
+			_voice("draw")
+		elif order[0] == my_slot:
+			_voice("you_win")
+		else:
+			_voice("winner")
+		if single_winner:
+			_sfx("victory", 0)
+	if single_winner and not relayout:
+		play.celebrate(order[0])
+	if not session.is_online() and single_winner:
+		_champion_plate(winner, win_tint)
+
+## Solo results: a slab of the winner's colour under the podium, and confetti.
+func _champion_plate(winner: Dictionary, win_tint: Color) -> void:
+	var champion := Control.new()
+	champion.size = Vector2(500, 132)
+	champion.pivot_offset = Vector2(250, 66)
+	# Short screens: a smaller plate, tucked into the corner, so the robot's
+	# legs stay in view above it.
+	var k := 0.8 if tight else 1.0
+	champion.scale = Vector2(k, k)
+	champion.position = Vector2(area.x - 60, area.y - 52) - Vector2(500, 132) * k - champion.pivot_offset * (1.0 - k)
+	champion.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var champ_name := str(winner.name).to_upper()
+	var stats: String = play.champion_stats(winner)
+	champion.draw.connect(func():
+		Kit.plate(champion, Kit.slab(Rect2(0, 16, 468, 110)), win_tint, 5.0, 7.0)
+		champion.draw_colored_polygon(Kit.slab(Rect2(10, 88, 448, 30)), Kit.OUTLINE)
+		Kit.text(champion, champ_name, Vector2(40, 74), Kit.fit(champ_name, 46, 410.0, 20), Kit.OUTLINE)
+		Kit.text(champion, stats, Vector2(238, Kit.baseline(103.0, 14)), Kit.fit(stats, 14, 420.0, 9), INK, 0, 0.5))
+	screen.add_child(champion)
+	_tab(champion, "CHAMPION", Vector2(30, 0), Kit.GOLD, Kit.OUTLINE, 16)
+	_land(champion, 1.6, 6)
+	var confetti := CPUParticles2D.new()
+	confetti.position = Vector2(area.x - 350, 120)
+	confetti.amount = 90
+	confetti.preprocess = 1.0
+	confetti.lifetime = 3.2
+	confetti.direction = Vector2(0, 1)
+	confetti.spread = 85
+	confetti.gravity = Vector2(0, 110)
+	confetti.initial_velocity_min = 110
+	confetti.initial_velocity_max = 240
+	confetti.angular_velocity_min = -260
+	confetti.angular_velocity_max = 260
+	confetti.angle_max = 360
+	confetti.scale_amount_min = 7
+	confetti.scale_amount_max = 13
+	var ramp := Gradient.new()
+	ramp.interpolation_mode = Gradient.GRADIENT_INTERPOLATE_CONSTANT
+	ramp.offsets = PackedFloat32Array([0.0, 0.17, 0.34, 0.5, 0.67, 0.84])
+	ramp.colors = PackedColorArray(Kit.colors)
+	confetti.color_initial_ramp = ramp
+	screen.add_child(confetti)
+
+## Audio routing: ElevenLabs assets via scripts/audio.gd when present, else beeps.
+func _sfx(id: String, fallback_hz: float = 0.0, pitch: float = 1.0) -> void:
+	if test_mode: sound_log.append(id)
+	if not sound_enabled or test_mode: return
+	if audio:
+		audio.sfx(id, pitch)
+	elif fallback_hz > 0.0:
+		_tone(fallback_hz, 0.16 if id in ["hit", "eliminated"] else 0.06)
+
+func _voice(id: String) -> void:
+	if test_mode and not id.is_empty(): sound_log.append("voice:" + id)
+	if id.is_empty() or not sound_enabled or test_mode or not audio: return
+	audio.voice(id)
+
+func _ui_sound(id: String) -> void:
+	_sfx(id, 480.0 if id == "ui_click" else 0.0)
+
+func _leave() -> void:
+	if play: play.release()
+	session.close()
+	# A guest goes back to the game they had picked for themselves.
+	session.select_game(preferred_game)
+	last_member_count = 0
+	_end_round()
+	_show_menu()
+
+func _toggle_sound() -> void:
+	_read_fields()
+	sound_enabled = not sound_enabled
+	if audio: audio.enabled = sound_enabled
+	_save_settings()
+	relayout = true
+	_show_menu()
+	relayout = false
+
+func _tone(frequency: float, duration: float) -> void:
+	if not sound_enabled or not tone_player or test_mode: return
+	var rate := 22050
+	var count := int(rate * duration)
+	var bytes := PackedByteArray()
+	bytes.resize(count * 2)
+	for i in count:
+		var envelope := sin(PI * float(i) / count)
+		var sample := int(sin(TAU * frequency * i / rate) * envelope * 14000)
+		bytes.encode_s16(i * 2, sample)
+	var stream := AudioStreamWAV.new()
+	stream.format = AudioStreamWAV.FORMAT_16_BITS
+	stream.mix_rate = rate
+	stream.data = bytes
+	tone_player.stream = stream
+	tone_player.play()
+
+## First-run graphics level: Low on a software renderer, High on a hardware
+## GPU, Balanced when the adapter is unknown (a headless run).
+static func default_graphics(adapter_name: String) -> String:
+	var adapter := adapter_name.to_lower()
+	if adapter.is_empty(): return "balanced"
+	for software in ["llvmpipe", "softpipe", "swiftshader", "lavapipe", "software", "microsoft basic render", "gdi generic"]:
+		if software in adapter: return "low"
+	return "high"
+
+## Graphics level stored in a settings file. Files written before Low existed
+## hold only `graphics/detailed`: true was High and false was Balanced.
+static func stored_graphics(cfg: ConfigFile, fallback: String) -> String:
+	var level := str(cfg.get_value("graphics", "level", ""))
+	if level in ["low", "balanced", "high"]: return level
+	if cfg.has_section_key("graphics", "detailed"):
+		return "high" if bool(cfg.get_value("graphics", "detailed")) else "balanced"
+	return fallback
+
+func _load_settings() -> void:
+	graphics_level = default_graphics(RenderingServer.get_video_adapter_name())
+	var cfg := ConfigFile.new()
+	if cfg.load("user://settings.cfg") == OK:
+		player_name = cfg.get_value("player", "name", "PLAYER")
+		address = cfg.get_value("network", "address", "127.0.0.1")
+		server_port = int(cfg.get_value("network", "port", 7777))
+		sound_enabled = cfg.get_value("audio", "enabled", true)
+		var saved_game := str(cfg.get_value("game", "selected", preferred_game))
+		if saved_game in Network.GAMES: preferred_game = saved_game
+	graphics_level = stored_graphics(cfg, graphics_level)
+	check_updates = cfg.get_value("updates", "check", true)
+
+func _save_settings() -> void:
+	if test_mode: return
+	var cfg := ConfigFile.new()
+	cfg.set_value("player", "name", player_name)
+	cfg.set_value("network", "address", address)
+	cfg.set_value("network", "port", server_port)
+	cfg.set_value("audio", "enabled", sound_enabled)
+	cfg.set_value("graphics", "level", graphics_level)
+	# Kept so an older build reading this file still gets High or Balanced.
+	cfg.set_value("graphics", "detailed", graphics_level == "high")
+	cfg.set_value("game", "selected", preferred_game)
+	cfg.set_value("updates", "check", check_updates)
+	cfg.save("user://settings.cfg")
+
+func _capture_after(filename: String) -> void:
+	await get_tree().create_timer(2.0).timeout
+	await RenderingServer.frame_post_draw
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path("res://test-output"))
+	get_viewport().get_texture().get_image().save_png("res://test-output/" + filename + ".png")
+	get_tree().quit()
+
+func _set_check_updates(on: bool) -> void:
+	_read_fields()
+	check_updates = on
+	_save_settings()
+	_show_menu()
+
+## Both arenas follow the graphics level.
+func _apply_graphics() -> void:
+	arena.set_level(graphics_level)
+	live_arena.set_level(graphics_level)
+
+func _set_graphics(level: String) -> void:
+	_read_fields()
+	graphics_level = level
+	_apply_graphics()
+	_save_settings()
+	# Rebuild in place so the camera and runners carry on undisturbed.
+	relayout = true
+	_show_menu()
+	relayout = false
+	for key in screen.find_children("*", "Button", true, false):
+		if key.get_meta("graphics", "") == level: key.grab_focus()

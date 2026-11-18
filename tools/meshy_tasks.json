@@ -1,0 +1,246 @@
+{
+  "runner_helmet": {
+    "prompt": "Single futuristic racing helmet for a friendly arcade robot runner. Chunky rounded aerodynamic shell, large dark wraparound visor, inset cheek vents, layered ear discs, small rear fins. Clean appealing industrial toy design, bold readable silhouette, symmetrical, isolated helmet only, no head no neck no body no stand. White ceramic shell with graphite mechanical trim. Game ready hard surface asset.",
+    "texture_prompt": "Pearl white ceramic helmet shell, dark graphite side panels, glossy nearly black wraparound visor with a thin cyan light stripe, fine recessed seams, tiny metallic ear vents, clean premium arcade racing equipment, no writing no logos.",
+    "target_polycount": 3500,
+    "preview_id": "01a1e73f-e506-74c4-b52b-67484d66680a",
+    "status": "SUCCEEDED",
+    "refine_id": "01a1e742-7e88-7553-9e94-292dac5206db",
+    "file": "assets/meshy/runner_helmet.glb",
+    "bytes": 5984152
+  },
+  "reactor_pylon": {
+    "prompt": "Single compact futuristic fusion reactor generator pylon for a stylish arcade arena. Vertical cylindrical industrial machine, broad octagonal armored base, stacked layered metal rings, exposed central energy cylinder surrounded by four curved protective ribs, heavy top cap, cooling vents and panel seams. Symmetric self contained machine, no cables outside silhouette, no ground plane, no scene. Graphite gunmetal and teal metal with cyan energy chamber. High quality stylized hard surface game prop.",
+    "texture_prompt": "Premium stylized science fiction reactor, dark graphite armored panels, brushed teal metal ribs, recessed cyan energy chamber, copper small mechanical trim, clean edge highlights and fine panel seams, no writing no logos.",
+    "target_polycount": 6000,
+    "preview_id": "01a1e73f-ef67-76dd-9177-9f633781d074",
+    "status": "SUCCEEDED",
+    "refine_id": "01a1e742-8b76-720a-ab22-4d340b3e0e8b",
+    "file": "assets/meshy/reactor_pylon.glb",
+    "bytes": 6559580
+  },
+  "art_pass": {
+    "budget": 1500,
+    "tasks": {
+      "concept_a": {
+        "endpoint": "text-to-image",
+        "payload": {
+          "ai_model": "nano-banana-pro",
+          "pose_mode": "a-pose",
+          "prompt": "Stylized 3D game character turnaround concept, single character, full body, front view, standing in a relaxed A-pose with arms held well away from the body and legs apart, plain light grey background. A cute chunky toy-like science fiction runner mascot about three heads tall. Oversized smooth round helmet in glossy bright red with a wide glossy black visor showing two friendly white glowing oval eyes, a short rounded crest fin on top and a round white dial disc over each ear. Stout rounded torso in a bright red jumpsuit with a white chest plate holding a small round glowing white core light. Short sturdy arms and legs clearly separated from the body. Big rounded white gloves, big chunky white boots with dark charcoal soles, dark charcoal rubber joints at the neck, elbows and knees, small white power-cell backpack. Simple clean shapes, smooth surfaces, bold readable silhouette, flat saturated colours, soft even studio lighting, no cast shadows, no text, no logos."
+        },
+        "estimated_credits": 9,
+        "created": "2026-11-17T16:15:20",
+        "id": "01a1eb94-3397-70fc-b262-81e3253b7557",
+        "status": "SUCCEEDED",
+        "consumed_credits": 9
+      },
+      "concept_b": {
+        "endpoint": "text-to-image",
+        "payload": {
+          "ai_model": "gpt-image-2",
+          "pose_mode": "a-pose",
+          "aspect_ratio": "3:4",
+          "prompt": "Stylized 3D game character concept render, single character, full body, front view, standing in a relaxed A-pose with arms held well away from the body and legs apart, plain light grey background. A cute chunky toy-like science fiction runner mascot about three heads tall. Oversized smooth round helmet in glossy bright red with a wide glossy black visor showing two friendly white glowing oval eyes, a short rounded crest fin on top and a round white dial disc over each ear. Stout rounded torso in a bright red jumpsuit with a white chest plate holding a small round glowing white core light. Short sturdy arms and legs clearly separated from the body. Big rounded white gloves, big chunky white boots with dark charcoal soles, dark charcoal rubber joints at the neck, elbows and knees, small white power-cell backpack. Simple clean shapes, smooth surfaces, bold readable silhouette, flat saturated colours, soft even studio lighting, no cast shadows, no text, no logos."
+        },
+        "estimated_credits": 9,
+        "created": "2026-11-17T16:15:21",
+        "id": "01a1eb94-37c6-736c-930b-3928d8fa8036",
+        "status": "SUCCEEDED",
+        "consumed_credits": 9
+      },
+      "runner_model": {
+        "endpoint": "image-to-3d",
+        "payload": {
+          "input_task_id": "01a1eb94-37c6-736c-930b-3928d8fa8036",
+          "ai_model": "latest",
+          "model_type": "standard",
+          "pose_mode": "a-pose",
+          "should_remesh": true,
+          "topology": "triangle",
+          "target_polycount": 14000,
+          "should_texture": true,
+          "enable_pbr": true,
+          "texture_resolution": "2k",
+          "target_formats": [
+            "glb"
+          ],
+          "multi_view_thumbnails": true
+        },
+        "estimated_credits": 30,
+        "created": "2026-11-17T16:16:35",
+        "id": "01a1eb95-56ed-7419-8b88-5acc9527ce00",
+        "status": "SUCCEEDED",
+        "consumed_credits": 30
+      },
+      "runner_rig": {
+        "endpoint": "rigging",
+        "payload": {
+          "input_task_id": "01a1eb95-56ed-7419-8b88-5acc9527ce00",
+          "height_meters": 1.4
+        },
+        "estimated_credits": 5,
+        "created": "2026-11-17T16:18:12",
+        "id": "01a1eb96-d1fc-75d7-9f4f-afe47f2bc6da",
+        "status": "SUCCEEDED",
+        "consumed_credits": 5
+      },
+      "runner_anims_core": {
+        "endpoint": "animations",
+        "payload": {
+          "rig_task_id": "01a1eb96-d1fc-75d7-9f4f-afe47f2bc6da",
+          "action_ids": [
+            11,
+            16,
+            14,
+            466,
+            467,
+            517,
+            524,
+            516,
+            178,
+            171
+          ]
+        },
+        "estimated_credits": 30,
+        "created": "2026-11-17T16:19:17",
+        "id": "01a1eb97-d023-73f9-a604-38f3820d1bc5",
+        "status": "SUCCEEDED",
+        "consumed_credits": 30
+      },
+      "runner_anims_extra": {
+        "endpoint": "animations",
+        "payload": {
+          "rig_task_id": "01a1eb96-d1fc-75d7-9f4f-afe47f2bc6da",
+          "action_ids": [
+            59,
+            298,
+            44,
+            187
+          ]
+        },
+        "estimated_credits": 12,
+        "created": "2026-11-17T16:19:17",
+        "id": "01a1eb97-d245-74e9-9089-b80b3c9368f0",
+        "status": "SUCCEEDED",
+        "consumed_credits": 12
+      },
+      "concept_pylon": {
+        "endpoint": "text-to-image",
+        "payload": {
+          "ai_model": "gpt-image-2",
+          "aspect_ratio": "3:4",
+          "prompt": "Stylized 3D game prop concept render, single object, three-quarter front view, plain light grey background. A chunky toy-like science fiction energy pylon tower, tall and symmetrical around its vertical axis. Wide rounded octagonal base in glossy deep navy blue with white armour panels and big rounded bolts, a thick white central column wrapped by four fat glowing cyan coil rings, sturdy navy support struts, and a rounded white cap on top holding a glowing lime green dome light. Simple clean shapes, smooth glossy plastic surfaces like a designer toy, bold readable silhouette, flat saturated colours, soft even studio lighting, no cast shadows, no cables, no ground plane, no text, no logos."
+        },
+        "estimated_credits": 9,
+        "created": "2026-11-17T16:30:15",
+        "id": "01a1eba1-dc01-76a1-937f-8db95771ff0e",
+        "status": "SUCCEEDED",
+        "consumed_credits": 9
+      },
+      "concept_robot_a": {
+        "endpoint": "text-to-image",
+        "payload": {
+          "ai_model": "gpt-image-2",
+          "pose_mode": "a-pose",
+          "aspect_ratio": "3:4",
+          "prompt": "Stylized 3D game character concept render, single character, full body, straight front view, standing in an A-pose with arms held well away from the body and legs apart, plain light grey background. A cute chunky boxy toy robot about two and a half heads tall, soft matte vinyl toy look with generously rounded bevelled edges. Large rounded-cube head in flat bright red with a wide black glass screen face showing two glowing cyan vertical rounded-rectangle eyes, a round dark grey bolt disc on each side of the head and one short antenna with a small ball tip on top. Blocky rounded torso in the same flat bright red with one bold white lightning bolt emblem on the chest. Dark charcoal grey cylindrical neck, upper arms, forearms, waist and thighs like simple jointed tubes, clearly separated from the body. Chunky bright red mitten hands with a thumb, chunky bright red boots with dark charcoal soles, legs clearly apart with a gap between them. Simple clean shapes, no small details, no panel lines, flat saturated colours, soft even studio lighting, no cast shadows, no text, no logos."
+        },
+        "estimated_credits": 9,
+        "created": "2026-11-17T16:31:36",
+        "id": "01a1eba3-18b8-73d8-82ea-eae8ddb03576",
+        "status": "SUCCEEDED",
+        "consumed_credits": 9
+      },
+      "concept_robot_b": {
+        "endpoint": "text-to-image",
+        "payload": {
+          "ai_model": "nano-banana-pro",
+          "pose_mode": "a-pose",
+          "prompt": "Stylized 3D game character concept render, single character, full body, straight front view, standing in an A-pose with arms held well away from the body and legs apart, plain light grey background. A cute chunky boxy toy robot about two and a half heads tall, soft matte vinyl toy look with generously rounded bevelled edges. Large rounded-cube head in flat bright red with a wide black glass screen face showing two glowing cyan vertical rounded-rectangle eyes, a round dark grey bolt disc on each side of the head and one short antenna with a small ball tip on top. Blocky rounded torso in the same flat bright red with one bold white lightning bolt emblem on the chest. Dark charcoal grey cylindrical neck, upper arms, forearms, waist and thighs like simple jointed tubes, clearly separated from the body. Chunky bright red mitten hands with a thumb, chunky bright red boots with dark charcoal soles, legs clearly apart with a gap between them. Simple clean shapes, no small details, no panel lines, flat saturated colours, soft even studio lighting, no cast shadows, no text, no logos."
+        },
+        "estimated_credits": 9,
+        "created": "2026-11-17T16:31:37",
+        "id": "01a1eba3-1d5a-74a1-b09a-c185479c84d1",
+        "status": "SUCCEEDED",
+        "consumed_credits": 9
+      },
+      "robot_model": {
+        "endpoint": "image-to-3d",
+        "payload": {
+          "input_task_id": "01a1eba3-18b8-73d8-82ea-eae8ddb03576",
+          "ai_model": "latest",
+          "model_type": "standard",
+          "pose_mode": "a-pose",
+          "should_remesh": true,
+          "topology": "triangle",
+          "target_polycount": 14000,
+          "should_texture": true,
+          "enable_pbr": true,
+          "texture_resolution": "2k",
+          "target_formats": [
+            "glb"
+          ],
+          "multi_view_thumbnails": true
+        },
+        "estimated_credits": 30,
+        "created": "2026-11-17T16:32:19",
+        "id": "01a1eba3-c081-7109-bc83-54c99d4cac63",
+        "status": "SUCCEEDED",
+        "consumed_credits": 30
+      },
+      "robot_rig": {
+        "endpoint": "rigging",
+        "payload": {
+          "input_task_id": "01a1eba3-c081-7109-bc83-54c99d4cac63",
+          "height_meters": 1.35
+        },
+        "estimated_credits": 5,
+        "created": "2026-11-17T16:33:55",
+        "id": "01a1eba5-37a0-72f2-92e4-f26430f933e9",
+        "status": "SUCCEEDED",
+        "consumed_credits": 5
+      },
+      "robot_anims_core": {
+        "endpoint": "animations",
+        "payload": {
+          "rig_task_id": "01a1eba5-37a0-72f2-92e4-f26430f933e9",
+          "action_ids": [
+            11,
+            16,
+            14,
+            466,
+            467,
+            517,
+            524,
+            516,
+            178,
+            171
+          ]
+        },
+        "estimated_credits": 30,
+        "created": "2026-11-17T16:34:45",
+        "id": "01a1eba5-fa48-7397-a0a6-6548e6016df8",
+        "status": "SUCCEEDED",
+        "consumed_credits": 30
+      },
+      "robot_anims_extra": {
+        "endpoint": "animations",
+        "payload": {
+          "rig_task_id": "01a1eba5-37a0-72f2-92e4-f26430f933e9",
+          "action_ids": [
+            59,
+            298,
+            44,
+            187
+          ]
+        },
+        "estimated_credits": 12,
+        "created": "2026-11-17T16:34:46",
+        "id": "01a1eba5-fc99-75ac-a982-dcefdb9e5773",
+        "status": "SUCCEEDED",
+        "consumed_credits": 12
+      }
+    }
+  }
+}
