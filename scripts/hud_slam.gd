@@ -72,13 +72,14 @@ func rattle(text_value: String, color: Color) -> void:
 func _draw() -> void:
 	if message.is_empty() or alpha <= 0.0: return
 	var center := size * 0.5
+	var b := Kit.begin(self)
 	if ring < 1.0:
 		var radius := font_size * (0.45 + ring * 0.9)
-		draw_arc(center, radius, 0.0, TAU, 48, Color(Kit.OUTLINE, (1.0 - ring) * 0.8), font_size * 0.16 * (1.0 - ring) + 8.0, true)
-		draw_arc(center, radius, 0.0, TAU, 48, Color(tint, 1.0 - ring), font_size * 0.16 * (1.0 - ring), true)
+		b.arc(center, radius, 0.0, TAU, 48, Color(Kit.OUTLINE, (1.0 - ring) * 0.8), font_size * 0.16 * (1.0 - ring) + 8.0)
+		b.arc(center, radius, 0.0, TAU, 48, Color(tint, 1.0 - ring), font_size * 0.16 * (1.0 - ring))
 	var scale_now := maxf(0.05, 1.0 + grow)
 	var offset := Vector2(sin(jitter * 41.0) * 14.0, cos(jitter * 31.0) * 7.0) * jitter
-	draw_set_transform(center + offset, tilt, Vector2(scale_now, scale_now))
+	b.set_transform(center + offset, tilt, Vector2(scale_now, scale_now))
 	var fitted := Kit.fit(message, font_size, size.x - 40.0, 12)
 	Kit.text(self, message, Vector2(0, fitted * Kit.CAP * 0.5), fitted, Color(tint, alpha), outline_px, 0.5, font_size * 0.06)
-	draw_set_transform(Vector2.ZERO)
+	b.flush()

@@ -88,12 +88,14 @@ func show_status(clock_text: String, chip_text: String, caption_text: String, st
 
 func _draw() -> void:
 	var stage_tint: Color = [Kit.LIME, Kit.JUMP, Kit.DANGER][clampi(stage, 0, 2)]
+	# Everything goes through one batch: a few draw calls instead of ~45.
+	var b := Kit.begin(self)
 	if urgent:
 		# The last seconds: the clock goes red and kicks on every tick.
 		var kick := 1.0 + tick * 0.16
-		draw_set_transform(Vector2(4, 62) * (1.0 - kick), 0.0, Vector2(kick, kick))
+		b.set_transform(Vector2(4, 62) * (1.0 - kick), 0.0, Vector2(kick, kick))
 		Kit.text(self, clock, Vector2(4, 62), 66, Kit.DANGER.lerp(Color.WHITE, tick), 10, 0.0, 5.0)
-		draw_set_transform(Vector2.ZERO)
+		b.set_transform(Vector2.ZERO)
 	else:
 		Kit.text(self, clock, Vector2(4, 62), 66, Kit.INK, 10, 0.0, 5.0)
 	var x := 18.0 + Kit.text_width(clock, 66)
@@ -101,10 +103,10 @@ func _draw() -> void:
 	var grow := 1.0 + bump * 0.35
 	var half := maxf(52.0, Kit.text_width(speed_text, 22) * 0.5 + 16.0)
 	var chip_center := Vector2(x + half + 6.0, 31)
-	draw_set_transform(chip_center, -0.06 * bump, Vector2(grow, grow))
+	b.set_transform(chip_center, -0.06 * bump, Vector2(grow, grow))
 	Kit.plate(self, Kit.slab(Rect2(-half - 4.0, -16, half * 2.0, 32)), stage_tint.lerp(Color.WHITE, clampf(bump, 0.0, 1.0)), 4.0, 4.0)
 	Kit.text(self, speed_text, Vector2(1, Kit.baseline(0.0, 22)), 22, Kit.OUTLINE, 0, 0.5)
-	draw_set_transform(Vector2.ZERO)
+	b.set_transform(Vector2.ZERO)
 	Kit.text(self, caption, Vector2(x + 2, 72), 15, stage_tint, 6)
 	# Standings stack.
 	var best := 0
@@ -123,11 +125,12 @@ func _draw() -> void:
 		Kit.plate(self, bar, tint, 3.0, 0.0)
 		var tail := Vector2(6 + length + 12, y + 6)
 		if not alive[i]:
-			draw_line(tail + Vector2(-4, -4), tail + Vector2(4, 4), Kit.OUTLINE, 6.0, true)
-			draw_line(tail + Vector2(4, -4), tail + Vector2(-4, 4), Kit.OUTLINE, 6.0, true)
-			draw_line(tail + Vector2(-4, -4), tail + Vector2(4, 4), Kit.DANGER, 3.0, true)
-			draw_line(tail + Vector2(4, -4), tail + Vector2(-4, 4), Kit.DANGER, 3.0, true)
+			b.line(tail + Vector2(-4, -4), tail + Vector2(4, 4), Kit.OUTLINE, 6.0)
+			b.line(tail + Vector2(4, -4), tail + Vector2(-4, 4), Kit.OUTLINE, 6.0)
+			b.line(tail + Vector2(-4, -4), tail + Vector2(4, 4), Kit.DANGER, 3.0)
+			b.line(tail + Vector2(4, -4), tail + Vector2(-4, 4), Kit.DANGER, 3.0)
 		elif best > 0 and leaders <= 2 and int(scores[i]) == best:
 			# Leader marker.
 			var gem := PackedVector2Array([tail + Vector2(0, -7), tail + Vector2(7, 0), tail + Vector2(0, 7), tail + Vector2(-7, 0)])
 			Kit.plate(self, gem, Kit.GOLD, 3.0, 0.0)
+	b.flush()
