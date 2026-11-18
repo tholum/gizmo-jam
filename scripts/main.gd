@@ -131,6 +131,13 @@ var dev_mode := false
 ## An unsigned game the host is offering, waiting for this player's answer:
 ## {"id", "sha256", "title", "host"}. Re-shown if a screen rebuild hides it.
 var pending_consent: Dictionary = {}
+## Host setting: browsers on the LAN may join parties (see _serve_web).
+var browser_guests := false
+## Running as the browser build: it joins the party of the computer it was
+## loaded from, and never hosts.
+var on_web := OS.has_feature("web")
+const WEB_TYPES := {"html": "text/html; charset=utf-8", "js": "application/javascript", "wasm": "application/wasm",
+	"pck": "application/octet-stream", "png": "image/png", "ico": "image/x-icon", "json": "application/json", "svg": "image/svg+xml"}
 
 func _ready() -> void:
 	_load_settings()
@@ -169,6 +176,9 @@ func _ready() -> void:
 	packs.status_changed.connect(_pack_status)
 	packs.installed.connect(_pack_installed)
 	packs.consent_needed.connect(_ask_consent)
+	packs.web_changed.connect(func(_s, _p):
+		_serve_web()
+		if view == "lobby": _party_changed())
 	# Test runners use the games in the source tree only, unless a test gives
 	# its own packs folder.
 	var scripted: bool = Engine.get_main_loop().get_script() != null
@@ -200,13 +210,15 @@ func _ready() -> void:
 		add_child(audio)
 		audio.enabled = sound_enabled
 	updater = Updater.new()
-	updater.setup(check_updates, _set_check_updates, func(): return not session.is_online() and view != "game")
+	# The browser build is always the host's own version; nothing to update.
+	updater.setup(check_updates and not on_web, _set_check_updates, func(): return not session.is_online() and view != "game")
 	add_child(updater)
 	_show_menu()
 	_voice("welcome")
 	# The published catalog says which games exist; fetched like the update check.
-	if check_updates and not scripted and not "--no-update-check" in OS.get_cmdline_user_args():
+	if check_updates and not scripted and not on_web and not "--no-update-check" in OS.get_cmdline_user_args():
 		packs.refresh_catalog()
+	if on_web: _page_options()
 	if "--smoke-menu" in OS.get_cmdline_user_args():
 		test_mode = true
 		_capture_after("menu")
@@ -222,7 +234,8 @@ func _ready() -> void:
 ## (taskbars and docks excluded) and centre it. Explicit sizes, fullscreen and
 ## test runs are left alone.
 func _fit_window() -> void:
-	if DisplayServer.get_name() == "headless": return
+	# The browser sizes the canvas itself; moving a "window" there offsets it.
+	if DisplayServer.get_name() == "headless" or on_web: return
 	var window := get_window()
 	window.min_size = MIN_WINDOW
 	for arg in OS.get_cmdline_args():
@@ -738,8 +751,13 @@ func _show_menu(message: String = "") -> void:
 	y += solo_h + (8.0 if tight else 14.0)
 	var half := (COL - 14) / 2.0
 	var party_h := 46.0 if tight else 56.0
-	_button(actions, "HOST PARTY", Rect2(LEFT, y, half, party_h), _open_host, false, 22)
-	_button(actions, "JOIN PARTY", Rect2(LEFT + half + 14, y, half, party_h), _open_join, false, 22)
+	if on_web:
+		var join_page := _button(actions, "JOIN THE PARTY  →", Rect2(LEFT, y, COL, party_h), _join_from_page, false, 22)
+		join_page.name = "JoinPage"
+		join_page.tooltip_text = "Join the party on the computer this page came from"
+	else:
+		_button(actions, "HOST PARTY", Rect2(LEFT, y, half, party_h), _open_host, false, 22)
+		_button(actions, "JOIN PARTY", Rect2(LEFT + half + 14, y, half, party_h), _open_join, false, 22)
 	y += party_h + (6.0 if tight else 10.0)
 	menu_status = _label(actions, message, Rect2(LEFT, y, COL, 36 if tight else 48), 16, WARN)
 	_wrap(menu_status)
@@ -847,23 +865,37 @@ func _set_status(text_value: String) -> void:
 func _open_host() -> void:
 	if not _read_fields(): return
 	_clear_overlay()
-	var panel := _modal("HOST A PARTY", "Friends join with your IP address. Open seats are filled by bots.", 340)
+	var panel := _modal("HOST A PARTY", "Friends join with your IP address. Open seats are filled by bots.", 400)
 	_eyebrow(panel, "UDP PORT", Rect2(32, 132, 160, 20))
 	port_field = _field(panel, str(server_port), "7777", Rect2(32, 158, 148, 54), 5)
 	port_field.text_submitted.connect(func(_t): _host())
 	var hint := _label(panel, "Allow the game through your firewall. For internet play, forward this UDP port.", Rect2(200, 158, 328, 54), 14, MUTED)
 	_wrap(hint)
-	status_label = _label(panel, "", Rect2(32, 218, 496, 26), 15, WARN)
-	_button(panel, "OPEN LOBBY  →", Rect2(32, 254, 300, 56), _host, true, 22).grab_focus()
-	_button(panel, "CANCEL", Rect2(350, 254, 170, 56), _clear_overlay)
+	var web_key := _button(panel, "BROWSER GUESTS: ON" if browser_guests else "BROWSER GUESTS: OFF", Rect2(32, 226, 496, 44), func():
+		browser_guests = not browser_guests
+		_save_settings()
+		_open_host(), browser_guests, 16)
+	web_key.name = "BrowserGuests"
+	web_key.tooltip_text = "Players on your network can also join from a web browser, without installing the game. It runs smoother installed."
+	status_label = _label(panel, "", Rect2(32, 278, 496, 26), 15, WARN)
+	_button(panel, "OPEN LOBBY  →", Rect2(32, 314, 300, 56), _host, true, 22).grab_focus()
+	_button(panel, "CANCEL", Rect2(350, 314, 170, 56), _clear_overlay)
 
 func _host() -> void:
 	if not _read_fields(): return
-	var err: Error = session.host_game(player_name, server_port)
+	var web_port := 0
+	if browser_guests:
+		web_port = FileServer.DEFAULT_PORT + 1
+		for arg in OS.get_cmdline_user_args():
+			if arg.begins_with("--browser-port="): web_port = int(arg.trim_prefix("--browser-port="))
+	var err: Error = session.host_game(player_name, server_port, web_port)
 	if err != OK:
 		_set_status("Could not open UDP port %d. Try a different port." % server_port)
 	else:
 		_start_file_server()
+		if browser_guests:
+			packs.ensure_web()
+			_serve_web()
 		_advertise_party()
 		last_member_count = session.members.size()
 		_show_lobby()
@@ -1157,12 +1189,21 @@ func _show_lobby() -> void:
 		_label(join, "UDP PORT  %d" % session.port, Rect2(24, 70 - 16 * c, 300, 28), 19, LIME, true)
 		if not ips.is_empty():
 			_button(join, "COPY IP", Rect2(COL - 154, 28 - 8 * c, 126, 48 - 4 * c), func(): DisplayServer.clipboard_set(host_ip), false, 16)
-		var note := _label(join, "Internet play: share your public IP and forward this UDP port. Keep this computer running for the whole party.", Rect2(24, 106 - 22 * c, COL - 48, 48 - 8 * c), 14, MUTED)
+		var note_text := "Internet play: share your public IP and forward this UDP port. Keep this computer running for the whole party."
+		if session.web_port > 0:
+			var w: Dictionary = packs.web
+			match str(w.get("state", "")):
+				"ready": note_text = "Browsers on your network: open  http://%s:%d" % [host_ip, session.file_port]
+				"downloading": note_text = "Getting the browser version … %d%%" % int(w.get("progress", 0))
+				"verifying": note_text = "Getting the browser version …"
+				_: note_text = "Browser guests are unavailable: %s." % str(w.get("reason", "no browser build"))
+		var note := _label(join, note_text, Rect2(24, 106 - 22 * c, COL - 48, 48 - 8 * c), 14 if session.web_port <= 0 else 16, MUTED if session.web_port <= 0 else LIME, session.web_port > 0)
+		note.name = "JoinNote"
 		_wrap(note)
 	else:
 		_tab(join, "CONNECTED TO", Vector2(18, -14), LIME, Kit.OUTLINE, 14)
-		_label(join, address, Rect2(24, 20 - 8 * c, COL - 48, 50 - 6 * c), 38, INK, true).text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-		_label(join, "UDP PORT  %d" % server_port, Rect2(24, 70 - 16 * c, 300, 28), 19, LIME, true)
+		_label(join, session.join_address if on_web else address, Rect2(24, 20 - 8 * c, COL - 48, 50 - 6 * c), 38, INK, true).text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+		_label(join, "IN YOUR BROWSER" if on_web else "UDP PORT  %d" % server_port, Rect2(24, 70 - 16 * c, 300, 28), 19, LIME, true)
 		var note := _label(join, "The party ends if the server computer closes the game. Host controls can still be voted over to anyone.", Rect2(24, 106 - 22 * c, COL - 48, 48 - 8 * c), 14, MUTED)
 		_wrap(note)
 	var actions := _section(2)
@@ -1389,6 +1430,62 @@ func _serve_packs() -> void:
 	var routes: Dictionary = packs.servable()
 	for path in routes:
 		file_server.serve(path, routes[path], "application/json" if path == "/catalog" else "application/octet-stream")
+
+## Host with browser guests: serve the browser build, and party.json, which
+## tells the page where to connect.
+func _serve_web() -> void:
+	if not is_instance_valid(file_server) or not file_server.is_running() or session.web_port <= 0: return
+	if packs.web.get("state", "") != "ready": return
+	var dir: String = packs.web_dir()
+	for file in DirAccess.get_files_at(dir):
+		var ext := file.get_extension()
+		if not WEB_TYPES.has(ext): continue
+		var gz := dir.path_join(file + ".gz")
+		file_server.serve("/" + file, dir.path_join(file), WEB_TYPES[ext], gz if FileAccess.file_exists(gz) else "")
+	file_server.serve("/", dir.path_join("index.html"), WEB_TYPES.html)
+	var info := FileAccess.open(packs.root.path_join("party.json"), FileAccess.WRITE)
+	info.store_string(JSON.stringify({"web_port": session.web_port, "host": player_name, "build": Updater.Core.local_build()}))
+	info.close()
+	file_server.serve("/party.json", packs.root.path_join("party.json"), WEB_TYPES.json)
+
+## The browser build: join the party on the computer this page came from.
+func _join_from_page() -> void:
+	if not _read_fields(): return
+	var origin := str(JavaScriptBridge.eval("location.origin", true)) if on_web else ""
+	for arg in OS.get_cmdline_user_args():
+		if arg.begins_with("--page-origin="): origin = arg.trim_prefix("--page-origin=")
+	_clear_overlay()
+	var panel := _modal("CONNECTING", "Joining the party at %s …" % origin.trim_prefix("http://"), 228)
+	_button(panel, "CANCEL", Rect2(36, 138, 480, 56), _cancel_join).grab_focus()
+	var http := HTTPRequest.new()
+	add_child(http)
+	http.timeout = 8.0
+	if http.request(origin + "/party.json") != OK:
+		http.queue_free()
+		_show_menu("Could not reach the party.")
+		return
+	var result: Array = await http.request_completed
+	http.queue_free()
+	var data: Variant = JSON.parse_string((result[3] as PackedByteArray).get_string_from_utf8()) if result[0] == HTTPRequest.RESULT_SUCCESS and result[1] == 200 else null
+	if typeof(data) != TYPE_DICTIONARY or int(data.get("web_port", 0)) <= 0:
+		_show_menu("The party on this computer is not open to browsers right now.")
+		return
+	var host := origin.trim_prefix("http://").trim_prefix("https://").get_slice(":", 0)
+	if session.join_web(player_name, "ws://%s:%d" % [host, int(data.web_port)]) != OK:
+		_show_menu("Could not connect to the party.")
+
+## The browser build reads ?name=…&join=1 from its address, so a host can
+## hand out a link that drops a friend straight into the party.
+func _page_options() -> void:
+	var query := str(JavaScriptBridge.eval("location.search", true)).trim_prefix("?")
+	var options := {}
+	for pair in query.split("&", false):
+		options[pair.get_slice("=", 0)] = pair.get_slice("=", 1).uri_decode()
+	if options.has("name"):
+		player_name = session.clean_name(str(options.name))
+		if is_instance_valid(name_field): name_field.text = player_name
+	if options.get("join", "") == "1":
+		_join_from_page.call_deferred()
 
 ## The party is over for this player: stop serving and fetching.
 func _party_over() -> void:
@@ -2009,6 +2106,9 @@ func _load_settings() -> void:
 	graphics_level = stored_graphics(cfg, graphics_level)
 	check_updates = cfg.get_value("updates", "check", true)
 	dev_mode = bool(cfg.get_value("developer", "enabled", false))
+	browser_guests = bool(cfg.get_value("network", "browser_guests", false))
+	# The browser build starts light; old computers run it slower than installed.
+	if on_web and not cfg.has_section_key("graphics", "level"): graphics_level = "low"
 	if OS.is_debug_build() and "--dev-mode" in OS.get_cmdline_user_args(): dev_mode = true
 
 func _save_settings() -> void:
@@ -2024,6 +2124,7 @@ func _save_settings() -> void:
 	cfg.set_value("game", "selected", preferred_game)
 	cfg.set_value("updates", "check", check_updates)
 	cfg.set_value("developer", "enabled", dev_mode)
+	cfg.set_value("network", "browser_guests", browser_guests)
 	cfg.save("user://settings.cfg")
 
 func _capture_after(filename: String) -> void:

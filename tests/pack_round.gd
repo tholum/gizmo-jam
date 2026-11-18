@@ -82,6 +82,8 @@ func run() -> void:
 	main.name_field.text = role.to_upper()
 	if role == "host":
 		if scenario == "signed": await host_signed()
+		elif scenario == "web": await host_web()
+		elif scenario == "browser": await host_browser()
 		else: await host_dev()
 	else:
 		await guest()
@@ -161,6 +163,66 @@ func host_dev() -> void:
 	main._leave()
 	quit(0)
 
+## Browser guests: one guest joins over ENet, one the way the browser build
+## does (party.json from the host's file server, then a WebSocket). Both fetch
+## the example pack from the host and play it.
+func host_web() -> void:
+	main.browser_guests = true
+	await open_lobby()
+	check(main.session.web_port > 0, "The host accepts browsers")
+	check(await until(func(): return main.packs.web.get("state", "") == "ready", 10.0), "The browser build is ready to serve: %s" % main.packs.web)
+	var note: Label = main.find_child("JoinNote", true, false)
+	check(note != null and "http://" in note.text, "The lobby tells browsers where to go: '%s'" % (note.text if note else ""))
+	check(await until(func(): return main.session.members.size() == 3, 25.0), "A native and a browser guest join")
+	var web_peer := peer_named("WEBGUEST")
+	check(main.session.is_browser(web_peer) and not main.session.is_browser(peer_named("GUEST")), "The host knows which guest is in a browser")
+	await press("Pick_example")
+	check(await until(func(): return state_of("GUEST") == "ready" and state_of("WEBGUEST") == "ready", 30.0), "Both guests get the game: %s / %s" % [state_of("GUEST"), state_of("WEBGUEST")])
+	await press("Start")
+	check(main.session.round_peers.size() == 3, "All three play: %s" % [main.session.round_peers])
+	var seat := -1
+	for m in main.session.members:
+		if m.name == "WEBGUEST": seat = int(m.slot)
+	check(await until(func(): return main.model.phase == "running", 10.0), "The round runs")
+	var p: Dictionary = main.model.players[seat]
+	check(await until(func(): return int(p.score) + int(p.misses) >= 2, 20.0), "The browser guest's keys reach their seat")
+	main.model.elapsed = 29.5
+	check(await until(func(): return main.view == "results", 10.0), "Results")
+	await create_timer(1.0).timeout
+	await press("Back")
+	await create_timer(2.0).timeout
+	print("PACK_HOST_PASS browser-guest-over-websocket same-party pack-download")
+	main._leave()
+	quit(0)
+
+## A real browser (tests/run_browser.py drives headless Chrome) loads the
+## browser build from this host, joins, is launched into a Spin Cycle round
+## and presses Space.
+func host_browser() -> void:
+	main.browser_guests = true
+	await open_lobby()
+	check(await until(func(): return main.packs.web.get("state", "") == "ready", 10.0), "The browser build is ready to serve: %s" % main.packs.web)
+	print("HOST_READY file_port=%d web_port=%d" % [main.session.file_port, main.session.web_port])
+	check(await until(func(): return peer_named("BROWSER") != 0, 90.0), "The browser joins the party")
+	var peer := peer_named("BROWSER")
+	check(main.session.is_browser(peer), "over a WebSocket")
+	check(int(main.file_server.served.get("/index.wasm", 0)) >= 1, "after loading the game from this host: %s" % main.file_server.served)
+	var seat := -1
+	for m in main.session.members:
+		if int(m.peer) == peer: seat = int(m.slot)
+	var inputs := [0]
+	main.session.input_received.connect(func(slot, _action, _pressed): if slot == seat: inputs[0] += 1)
+	await create_timer(2.0).timeout
+	await press("Start")
+	check(peer in main.session.round_peers, "The browser guest is in the round")
+	check(await until(func(): return inputs[0] >= 2, 40.0), "Its Space presses reach its seat (%d)" % inputs[0])
+	await create_timer(1.0).timeout
+	main.session.lobby()
+	await create_timer(2.0).timeout
+	print("PACK_HOST_PASS real-browser-loaded-joined-launched-input")
+	main._leave()
+	quit(0)
+
 func join() -> void:
 	main._open_join()
 	main.address_field.text = "127.0.0.1"
@@ -170,7 +232,16 @@ func join() -> void:
 
 func guest() -> void:
 	check(not Registry.has("example"), "The guest starts without the example game")
-	await join()
+	if role == "webguest":
+		# The browser build's menu and join, minus the browser.
+		main.on_web = true
+		main._show_menu()
+		main.name_field.text = "WEBGUEST"
+		await press("JoinPage")
+		check(await until(func(): return main.view == "lobby", 20.0), "The browser guest reaches the lobby")
+		check(main.multiplayer.multiplayer_peer is WebSocketMultiplayerPeer, "over a WebSocket")
+	else:
+		await join()
 	check(await until(func(): return main.session.game == "example", 30.0), "The guest sees the host pick the example game")
 	if role == "nodev":
 		check(await until(func(): return main.packs.status("example").get("state", "") == "untrusted", 15.0), "Without developer mode the unsigned game is refused")
@@ -206,6 +277,11 @@ func guest() -> void:
 		await create_timer(0.25).timeout
 	check(await until(func(): return main.view == "results", 30.0), "The guest sees the results")
 	check(await until(func(): return main.view == "lobby", 20.0), "and the lobby")
+	if scenario == "web":
+		print("PACK_%s_PASS pack-from-host played results" % role.to_upper())
+		await until(func(): return main.session.mode == "offline", 20.0)
+		quit(0)
+		return
 	check(await until(func(): return main.view == "game" and main.play.ID == "twisted", 30.0), "Then a Spin Cycle round")
 	check(await until(func(): return main.view == "lobby", 20.0), "and the lobby again")
 	print("PACK_GUEST_PASS catalog-from-host pack-from-host verified loaded played builtin")

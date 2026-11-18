@@ -13,6 +13,10 @@ upload: packs first (never overwritten), the catalog last.
     python3 tools/release_games.py --game sumo                 # dry run
     python3 tools/release_games.py --game sumo --publish
     python3 tools/release_games.py --remove sumo --publish     # unlist a game
+    python3 tools/release_games.py --web --publish             # the browser build
+
+The browser build that party hosts serve must be the host's exact core build,
+so publish it with --web after every core release (tools/release.py).
 
 Each publish raises the catalog's serial; the game refuses a catalog with a
 lower serial than one it has seen, so an old catalog cannot be replayed to
@@ -70,11 +74,12 @@ def pack_entry(game, pack, base_url):
             "info": {k: str(game["info"][k]) for k in ("number", "title", "tags", "blurb")}}
 
 
-def next_catalog(live, added, removed, channel):
+def next_catalog(live, added, removed, channel, web=None):
     """The catalog to publish. `live` is the current payload or None; `added`
-    maps id -> new entry; `removed` lists ids to unlist."""
+    maps id -> new entry; `removed` lists ids to unlist; `web` replaces the
+    browser build entry."""
     games = dict(live["games"]) if live else {}
-    web = live.get("web") if live else None
+    web = web or (live.get("web") if live else None)
     for game_id, entry in added.items():
         old = games.get(game_id)
         if old and release.version_key(entry["version"]) <= release.version_key(old["version"]):
@@ -95,14 +100,15 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--game", action="append", default=[], metavar="ID", help="publish games/ID (repeatable)")
     parser.add_argument("--remove", action="append", default=[], metavar="ID", help="unlist a game (repeatable)")
+    parser.add_argument("--web", action="store_true", help="publish the browser build for this core build")
     parser.add_argument("--publish", action="store_true", help="upload; without it this is a dry run")
     parser.add_argument("--channel", default="stable")
     parser.add_argument("--key", default=str(release.DEFAULT_KEY), help="private signing key (default %(default)s)")
     parser.add_argument("--godot", help="Godot binary passed to tools/build.py")
     parser.add_argument("--skip-build", action="store_true", help="reuse packs already in builds/packs/")
     args = parser.parse_args(argv)
-    if not args.game and not args.remove:
-        raise SystemExit("nothing to do: give --game ID or --remove ID")
+    if not args.game and not args.remove and not args.web:
+        raise SystemExit("nothing to do: give --game ID, --remove ID or --web")
     key = Path(args.key)
     if not key.exists():
         raise SystemExit(f"signing key {key} not found (see README: Releases)")
@@ -132,9 +138,26 @@ def main(argv=None):
         added[game_id] = pack_entry(game, pack, base_url)
         packs[game_id] = pack
 
+    web = None
+    web_upload = []
+    if args.web:
+        version, build = release.read_project_version()
+        if not args.skip_build:
+            command = [sys.executable, str(ROOT / "tools/build.py"), "--web"]
+            if args.godot:
+                command += ["--godot", args.godot]
+            subprocess.run(command, check=True)
+        archive = ROOT / "builds" / f"GizmoJam-web-{version}.zip"
+        if not archive.exists():
+            raise SystemExit(f"missing {archive}; run without --skip-build")
+        data = archive.read_bytes()
+        web_key = f"{release.RELEASES_PREFIX}/{version}/{archive.name}"
+        web = {"build": build, "size": len(data), "sha256": hashlib.sha256(data).hexdigest(), "url": f"{base_url}/{web_key}"}
+        web_upload = [(archive, web_key, "application/zip", "public, max-age=31536000, immutable")]
+
     live = live_catalog(f"{base_url}/{catalog_key(args.channel)}", trusted)
     print("No live catalog yet: this will be the first." if live is None else f"Live catalog: serial {live['serial']}, {len(live['games'])} games")
-    catalog = next_catalog(live, added, args.remove, args.channel)
+    catalog = next_catalog(live, added, args.remove, args.channel, web)
     envelope = release.sign_manifest(catalog, key)
     release.verify_envelope(envelope, trusted)
     out = ROOT / "builds/release/catalog"
@@ -143,7 +166,7 @@ def main(argv=None):
     (out / f"catalog-{args.channel}.payload.json").write_text(json.dumps(catalog, indent=2) + "\n")
     print(json.dumps(catalog, indent=2))
 
-    plan = [(packs[g], pack_key(g, added[g]["version"]), "application/octet-stream", "public, max-age=31536000, immutable") for g in added]
+    plan = [(packs[g], pack_key(g, added[g]["version"]), "application/octet-stream", "public, max-age=31536000, immutable") for g in added] + web_upload
     for local, key_name, _type, _cache in plan:
         try:
             with urllib.request.urlopen(urllib.request.Request(f"{base_url}/{key_name}", method="HEAD"), timeout=15):
@@ -162,7 +185,7 @@ def main(argv=None):
     for local, key_name, content_type, cache in plan[:-1]:
         release.upload(env, bucket, local, key_name, content_type, cache)
         print(f"uploaded {key_name}")
-    for game_id, entry in added.items():
+    for entry in list(added.values()) + ([web] if web else []):
         with urllib.request.urlopen(urllib.request.Request(entry["url"], method="HEAD"), timeout=30) as response:
             if int(response.headers.get("Content-Length", -1)) != entry["size"]:
                 raise SystemExit(f"{entry['url']} has the wrong size; catalog NOT published")

@@ -33,7 +33,7 @@ import release  # noqa: E402  (signing helpers)
 parser = argparse.ArgumentParser()
 parser.add_argument("--godot", default=os.environ.get("GODOT", str(ROOT / ".tools/Godot_v4.5.1-stable_linux.x86_64")))
 parser.add_argument("--old", default="62ed1fe", help="git revision of 0.2.0")
-parser.add_argument("--scenario", choices=["all", "signed", "dev"], default="all")
+parser.add_argument("--scenario", choices=["all", "signed", "dev", "web"], default="all")
 parser.add_argument("--no-build", action="store_true", help="reuse builds/packs/example-*.pck")
 parser.add_argument("--exported", help="an exported debug build of this tree to run as host and guest instead of the source")
 args = parser.parse_args()
@@ -79,11 +79,13 @@ def run_party(label, roles, folder):
     """roles: (role, tree, extra args). Returns True if every role passed."""
     port = free_port(socket.SOCK_DGRAM)
     file_port = free_port(socket.SOCK_STREAM)
+    browser_port = free_port(socket.SOCK_STREAM)
     processes = []
     try:
         for role, tree, extra in roles:
             log = open(folder / f"{label}-{role}.log", "w+")
-            tail = ["--", f"--role={role}", f"--scenario={label}", f"--port={port}", f"--file-port={file_port}"] + extra
+            tail = ["--", f"--role={role}", f"--scenario={label}", f"--port={port}", f"--file-port={file_port}",
+                    f"--browser-port={browser_port}", f"--page-origin=http://127.0.0.1:{file_port}"] + extra
             if tree == ROOT and args.exported:
                 # An exported build has no res://tests; its core checks run for real.
                 command = [args.exported, "--headless", "--audio-driver", "Dummy", "--script", str(ROOT / "tests/pack_round.gd")] + tail
@@ -152,6 +154,18 @@ with tempfile.TemporaryDirectory(prefix="gizmojam-packs-") as tmp:
             ("host", ROOT, [f"--packs-dir={folder / 'd-host'}", "--dev-mode"] + trust),
             ("devguest", ROOT, [f"--packs-dir={folder / 'd-dev'}", "--dev-mode"] + trust),
             ("nodev", ROOT, [f"--packs-dir={folder / 'd-nodev'}"] + trust),
+        ], folder))
+    if args.scenario in ("all", "web"):
+        if args.scenario == "web":
+            envelope = signed_catalog(game, pack, key)
+        install_signed(folder / "w-host", game, pack, envelope)
+        page = folder / "w-page"
+        page.mkdir()
+        (page / "index.html").write_text("<!doctype html><title>Gizmo Jam</title>")
+        results.append(run_party("web", [
+            ("host", ROOT, [f"--packs-dir={folder / 'w-host'}", f"--web-dir={page}"] + trust),
+            ("guest", ROOT, [f"--packs-dir={folder / 'w-guest'}"] + trust),
+            ("webguest", ROOT, [f"--packs-dir={folder / 'w-web'}"] + trust),
         ], folder))
 if not all(results):
     raise SystemExit("Pack parties failed")

@@ -8,6 +8,8 @@
                                          ...and copy it to user://dev-games, where
                                          the game loads it in developer mode
     tools/build.py --packs               a pack for every game in games/
+    tools/build.py --web                 the browser build party hosts serve, in
+                                         builds/web/ and as builds/GizmoJam-web-<version>.zip
 
 Packs are written to builds/packs/<id>-<version>.pck. The core builds leave
 out games/ (built-in games live in scripts/), so packs never ship inside them.
@@ -29,6 +31,7 @@ parser.add_argument("--platform", choices=["all", "linux", "windows", "macos"], 
 parser.add_argument("--pack", action="append", default=[], metavar="ID", help="build the game pack for games/ID (repeatable)")
 parser.add_argument("--packs", action="store_true", help="build a pack for every game in games/")
 parser.add_argument("--dev-install", action="store_true", help="also install each pack as a developer pack")
+parser.add_argument("--web", action="store_true", help="build the browser version party hosts serve")
 args = parser.parse_args()
 base = [args.godot, "--headless", "--path", str(ROOT)]
 subprocess.run(base + ["--editor", "--import", "--quit"], check=True)
@@ -97,6 +100,30 @@ def build_pack(game_id):
     print(f"{out}  size={out.stat().st_size}  sha256={digest}")
     return out
 
+
+def build_web():
+    """The browser build: single-threaded, a shell that runs from a plain-HTTP
+    LAN address (see web/shell.html). The zip is flat; the game unpacks it
+    and checks every name (pack_manager.gd)."""
+    folder = ROOT / "builds" / "web"
+    if folder.exists():
+        shutil.rmtree(folder)
+    folder.mkdir(parents=True)
+    subprocess.run(base + ["--export-release", "Web", str(folder / "index.html")], check=True)
+    version = re.search(r'^config/version="([^"]+)"', (ROOT / "project.godot").read_text(), re.M).group(1)
+    archive = ROOT / "builds" / f"GizmoJam-web-{version}.zip"
+    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as output:
+        for file in sorted(folder.iterdir()):
+            if file.is_file():
+                output.write(file, arcname=file.name)
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    print(f"{archive}  size={archive.stat().st_size}  sha256={digest}")
+    return archive
+
+
+if args.web:
+    build_web()
+    raise SystemExit(0)
 
 pack_ids = list(args.pack)
 if args.packs:

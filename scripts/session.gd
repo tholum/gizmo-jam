@@ -30,6 +30,7 @@ signal party_changed
 
 const Registry = preload("res://scripts/game_registry.gd")
 const Wire = preload("res://scripts/party_wire.gd")
+const DualPeer = preload("res://scripts/dual_peer.gd")
 
 ## Bump whenever an RPC is added or its arguments change. A mixed-build join
 ## must still end in "Game versions do not match.", which relies on _register
@@ -88,6 +89,10 @@ var host_info: Dictionary = {}
 var party: Dictionary = {}
 ## Client: what it last reported for the current game.
 var local_status: Dictionary = {}
+## Host: the WebSocket port browser guests join on (0 = browser guests off).
+var web_port := 0
+## Client: the address it joined, for fetching packs from the host.
+var join_address := ""
 
 func _ready() -> void:
 	# Every client talks only to the server. Disable automatic peer-to-peer
@@ -152,14 +157,36 @@ func solo(player_name: String) -> void:
 	members = [{"peer": 1, "name": local_name, "slot": 0}]
 	leader_id = 1
 
-func host_game(player_name: String, server_port: int = DEFAULT_PORT) -> Error:
+## Opens a party. With `browser_port` > 0 browsers can join too, over a
+## WebSocket on the first free port from browser_port (see dual_peer.gd).
+func host_game(player_name: String, server_port: int = DEFAULT_PORT, browser_port: int = 0) -> Error:
 	close()
 	if server_port < 1024 or server_port > 65535:
 		return ERR_INVALID_PARAMETER
-	var peer := ENetMultiplayerPeer.new()
-	var err := peer.create_server(server_port, MAX_PLAYERS - 1, 2)
-	if err != OK:
-		return err
+	var peer: MultiplayerPeer
+	if browser_port > 0:
+		var err := ERR_CANT_CREATE
+		for p in range(browser_port, browser_port + 10):
+			var dual := DualPeer.new()
+			err = dual.create(server_port, p, MAX_PLAYERS - 1, 2)
+			if err == OK:
+				peer = dual
+				web_port = p
+				break
+			dual.close()
+			# A busy UDP port will not free up by trying other WebSocket ports.
+			var probe := ENetMultiplayerPeer.new()
+			if probe.create_server(server_port, 1, 1) != OK:
+				return err
+			probe.close()
+		if peer == null:
+			return err
+	else:
+		var enet := ENetMultiplayerPeer.new()
+		var err := enet.create_server(server_port, MAX_PLAYERS - 1, 2)
+		if err != OK:
+			return err
+		peer = enet
 	multiplayer.multiplayer_peer = peer
 	mode = "host"
 	port = server_port
@@ -180,10 +207,30 @@ func join_game(player_name: String, address: String, server_port: int = DEFAULT_
 		return err
 	local_name = clean_name(player_name)
 	port = server_port
+	join_address = address.strip_edges()
 	mode = "joining"
 	connect_seconds = 0.0
 	multiplayer.multiplayer_peer = peer
 	return OK
+
+## Joins over a WebSocket: what the browser build does. `url` is
+## ws://<host>:<port>.
+func join_web(player_name: String, url: String) -> Error:
+	close()
+	var peer := WebSocketMultiplayerPeer.new()
+	var err := peer.create_client(url)
+	if err != OK:
+		return err
+	local_name = clean_name(player_name)
+	join_address = url.trim_prefix("ws://").get_slice(":", 0)
+	mode = "joining"
+	connect_seconds = 0.0
+	multiplayer.multiplayer_peer = peer
+	return OK
+
+## Host: whether a member joined from a browser.
+func is_browser(peer: int) -> bool:
+	return mode == "host" and multiplayer.multiplayer_peer is DualPeer and multiplayer.multiplayer_peer.is_browser(peer)
 
 func close() -> void:
 	mode = "offline"
@@ -202,6 +249,7 @@ func close() -> void:
 	host_info.clear()
 	party.clear()
 	local_status.clear()
+	web_port = 0
 
 func _fail(message: String) -> void:
 	close()
@@ -251,9 +299,13 @@ func _connected_members() -> Array:
 	for m in members:
 		var id: int = m.peer
 		if id != 1 and id in peers:
-			var enet_peer: ENetPacketPeer = multiplayer.multiplayer_peer.get_peer(id)
-			if enet_peer and enet_peer.get_state() == ENetPacketPeer.STATE_CONNECTED:
-				connected.append(id)
+			var server := multiplayer.multiplayer_peer
+			if server is DualPeer:
+				if server.is_live(id): connected.append(id)
+			else:
+				var enet_peer: ENetPacketPeer = server.get_peer(id)
+				if enet_peer and enet_peer.get_state() == ENetPacketPeer.STATE_CONNECTED:
+					connected.append(id)
 	return connected
 
 ## Connected members who are in the round being played.
@@ -680,7 +732,7 @@ func host_files() -> Dictionary:
 	var p := int(party.get("file_port", host_info.get("file_port", 0)))
 	if mode != "client" or p <= 0: return {}
 	var enet := multiplayer.multiplayer_peer as ENetMultiplayerPeer
-	if enet == null: return {}
-	var server := enet.get_peer(1)
-	if server == null: return {}
-	return {"ip": server.get_remote_address(), "port": p}
+	if enet != null and enet.get_peer(1) != null:
+		return {"ip": enet.get_peer(1).get_remote_address(), "port": p}
+	if join_address.is_empty(): return {}
+	return {"ip": join_address, "port": p}

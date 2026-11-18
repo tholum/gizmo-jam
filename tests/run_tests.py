@@ -14,6 +14,7 @@ with junk packets sprayed at the listener and once by real broadcast.
 import argparse
 import json
 import os
+import shutil
 from pathlib import Path
 import json
 import socket
@@ -209,4 +210,13 @@ parties = subprocess.run([sys.executable, str(ROOT / "tests/run_packs.py"), "--g
 print(parties.stdout)
 if parties.returncode or "PACKS PASS" not in parties.stdout:
     raise SystemExit("Pack parties failed")
+# A real browser guest, when Node and Chrome are installed (exports the web build).
+if shutil.which("node") and Path(os.environ.get("CHROME", "/usr/bin/google-chrome")).exists():
+    browser = subprocess.run([sys.executable, str(ROOT / "tests/run_browser.py"), "--godot", args.godot], text=True,
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=900)
+    print(browser.stdout)
+    if browser.returncode or "BROWSER GUEST PASS" not in browser.stdout:
+        raise SystemExit("Browser guest test failed")
+else:
+    print("Browser guest test skipped: needs node and Google Chrome")
 print("ALL TESTS PASS")

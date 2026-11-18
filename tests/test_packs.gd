@@ -28,6 +28,7 @@ func _initialize() -> void:
 	paths()
 	example_pack()
 	await manager()
+	web_build()
 	_cleanup(tmp)
 	if failures == 0:
 		print("PACK_TESTS PASS (%d checks)" % checks)
@@ -217,6 +218,39 @@ func manager() -> void:
 	packs.queue_free()
 	other.queue_free()
 	await process_frame
+
+## The host's copy of the browser build: checked against the catalog, then
+## unpacked with gzip copies of the big files; anything with a path refused.
+func web_build() -> void:
+	var zip_path := tmp.path_join("web.zip")
+	var zip := ZIPPacker.new()
+	zip.open(zip_path)
+	var wasm := PackedByteArray()
+	wasm.resize(50000)
+	for i in wasm.size(): wasm[i] = i % 7
+	for entry in [["index.html", "<!doctype html>".to_utf8_buffer()], ["index.wasm", wasm]]:
+		zip.start_file(entry[0])
+		zip.write_file(entry[1])
+		zip.close_file()
+	zip.close()
+	var bytes := FileAccess.get_file_as_bytes(zip_path)
+	var sha := Core.sha256_bytes(bytes).hex_encode()
+	var dir := tmp.path_join("web")
+	check(PackManager._unpack_web(zip_path, bytes.size(), "00".repeat(32), dir) != "", "A browser build with the wrong hash is refused")
+	check(PackManager._unpack_web(zip_path, bytes.size(), sha, dir).is_empty(), "The browser build unpacks")
+	check(FileAccess.file_exists(dir.path_join("index.html")) and FileAccess.file_exists(dir.path_join("index.wasm.gz")), "with a gzip copy of the wasm")
+	var gz := FileAccess.get_file_as_bytes(dir.path_join("index.wasm.gz"))
+	check(gz.size() > 2 and gz[0] == 0x1f and gz[1] == 0x8b, "that is real gzip")
+	check(gz.decompress_dynamic(-1, FileAccess.COMPRESSION_GZIP) == wasm, "and decompresses to the original")
+	var evil_path := tmp.path_join("evil.zip")
+	zip = ZIPPacker.new()
+	zip.open(evil_path)
+	zip.start_file("../escape.html")
+	zip.write_file("x".to_utf8_buffer())
+	zip.close_file()
+	zip.close()
+	var evil := FileAccess.get_file_as_bytes(evil_path)
+	check("unexpected" in PackManager._unpack_web(evil_path, evil.size(), Core.sha256_bytes(evil).hex_encode(), tmp.path_join("web2")), "A browser build with paths is refused")
 
 func _cleanup(path: String) -> void:
 	for file in DirAccess.get_files_at(path): DirAccess.remove_absolute(path.path_join(file))

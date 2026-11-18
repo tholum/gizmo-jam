@@ -404,3 +404,18 @@ Where the implementation differs from the design above:
 - **Verified in an exported release build**: the core's file list is read
   from the executable (162 files, no `games/`); a pack carrying a core script,
   and one reusing a converted resource path the core has, are both refused.
+- **Browser guests** (7): the host's multiplayer peer is `scripts/dual_peer.gd`,
+  an ENet server and a WebSocket server behind one `MultiplayerPeerExtension`,
+  used only when browser guests are on. The session code and every RPC are
+  unchanged, because a browser runs the same build. Ports: files on 7780,
+  WebSocket on 7781 (next free in each case); the page learns the WebSocket
+  port from `/party.json`. `?name=…&join=1` joins on load. The web build
+  comes from the catalog's `web` entry (build must equal the host's), is
+  unpacked to `user://packs/web/<build>/` with `.gz` copies of the large
+  files, and is served gzipped. In the browser, verification runs in place
+  (no threads) and the core-file comparison is skipped (there is no core file
+  to read); `replace_files` off still protects the core.
+- **Tested in a real browser**: headless Chrome on the LAN address over plain
+  HTTP loaded the build from the host, joined, played a round and its keys
+  reached its seat (`tests/run_browser.py`). Browser frame rate on the target
+  PCs and whether browser sound plays remain untested.

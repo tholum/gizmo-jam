@@ -30,6 +30,9 @@ signal installed(id: String)
 signal consent_needed(id: String, sha256: String, title: String, host_name: String)
 ## The catalog changed (a newer one was verified).
 signal catalog_changed
+## The browser build the host serves: state "ready", "downloading",
+## "verifying", "unavailable" or "failed".
+signal web_changed(state: String, progress: int)
 
 const Core = preload("res://scripts/update_core.gd")
 const PackCore = preload("res://scripts/pack_core.gd")
@@ -64,6 +67,11 @@ var _download_size := 0
 var _last_progress := -1
 var _core: Variant = null
 var _consent_waiting: Dictionary = {}
+var _downloading_id := ""
+## Browser build: {"state", "progress", "dir", "reason"}.
+var web: Dictionary = {}
+## Debug runs: a folder holding an exported browser build to serve as is.
+var web_override := ""
 
 func _ready() -> void:
 	name = "Packs"
@@ -72,6 +80,8 @@ func _ready() -> void:
 			if arg.begins_with("--packs-dir="):
 				root = arg.trim_prefix("--packs-dir=").path_join("packs")
 				dev_dir = arg.trim_prefix("--packs-dir=").path_join("dev-games")
+			elif arg.begins_with("--web-dir="):
+				web_override = arg.trim_prefix("--web-dir=")
 			elif arg.begins_with("--catalog-url="):
 				catalog_url = arg.trim_prefix("--catalog-url=")
 				allow_http = true
@@ -466,7 +476,8 @@ func _download(id: String, sources: Array, size: int, generation: int) -> String
 	DirAccess.make_dir_recursive_absolute(root.path_join("tmp"))
 	var part := root.path_join("tmp").path_join("%s-%d.part" % [id, generation])
 	for url in sources:
-		_report(id, "downloading", 0)
+		if id != WEB_ID: _report(id, "downloading", 0)
+		_downloading_id = id
 		_drop_http()
 		_http = HTTPRequest.new()
 		_http.timeout = DOWNLOAD_TIMEOUT
@@ -496,9 +507,11 @@ func _process(_delta: float) -> void:
 	var pct := clampi(int(_http.get_downloaded_bytes() * 100.0 / maxf(1.0, _download_size)), 0, 99)
 	if pct != _last_progress:
 		_last_progress = pct
-		var id := str(_target.get("id", ""))
-		state[id] = {"state": "downloading", "progress": pct, "reason": ""}
-		status_changed.emit(id, "downloading", pct)
+		if _downloading_id == WEB_ID:
+			_web("downloading", pct)
+			return
+		state[_downloading_id] = {"state": "downloading", "progress": pct, "reason": ""}
+		status_changed.emit(_downloading_id, "downloading", pct)
 
 ## Fetches a small file into memory; empty on any failure.
 func _fetch(url: String, limit: int, timeout: float) -> PackedByteArray:
@@ -517,13 +530,99 @@ func _fetch(url: String, limit: int, timeout: float) -> PackedByteArray:
 ## Size, hash and file-table checks on a worker thread.
 func _verify(path: String, id: String, size: int, sha256: String, generation: int) -> String:
 	var core := core_paths()
-	var thread := Thread.new()
-	thread.start(func(): return PackCore.verify_pack(ProjectSettings.globalize_path(path), id, size, sha256, core))
-	while thread.is_alive():
-		await get_tree().process_frame
-	var problem: String = thread.wait_to_finish()
+	var problem: String = await _off_thread(func(): return PackCore.verify_pack(ProjectSettings.globalize_path(path), id, size, sha256, core))
 	if generation != _generation: return "cancelled"
 	return problem
+
+## Runs `work` on a worker thread and returns its result. The browser build
+## has no threads; there it runs in place.
+func _off_thread(work: Callable) -> Variant:
+	if OS.has_feature("web"):
+		return work.call()
+	var thread := Thread.new()
+	thread.start(work)
+	while thread.is_alive():
+		await get_tree().process_frame
+	return thread.wait_to_finish()
+
+# --- The browser build (host only) --------------------------------------------------
+
+const WEB_ID := "__web"
+## Files the host sends gzipped to browsers that accept it.
+const WEB_GZIP := ["wasm", "pck", "js"]
+
+## Where this build's browser build is unpacked.
+func web_dir() -> String:
+	if not web_override.is_empty(): return web_override
+	return root.path_join("web").path_join(str(Core.local_build()))
+
+func _web(value: String, progress: int = 0, reason: String = "") -> void:
+	web = {"state": value, "progress": progress, "dir": web_dir(), "reason": reason}
+	if not reason.is_empty(): print("[packs] browser build: %s (%s)" % [value, reason])
+	web_changed.emit(value, progress)
+
+## Makes sure the browser build for exactly this core build is unpacked,
+## fetching it from the signed catalog the first time.
+func ensure_web() -> void:
+	if web.get("state", "") in ["ready", "downloading", "verifying"]: return
+	if FileAccess.file_exists(web_dir().path_join("index.html")):
+		_web("ready")
+		return
+	if not web_override.is_empty():
+		_web("unavailable", 0, "no index.html in " + web_override)
+		return
+	_web("verifying")
+	var entry: Dictionary = catalog.get("web", {})
+	if entry.is_empty() or int(entry.build) != Core.local_build():
+		await refresh_catalog()
+		entry = catalog.get("web", {})
+	if entry.is_empty() or int(entry.build) != Core.local_build():
+		_web("unavailable", 0, "no browser build for build %d in the catalog" % Core.local_build())
+		return
+	var part := await _download(WEB_ID, [str(entry.url)], int(entry.size), _generation)
+	if part.is_empty():
+		_web("failed", 0, "could not download it")
+		return
+	_web("verifying")
+	var dir := web_dir()
+	var problem: String = await _off_thread(func(): return _unpack_web(ProjectSettings.globalize_path(part), int(entry.size), str(entry.sha256), ProjectSettings.globalize_path(dir)))
+	DirAccess.remove_absolute(part)
+	if not problem.is_empty():
+		_web("failed", 0, problem)
+		return
+	_web("ready")
+
+## Checks the zip against the catalog, then unpacks it with a gzip copy of
+## the large files. Runs on a worker thread.
+static func _unpack_web(zip_path: String, size: int, sha256: String, dir: String) -> String:
+	var problem := Core.check_file(zip_path, size, sha256)
+	if not problem.is_empty(): return problem
+	var zip := ZIPReader.new()
+	if zip.open(zip_path) != OK: return "not a zip"
+	var staging := dir + ".part"
+	DirAccess.make_dir_recursive_absolute(staging)
+	for name in zip.get_files():
+		if name.ends_with("/"): continue
+		if ".." in name or name.begins_with("/") or "\\" in name or ":" in name or "/" in name:
+			zip.close()
+			return "unexpected file in the browser build: " + name
+		var bytes := zip.read_file(name)
+		var out := FileAccess.open(staging.path_join(name), FileAccess.WRITE)
+		if out == null:
+			zip.close()
+			return "cannot write " + name
+		out.store_buffer(bytes)
+		out.close()
+		if name.get_extension() in WEB_GZIP:
+			var packed := FileAccess.open(staging.path_join(name + ".gz"), FileAccess.WRITE)
+			packed.store_buffer(bytes.compress(FileAccess.COMPRESSION_GZIP))
+			packed.close()
+	zip.close()
+	if not FileAccess.file_exists(staging.path_join("index.html")): return "no index.html in the browser build"
+	if DirAccess.dir_exists_absolute(dir):
+		for file in DirAccess.get_files_at(dir): DirAccess.remove_absolute(dir.path_join(file))
+		DirAccess.remove_absolute(dir)
+	return "" if DirAccess.rename_absolute(staging, dir) == OK else "cannot move the browser build into place"
 
 func _drop_http() -> void:
 	if is_instance_valid(_http):

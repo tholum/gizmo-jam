@@ -284,6 +284,30 @@ sender's own seat. Spin Cycle sends jump and duck. Live Wire sends a press
 and a release for each held direction and a press for the dash; a game's
 inputs are dropped while the other game is being played.
 
+### Browser guests
+
+Friends on the same network can join from a web browser without installing
+anything. In **Host Party**, turn **Browser guests** on before opening the
+lobby. The lobby then shows an address such as `http://192.168.1.20:7780`;
+friends open it, type a name and press **Join the party**. Adding
+`?name=SAM&join=1` to the address joins straight away.
+
+- The host is always the installed game; browsers can't host or see the
+  party list. The page is served by the host's computer, so no internet is
+  needed, and it is always the host's own version.
+- Browsers connect on **TCP port 7781** (next to the file port 7780). Allow
+  the game through the firewall.
+- The browser version starts on Low graphics and runs slower than the
+  installed game, especially on older computers; it is the option for
+  someone who can't or won't install. Browser sound uses an older audio path
+  because the page is plain HTTP; if a browser stays silent, the game still
+  plays.
+- The host fetches the browser version (about 13 MB) from the download server
+  the first time browser guests are turned on, checks it against the signed
+  catalog, and keeps it.
+- Native players are unaffected: with browser guests off, hosting is exactly
+  as before, and with them on the installed players still use UDP.
+
 ### LAN discovery
 
 While a party is hosted, in the lobby and during rounds, the server sends a
@@ -672,6 +696,18 @@ catalog to `games/gizmo-jam/updates/catalog-<channel>.json`. A game is
 republished only with a higher `version` in its `game.json`; change `net`
 whenever the new version cannot play online with the old one. Games marked
 `"publish": false` (the example) are refused.
+
+Party hosts serve the browser version to browser guests, and it must be
+exactly the host's build, so after every core release also publish it:
+
+```sh
+python3 tools/release_games.py --web --publish
+```
+
+`tools/build.py --web` builds it alone into `builds/web/` and
+`builds/GizmoJam-web-<version>.zip`. `tests/run_browser.py` (also run by
+`run_tests.py` when Node and Google Chrome are installed) has headless Chrome
+load it from a host on this machine's LAN address, join, play and press keys.
 
 ## Credits and licenses
 
