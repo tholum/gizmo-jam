@@ -83,8 +83,14 @@ with tempfile.TemporaryDirectory(prefix="gizmojam-compat-") as folder:
     old.mkdir()
     archive = subprocess.run(["git", "-C", str(ROOT), "archive", args.old], check=True, stdout=subprocess.PIPE).stdout
     subprocess.run(["tar", "-x", "-C", str(old)], input=archive, check=True)
-    subprocess.run([args.godot, "--headless", "--path", str(old), "--editor", "--import", "--quit"],
-                   check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=300)
+    # Godot sometimes crashes on exit after an import; what matters is the cache.
+    for attempt in range(2):
+        subprocess.run([args.godot, "--headless", "--path", str(old), "--editor", "--import", "--quit"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=300)
+        if (old / ".godot" / "global_script_class_cache.cfg").exists() or (old / ".godot" / "uid_cache.bin").exists():
+            break
+    else:
+        raise SystemExit("could not import the old release")
     new_side = ("new", ROOT)
     old_side = ("old", old)
     runs = [

@@ -76,8 +76,19 @@ static func compare_versions(a: Variant, b: Variant) -> int:
 ## Opens a downloaded envelope. Returns {"ok": true, "manifest": {...}} or
 ## {"ok": false, "error": "..."}. Never prints engine errors, whatever the input.
 static func open_envelope(bytes: PackedByteArray, trusted: Dictionary = Keys.KEYS, game: String = GAME_ID, channel: String = CHANNEL, allow_http: bool = false) -> Dictionary:
+	var opened := open_signed(bytes, trusted)
+	if not opened.ok: return opened
+	var checked := validate_manifest(opened.payload, game, channel, allow_http)
+	if checked.ok:
+		checked.key_id = opened.key_id
+	return checked
+
+## Checks an envelope's format and signature. Returns {"ok": true,
+## "payload": Dictionary, "key_id": String} or {"ok": false, "error": "..."}.
+## The game catalog (scripts/pack_core.gd) uses the same envelope.
+static func open_signed(bytes: PackedByteArray, trusted: Dictionary = Keys.KEYS, max_bytes: int = MAX_ENVELOPE_BYTES) -> Dictionary:
 	if bytes.is_empty(): return _fail("empty manifest")
-	if bytes.size() > MAX_ENVELOPE_BYTES: return _fail("manifest too large")
+	if bytes.size() > max_bytes: return _fail("manifest too large")
 	for b in bytes:
 		if b > 127: return _fail("manifest is not ASCII")
 	var envelope: Variant = _parse_json(bytes.get_string_from_ascii())
@@ -86,16 +97,13 @@ static func open_envelope(bytes: PackedByteArray, trusted: Dictionary = Keys.KEY
 	if envelope.get("alg") != SIGNATURE_ALG: return _fail("unknown signature algorithm")
 	var key_id: Variant = envelope.get("key_id")
 	if typeof(key_id) != TYPE_STRING or not trusted.has(key_id): return _fail("manifest signed by an unknown key")
-	var payload := _base64_bytes(envelope.get("payload"))
-	var signature := _base64_bytes(envelope.get("signature"))
+	var payload := _base64_bytes(envelope.get("payload"), max_bytes)
+	var signature := _base64_bytes(envelope.get("signature"), max_bytes)
 	if payload.is_empty() or signature.is_empty(): return _fail("payload or signature is not base64")
 	if not verify_signature(payload, signature, str(trusted[key_id])): return _fail("signature does not verify")
 	var manifest: Variant = _parse_json(payload.get_string_from_utf8())
 	if typeof(manifest) != TYPE_DICTIONARY: return _fail("signed payload is not a JSON object")
-	var checked := validate_manifest(manifest, game, channel, allow_http)
-	if checked.ok:
-		checked.key_id = key_id
-	return checked
+	return {"ok": true, "error": "", "payload": manifest, "key_id": key_id}
 
 static func verify_signature(data: PackedByteArray, signature: PackedByteArray, public_pem: String) -> bool:
 	if not public_pem.begins_with("-----BEGIN PUBLIC KEY-----"): return false
@@ -255,10 +263,10 @@ static func _is_url(value: Variant, allow_http: bool) -> bool:
 
 ## Decodes strict base64; returns empty bytes for anything else, without the
 ## engine error Marshalls prints on bad input.
-static func _base64_bytes(value: Variant) -> PackedByteArray:
+static func _base64_bytes(value: Variant, max_bytes: int = MAX_ENVELOPE_BYTES) -> PackedByteArray:
 	if typeof(value) != TYPE_STRING: return PackedByteArray()
 	var text := str(value)
-	if text.is_empty() or text.length() % 4 != 0 or text.length() > MAX_ENVELOPE_BYTES: return PackedByteArray()
+	if text.is_empty() or text.length() % 4 != 0 or text.length() > max_bytes: return PackedByteArray()
 	if _base64 == null:
 		_base64 = RegEx.create_from_string("^[A-Za-z0-9+/]*={0,2}$")
 	if _base64.search(text) == null: return PackedByteArray()

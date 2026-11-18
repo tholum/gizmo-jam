@@ -1,0 +1,18 @@
+{
+  "id": "example",
+  "version": "1.0.0",
+  "net": 1,
+  "core_min": 3,
+  "publish": false,
+  "actions": [
+    "jump"
+  ],
+  "input_budget": 60,
+  "info": {
+    "number": "EX",
+    "title": "PULSE",
+    "tags": "RHYTHM  ·  EXAMPLE GAME",
+    "blurb": "Press Space on the beat as it speeds up.\nThe example game for pack makers.",
+    "voice": ""
+  }
+}

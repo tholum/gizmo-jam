@@ -528,7 +528,7 @@ func _peer_left(id: int) -> void:
 # --- Capabilities, member states and the round line-up (raw packets) ---------
 
 func _send(peer: int, kind: int, payload: Dictionary) -> void:
-	if multiplayer is SceneMultiplayer and multiplayer.multiplayer_peer != null and is_online():
+	if multiplayer is SceneMultiplayer and multiplayer.multiplayer_peer != null and mode != "offline":
 		multiplayer.send_bytes(Wire.encode(kind, payload), peer, MultiplayerPeer.TRANSFER_MODE_RELIABLE, 0)
 
 func _hello_payload() -> Dictionary:

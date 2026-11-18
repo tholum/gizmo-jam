@@ -277,7 +277,7 @@ For internet play, use its public IP and forward the selected **UDP** port to
 the server computer. A routable VPN can also connect friends. There is no
 matchmaking, relay service, automatic NAT traversal, or invitation account
 system. Networks behind carrier-grade NAT may need a VPN or a reachable server.
-All players should use the same build. The server runs the only simulation of
+Players can be on different versions (see **Games and mixed versions**). The server runs the only simulation of
 either game and sends its state twenty times a second; clients draw from that
 and submit nothing but their own inputs, which the server files under the
 sender's own seat. Spin Cycle sends jump and duck. Live Wire sends a press
@@ -333,6 +333,43 @@ controls; it does not migrate the ENet server or its IP address. If that compute
 closes the game or loses its connection, players return to the menu and must
 host/join a new session. Online rounds continue while a party menu is open.
 
+## Games and mixed versions
+
+Spin Cycle and Live Wire are built into the game. Other games come as **game
+packs**: small files the game downloads when it needs them, so a release that
+only adds a game is one pack, not a new build of everything.
+
+- **In a party** the host can pick any game the host has. A player who lacks
+  it gets it automatically, first from the host's computer (no internet
+  needed) and otherwise from the download server. The lobby shows each
+  player's state: *Downloading 40%*, *Needs update*, *Restart to update* and
+  so on. **Start for Everyone** waits for players who are still downloading;
+  **Start anyway** starts without them. Anyone who cannot play the chosen game
+  sits that round out in the lobby while a bot plays their seat, and is back
+  in for the next game they have.
+- **Older versions** still play together. A v0.2.0 player joins as before and
+  plays Spin Cycle and Live Wire; for games it does not have it sits the
+  round out.
+- **Signed packs only.** A pack loads only if the signed game catalog lists its
+  exact size and SHA-256, whether it came from the host or the server, and it
+  may only add files inside its own game folder. A newer version of a game that
+  is already loaded is installed for the next start (*Restart to update*).
+- The host's computer serves packs over **TCP port 7780** (or the next free
+  one) while a party is open. Allow the game through the firewall as for the
+  UDP port.
+
+### Developer mode
+
+**Developer mode** (bottom-right of the menu, off by default) lets **unsigned**
+packs load, for making and testing games without publishing them. Turning it
+on asks first. Packs dropped into the `dev-games` folder of the game's data
+folder load as **UNTRUSTED**: the card, the lobby and the round HUD all say so.
+When a host in developer mode picks an unsigned game, each player in
+developer mode is asked before anything downloads (and asked again for every
+rebuilt pack); players without developer mode sit the round out. An unsigned
+pack can do anything Gizmo Jam can do on that computer, so only accept them
+from people you trust. Making a game: [docs/making-a-game.md](docs/making-a-game.md).
+
 ## Development
 
 Open `project.godot` in **Godot 4.5.1 standard** (no .NET dependencies), then F6/F5
@@ -346,6 +383,22 @@ manager. Presets for all three desktops are in `export_presets.cfg`.
 ```sh
 python3 tools/build.py --godot /path/to/godot
 python3 tests/run_tests.py --godot /path/to/godot
+```
+
+Game packs: `tests/test_packs.gd` checks the registry, party messages, the
+signed catalog (forged, tampered, older and misdirected catalogs refused), the
+pack file-table reader and path rule against crafted packs, and plays the
+example game's model. `tests/run_packs.py` (also run by `run_tests.py`) plays
+two real three-process parties with a throwaway signing key: a guest
+downloads the example pack from the host and plays it while a real **v0.2.0**
+guest sits the round out, then all three play Spin Cycle; and an unsigned
+pack is offered to a developer-mode guest (asked, accepts) and to one without
+developer mode (sits out). `tests/run_compat.py` plays online rounds between
+this tree and v0.2.0 in every host/guest direction; `--binary` adds the
+published v0.2.0 executable. Screens: `tests/pack_ui_shots.gd`.
+
+```sh
+python3 tests/run_compat.py --binary builds/linux/GizmoJam.x86_64   # a v0.2.0 build
 ```
 
 The tests cover Spin Cycle's collision timing, scoring, seven-hit
@@ -512,6 +565,8 @@ same surface, and an entry in `GAMES` and `ACTIONS` in `scripts/session.gd`.
 
 ## Releases
 
+Game packs are published separately from the game; see **Game packs** below.
+
 Each release has a version and a build number in `project.godot`:
 `application/config/version` (semver, shown to players) and
 `application/config/build` (an integer, raised by one every release; the game
@@ -600,6 +655,23 @@ will install. Players must download the next version from the website once;
 that build embeds the new key and updates normally from then on. If the key
 leaked, also remove its entry from `update_keys.gd` in that build and delete
 `stable.json` until the new build is published.
+
+### Game packs
+
+```sh
+python3 tools/release_games.py --game sumo            # dry run
+python3 tools/release_games.py --game sumo --publish
+python3 tools/release_games.py --remove sumo --publish
+```
+
+It builds `games/<id>/` into a pack (`tools/build.py --pack <id>`), adds it to
+the live catalog with its size and SHA-256, raises the catalog's serial, signs
+the catalog with the release key, and uploads the pack to
+`games/gizmo-jam/packs/<id>/<version>/` (never overwritten) and then the
+catalog to `games/gizmo-jam/updates/catalog-<channel>.json`. A game is
+republished only with a higher `version` in its `game.json`; change `net`
+whenever the new version cannot play online with the old one. Games marked
+`"publish": false` (the example) are refused.
 
 ## Credits and licenses
 

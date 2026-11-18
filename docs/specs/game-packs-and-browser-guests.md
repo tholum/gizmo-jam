@@ -377,3 +377,30 @@ round against 0.2.0.
 3. `MAX_PACK` size (64 MB proposed) and the file-server ports (7780/7781 proposed).
 4. If browser sound cannot be made to work on a plain-HTTP LAN address: ship
    browser guests silent, or drop them.
+
+## 12. As built (2026-11-18)
+
+Where the implementation differs from the design above:
+
+- **Built-in games stayed in `scripts/`** rather than moving to
+  `res://games/<id>/` (4.4). Tests and the 0.2.0-compatible code paths refer
+  to them there, and nothing about packs needs them moved. `games/` holds pack
+  games only and is excluded from the core export.
+- **Every build plays the built-in games** (net 1), so a member counts as
+  ready for them before its capabilities arrive. A 0.2.0 member is otherwise
+  recognised after 3 s of silence (7.1).
+- **Member states**: `ready`, `joining`, `missing`, `downloading`,
+  `verifying`, `asking` (waiting on consent) hold up Start; `needs_update`,
+  `restart`, `declined`, `untrusted` (developer mode off), `failed` sit out.
+  A leader who is sitting out gets **End round** to bring everyone back.
+- **Guests download exactly the host's file**: the catalog entry is looked up
+  by id and SHA-256 of the host's pack. Order: own catalog, the host's
+  `/catalog`, the published catalog.
+- **Unsigned packs received from a host** are kept for the session only;
+  consent is remembered per SHA-256 in the packs folder.
+- **Version 0.3.0, build 3** is the first core with packs; the example game
+  has `core_min` 3 and `"publish": false`.
+- **Publishing**: `tools/release_games.py` (separate from `tools/release.py`).
+- **Verified in an exported release build**: the core's file list is read
+  from the executable (162 files, no `games/`); a pack carrying a core script,
+  and one reusing a converted resource path the core has, are both refused.

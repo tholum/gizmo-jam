@@ -45,6 +45,15 @@ verify(subprocess.run(base + ["--script", "res://tests/screen_sizes.gd"], text=T
 verify(subprocess.run(base + ["--script", "res://tests/test_discovery.gd"], text=True,
                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30))
 
+# Game packs: build the example pack, then the logic without a network.
+subprocess.run([sys.executable, str(ROOT / "tools/build.py"), "--godot", args.godot, "--pack", "example"],
+               check=True, stdout=subprocess.DEVNULL)
+packs_unit = subprocess.run(base + ["--script", "res://tests/test_packs.gd"], text=True,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120)
+verify(packs_unit)
+if "PACK_TESTS PASS" not in packs_unit.stdout:
+    raise SystemExit("Pack tests failed")
+
 # Updater: Godot-side logic, plus envelopes signed by tools/release.py (openssl)
 # with a throwaway key, checked by the game's verifier.
 sys.path.insert(0, str(ROOT / "tools"))
@@ -193,4 +202,11 @@ online = subprocess.run([sys.executable, str(ROOT / "tests/run_online.py"), "--g
 print(online.stdout)
 if online.returncode or "ONLINE ROUND PASS" not in online.stdout:
     raise SystemExit("Online Live Wire round failed")
+# Packs in real parties: downloads from the host, a 0.2.0 guest sitting out,
+# unsigned packs and consent. Also plays against the 0.2.0 source.
+parties = subprocess.run([sys.executable, str(ROOT / "tests/run_packs.py"), "--godot", args.godot, "--no-build"], text=True,
+                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=900)
+print(parties.stdout)
+if parties.returncode or "PACKS PASS" not in parties.stdout:
+    raise SystemExit("Pack parties failed")
 print("ALL TESTS PASS")

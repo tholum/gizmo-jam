@@ -12,6 +12,8 @@ const Slam = preload("res://scripts/hud_slam.gd")
 ## game_spin_cycle.gd.
 const Registry = preload("res://scripts/game_registry.gd")
 const Updater = preload("res://scripts/updater.gd")
+const PackManager = preload("res://scripts/pack_manager.gd")
+const FileServer = preload("res://scripts/file_server.gd")
 const INK := Kit.INK
 const MUTED := Kit.MUTED
 const DIM := Kit.DIM
@@ -120,6 +122,15 @@ var result_header_y := 336.0
 ## Update checker (scripts/updater.gd) and its persisted "check for updates" setting.
 var updater: Node
 var check_updates := true
+## Game packs (scripts/pack_manager.gd) and, while hosting, the file server
+## that hands them to members (scripts/file_server.gd).
+var packs: Node
+var file_server: Node
+## Developer mode: unsigned game packs may load, always flagged UNTRUSTED.
+var dev_mode := false
+## An unsigned game the host is offering, waiting for this player's answer:
+## {"id", "sha256", "title", "host"}. Re-shown if a screen rebuild hides it.
+var pending_consent: Dictionary = {}
 
 func _ready() -> void:
 	_load_settings()
@@ -137,9 +148,11 @@ func _ready() -> void:
 	session.party_changed.connect(_party_changed)
 	session.returned_to_lobby.connect(func():
 		_end_round()
+		if is_instance_valid(file_server): file_server.throttle = false
 		_show_lobby() if session.is_online() else _show_menu())
 	session.failed.connect(func(message):
 		_end_round()
+		_party_over()
 		# Back on their own: the menu shows the game they last picked themselves.
 		session.select_game(preferred_game)
 		_show_menu(message))
@@ -150,6 +163,17 @@ func _ready() -> void:
 	add_child(arena)
 	live_arena = LiveArena.new()
 	add_child(live_arena)
+	packs = PackManager.new()
+	add_child(packs)
+	packs.dev_mode = dev_mode
+	packs.status_changed.connect(_pack_status)
+	packs.installed.connect(_pack_installed)
+	packs.consent_needed.connect(_ask_consent)
+	# Test runners use the games in the source tree only, unless a test gives
+	# its own packs folder.
+	var scripted: bool = Engine.get_main_loop().get_script() != null
+	if not scripted or Array(OS.get_cmdline_user_args()).any(func(a): return a.begins_with("--packs-dir=")):
+		packs.load_all()
 	for id in Registry.ids():
 		_add_game(id)
 	if not Registry.has(preferred_game): preferred_game = "twisted"
@@ -180,6 +204,9 @@ func _ready() -> void:
 	add_child(updater)
 	_show_menu()
 	_voice("welcome")
+	# The published catalog says which games exist; fetched like the update check.
+	if check_updates and not scripted and not "--no-update-check" in OS.get_cmdline_user_args():
+		packs.refresh_catalog()
 	if "--smoke-menu" in OS.get_cmdline_user_args():
 		test_mode = true
 		_capture_after("menu")
@@ -686,6 +713,7 @@ func _trust_badge(parent: Control, id: String, pos: Vector2) -> void:
 	var trust := str(Registry.entry(id).get("trust", session.party_games().get(id, {}).get("trust", "builtin")))
 	if trust == "untrusted":
 		var tag := _tab(parent, "UNTRUSTED", pos, Kit.DANGER, Kit.OUTLINE, 12, true)
+		tag.mouse_filter = Control.MOUSE_FILTER_PASS
 		tag.tooltip_text = "An unsigned game from developer mode. It can do anything on this computer."
 
 func _show_menu(message: String = "") -> void:
@@ -718,7 +746,56 @@ func _show_menu(message: String = "") -> void:
 	var footer := _section(3)
 	_settings_row(footer, area.y - (106.0 if tight else 112.0))
 	updater.decorate(screen, "menu")
+	_dev_toggle()
+	if dev_mode and message.is_empty() and not packs.problems.is_empty():
+		menu_status.text = "Developer packs: " + str(packs.problems[0])
 	solo.grab_focus()
+
+## Developer mode, beside the version tag in the corner of the menu.
+func _dev_toggle() -> void:
+	var row: Control = screen.find_child("VersionTag", true, false)
+	if row == null: return
+	var key := _button(row, "DEVELOPER MODE: ON" if dev_mode else "DEVELOPER MODE: OFF", Rect2(0, 0, 0, 32), _toggle_dev_mode, false, 12)
+	key.name = "DevModeToggle"
+	key.custom_minimum_size = Vector2(Kit.text_width(key.text, 12) + 44, 32)
+	key.add_theme_stylebox_override("normal", Kit.box(Kit.DANGER.darkened(0.45) if dev_mode else Kit.NAVY_LIGHT, Kit.OUTLINE, 3, 3, 0.16, 5, false))
+	key.tooltip_text = "Lets unsigned game packs load, for making and testing games."
+	row.move_child(key, mini(1, row.get_child_count() - 1))
+
+func _toggle_dev_mode() -> void:
+	_read_fields()
+	if dev_mode:
+		_set_dev_mode(false)
+		return
+	_clear_overlay()
+	var panel := _modal("DEVELOPER MODE", "For making and testing new games. Unsigned game packs can load, and every one is marked UNTRUSTED.", 400)
+	var warning := _label(panel, "An unsigned game has the same access as Gizmo Jam itself: it can read and change your files and start programs. Turn this on only to test games from people you trust.", Rect2(32, 132, 496, 100), 17, WARN)
+	_wrap(warning)
+	var on := _button(panel, "TURN ON", Rect2(36, 250, 480, 56), func(): _set_dev_mode(true), false, 20)
+	on.name = "DevModeOn"
+	_button(panel, "CANCEL", Rect2(36, 318, 480, 56), _clear_overlay, true, 20).grab_focus()
+
+func _set_dev_mode(on: bool) -> void:
+	dev_mode = on
+	packs.dev_mode = on
+	_save_settings()
+	_clear_overlay()
+	var message := ""
+	if on:
+		# Developer packs load straight away; the published copy of a game
+		# being worked on stays loaded until the next start.
+		var before: Array = Registry.ids()
+		packs.problems.clear()
+		packs.load_dev_packs()
+		for id in Registry.ids():
+			if id not in before: _add_game(id)
+		message = "Developer mode is on. Packs in %s load as UNTRUSTED." % ProjectSettings.globalize_path(packs.dev_dir)
+		if not packs.problems.is_empty(): message = "Developer packs: " + str(packs.problems[0])
+	elif Registry.ids().any(func(id): return Registry.entry(id).get("trust") == "untrusted"):
+		message = "Developer mode is off. Restart Gizmo Jam to unload the developer packs."
+	relayout = true
+	_show_menu(message)
+	relayout = false
 
 ## Graphics level, sound and quit along the foot of the menu column.
 func _settings_row(parent: Control, y: float) -> void:
@@ -786,6 +863,7 @@ func _host() -> void:
 	if err != OK:
 		_set_status("Could not open UDP port %d. Try a different port." % server_port)
 	else:
+		_start_file_server()
 		_advertise_party()
 		last_member_count = session.members.size()
 		_show_lobby()
@@ -1118,6 +1196,9 @@ func _show_lobby() -> void:
 	_eyebrow(seats, "%d OF 6 CONNECTED" % session.members.size(), Rect2(RIGHT_X, top - 2, RIGHT_W, 24), INK, ALIGN_RIGHT)
 	_roster_panel(seats, Vector2(RIGHT_X, top + 34), RIGHT_W, tight)
 	updater.decorate(screen, "lobby")
+	# A rebuild clears dialogs; an unanswered question about an unsigned game
+	# must not vanish with it.
+	if not relayout and not pending_consent.is_empty(): _show_consent()
 
 ## Lobby: the game the next round will be. Everyone sees the choice; only the
 ## party host's copy has live buttons.
@@ -1262,6 +1343,7 @@ func _state_text(status: Dictionary) -> String:
 ## Capabilities, states or the round line-up changed: redraw what shows them.
 func _party_changed() -> void:
 	if not is_instance_valid(screen): return
+	_sync_party_game()
 	if view == "lobby" or (view == "menu" and session.mode == "client"):
 		relayout = view == "lobby"
 		_show_lobby()
@@ -1269,6 +1351,7 @@ func _party_changed() -> void:
 
 func _roster_changed() -> void:
 	if not is_instance_valid(screen): return
+	_sync_party_game()
 	var count: int = session.members.size()
 	if count > last_member_count and last_member_count > 0 and view != "game":
 		_voice("player_joined")
@@ -1285,6 +1368,81 @@ func _roster_changed() -> void:
 		_show_pause()
 		quiet_modal = false
 
+# --- Game packs in a party ----------------------------------------------------
+
+## Host: starts handing installed packs to members.
+func _start_file_server() -> void:
+	if not is_instance_valid(file_server):
+		file_server = FileServer.new()
+		file_server.name = "FileServer"
+		add_child(file_server)
+	if not file_server.is_running():
+		var first := FileServer.DEFAULT_PORT
+		for arg in OS.get_cmdline_user_args():
+			if arg.begins_with("--file-port="): first = int(arg.trim_prefix("--file-port="))
+		session.file_port = file_server.start(first)
+	_serve_packs()
+
+func _serve_packs() -> void:
+	if not is_instance_valid(file_server) or not file_server.is_running(): return
+	file_server.unserve_prefix("/packs/")
+	var routes: Dictionary = packs.servable()
+	for path in routes:
+		file_server.serve(path, routes[path], "application/json" if path == "/catalog" else "application/octet-stream")
+
+## The party is over for this player: stop serving and fetching.
+func _party_over() -> void:
+	if is_instance_valid(file_server): file_server.stop()
+	session.file_port = 0
+	packs.reset()
+	pending_consent = {}
+
+## Guest: make sure this build has the game the party is on.
+func _sync_party_game() -> void:
+	if session.mode != "client": return
+	var listed: Dictionary = session.party_games()
+	if not listed.has(session.game): return
+	packs.acquire(session.game, listed[session.game], session.host_files(), _member_name(1))
+
+func _pack_status(id: String, state: String, progress: int) -> void:
+	if session.mode == "client" and id == session.game:
+		session.report_status(state, progress)
+
+func _pack_installed(id: String) -> void:
+	_add_game(id)
+	session.send_hello()
+	_serve_packs()
+	if view == "menu":
+		relayout = true
+		_show_menu(menu_status.text if is_instance_valid(menu_status) else "")
+		relayout = false
+
+func _ask_consent(id: String, sha256: String, title: String, host_name: String) -> void:
+	pending_consent = {"id": id, "sha256": sha256, "title": title, "host": host_name}
+	_show_consent()
+
+## The host picked an unsigned game. The wording is deliberate; see the spec,
+## section 6.4.
+func _show_consent() -> void:
+	if pending_consent.is_empty(): return
+	_clear_overlay()
+	var c := pending_consent
+	var panel := _modal("UNTRUSTED GAME", "%s is offering %s, a game that is not signed by Gizmo Jam." % [str(c.host).to_upper(), str(c.title)], 430)
+	var warning := _label(panel, "An unsigned game has the same access as Gizmo Jam itself: it can read and change your files and start programs. Only accept this from someone you trust.", Rect2(32, 132, 496, 96), 17, WARN)
+	_wrap(warning)
+	_label(panel, "FILE  " + str(c.sha256).left(16) + "…", Rect2(32, 236, 496, 24), 14, MUTED, true)
+	var yes := _button(panel, "ACCEPT AND DOWNLOAD", Rect2(36, 284, 480, 56), func(): _answer_consent(true), false, 20)
+	yes.name = "AcceptUntrusted"
+	var no := _button(panel, "SIT THIS ONE OUT", Rect2(36, 352, 480, 56), func(): _answer_consent(false), true, 20)
+	no.name = "DeclineUntrusted"
+	no.grab_focus()
+
+func _answer_consent(yes: bool) -> void:
+	var sha := str(pending_consent.get("sha256", ""))
+	pending_consent = {}
+	_clear_overlay()
+	packs.answer_consent(sha, yes)
+
 func _round_started(seed_value: int, slots: Array, number: int) -> void:
 	# session.game is already the game of this launch, on every peer.
 	play = games[session.game]
@@ -1296,6 +1454,7 @@ func _round_started(seed_value: int, slots: Array, number: int) -> void:
 	finish_clock = -1.0
 	announced_round = -1
 	play.round_started()
+	if is_instance_valid(file_server): file_server.throttle = true
 	_sfx("round_start")
 	_clear_overlay()
 	_show_game()
@@ -1320,6 +1479,10 @@ func _show_game() -> void:
 	hud_root.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	screen.add_child(hud_root)
 	play.build_hud()
+	if str(Registry.entry(play.ID).get("trust", "")) == "untrusted":
+		# Everyone in the round sees that this game is not a published one.
+		var tag := _tab(hud_root, "UNTRUSTED GAME  ·  DEVELOPER PACK", Vector2(area.x - 28, 104), Kit.DANGER, Kit.OUTLINE, 13, true)
+		tag.name = "UntrustedTag"
 	_update_hud()
 
 ## Places the round HUD against the visible canvas: the shared frame here,
@@ -1345,6 +1508,8 @@ func _layout_hud() -> void:
 		hud_intro.queue_redraw()
 	if is_instance_valid(damage_shade):
 		damage_shade.material.set_shader_parameter("aspect", area.x / maxf(area.y, 1.0))
+	var untrusted: Control = hud_root.get_node_or_null("UntrustedTag")
+	if untrusted: untrusted.position.x = area.x - 28 - untrusted.size.x
 	if play and play.has_method("layout_hud"):
 		play.layout_hud()
 
@@ -1779,6 +1944,7 @@ func _ui_sound(id: String) -> void:
 func _leave() -> void:
 	if play: play.release()
 	session.close()
+	_party_over()
 	# A guest goes back to the game they had picked for themselves.
 	session.select_game(preferred_game)
 	last_member_count = 0
@@ -1842,6 +2008,8 @@ func _load_settings() -> void:
 		if Registry.valid_id(saved_game): preferred_game = saved_game
 	graphics_level = stored_graphics(cfg, graphics_level)
 	check_updates = cfg.get_value("updates", "check", true)
+	dev_mode = bool(cfg.get_value("developer", "enabled", false))
+	if OS.is_debug_build() and "--dev-mode" in OS.get_cmdline_user_args(): dev_mode = true
 
 func _save_settings() -> void:
 	if test_mode: return
@@ -1855,6 +2023,7 @@ func _save_settings() -> void:
 	cfg.set_value("graphics", "detailed", graphics_level == "high")
 	cfg.set_value("game", "selected", preferred_game)
 	cfg.set_value("updates", "check", check_updates)
+	cfg.set_value("developer", "enabled", dev_mode)
 	cfg.save("user://settings.cfg")
 
 func _capture_after(filename: String) -> void:
