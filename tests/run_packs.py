@@ -33,7 +33,7 @@ import release  # noqa: E402  (signing helpers)
 parser = argparse.ArgumentParser()
 parser.add_argument("--godot", default=os.environ.get("GODOT", str(ROOT / ".tools/Godot_v4.5.1-stable_linux.x86_64")))
 parser.add_argument("--old", default="62ed1fe", help="git revision of 0.2.0")
-parser.add_argument("--scenario", choices=["all", "signed", "dev", "web"], default="all")
+parser.add_argument("--scenario", choices=["all", "signed", "dev", "web", "library"], default="all")
 parser.add_argument("--no-build", action="store_true", help="reuse builds/packs/example-*.pck")
 parser.add_argument("--exported", help="an exported debug build of this tree to run as host and guest instead of the source")
 args = parser.parse_args()
@@ -55,12 +55,12 @@ def build_pack():
     return game, out
 
 
-def signed_catalog(game, pack, key):
+def signed_catalog(game, pack, key, url="http://127.0.0.1:9/example.pck"):
     data = pack.read_bytes()
     catalog = {"schema": 1, "game": "gizmo-jam", "kind": "catalog", "channel": "stable", "serial": 1,
                "games": {"example": {"version": game["version"], "net": game["net"], "core_min": game["core_min"],
                                      "size": len(data), "sha256": hashlib.sha256(data).hexdigest(),
-                                     "url": "http://127.0.0.1:9/example.pck",
+                                     "url": url,
                                      "info": {k: game["info"][k] for k in ("number", "title", "tags", "blurb")}}}}
     return release.sign_manifest(catalog, key)
 
@@ -90,7 +90,7 @@ def run_party(label, roles, folder):
                 # An exported build has no res://tests; its core checks run for real.
                 command = [args.exported, "--headless", "--audio-driver", "Dummy", "--script", str(ROOT / "tests/pack_round.gd")] + tail
             else:
-                script = "res://tests/pack_round.gd" if tree == ROOT else str(ROOT / "tests/legacy_guest.gd")
+                script = ("res://tests/library_test.gd" if role == "library" else "res://tests/pack_round.gd") if tree == ROOT else str(ROOT / "tests/legacy_guest.gd")
                 command = [args.godot, "--headless", "--path", str(tree), "--audio-driver", "Dummy", "--script", script] + tail
             processes.append((role, subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT), log))
             time.sleep(1.5 if role == "host" else 0.6)
@@ -166,6 +166,15 @@ with tempfile.TemporaryDirectory(prefix="gizmojam-packs-") as tmp:
             ("host", ROOT, [f"--packs-dir={folder / 'w-host'}", f"--web-dir={page}"] + trust),
             ("guest", ROOT, [f"--packs-dir={folder / 'w-guest'}"] + trust),
             ("webguest", ROOT, [f"--packs-dir={folder / 'w-web'}"] + trust),
+        ], folder))
+    if args.scenario in ("all", "library"):
+        serve = free_port(socket.SOCK_STREAM)
+        lib_catalog = folder / "lib-catalog.json"
+        lib_catalog.write_text(json.dumps(signed_catalog(game, pack, key, f"http://127.0.0.1:{serve}/example.pck")))
+        lib_trust = [f"--trust-key={public}", f"--catalog-url=http://127.0.0.1:{serve}/catalog.json", "--no-update-check"]
+        results.append(run_party("library", [
+            ("library", ROOT, [f"--packs-dir={folder / 'lib'}", f"--serve-port={serve}", f"--pack-file={pack}",
+                               f"--catalog-file={lib_catalog}"] + lib_trust),
         ], folder))
 if not all(results):
     raise SystemExit("Pack parties failed")

@@ -419,3 +419,7 @@ Where the implementation differs from the design above:
   HTTP loaded the build from the host, joined, played a round and its keys
   reached its seat (`tests/run_browser.py`). Browser frame rate on the target
   PCs and whether browser sound plays remain untested.
+- **Game library** (5.5): a dialog from the menu listing built-in, installed
+  and catalog games with Install, Update and Remove; an update downloads the
+  exact catalog file and takes effect after a restart. Tested through its
+  buttons against a local signed catalog (`tests/library_test.gd`).

@@ -382,6 +382,15 @@ only adds a game is one pack, not a new build of everything.
   one) while a party is open. Allow the game through the firewall as for the
   UDP port.
 
+### Game library
+
+**Game Library** (above the game cards) lists every published game with its
+version and size. **Install** gets one ahead of time, for solo play or a
+party without waiting; **Remove** deletes it (it stays playable until the
+next start); **Update** fetches a newer version for the next start. **Check
+for new games** fetches the latest catalog. Changes are disabled while in a
+party.
+
 ### Developer mode
 
 **Developer mode** (bottom-right of the menu, off by default) lets **unsigned**

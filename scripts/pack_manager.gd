@@ -288,7 +288,9 @@ func servable() -> Dictionary:
 ## reporting progress with status_changed. Safe to call on every party
 ## update: it only starts work when the game or the host's file changes.
 ## `host_files` is {"ip", "port"} of the host's file server, or {}.
-func acquire(id: String, host_entry: Dictionary, host_files: Dictionary, host_name: String) -> void:
+## `exact` (the game library's Update) wants exactly that file, not just a
+## compatible version.
+func acquire(id: String, host_entry: Dictionary, host_files: Dictionary, host_name: String, exact: bool = false) -> void:
 	var target := {"id": id, "sha256": str(host_entry.get("sha256", "")), "net": int(host_entry.get("net", 0))}
 	if target == _target:
 		var current: Dictionary = state.get(id, {})
@@ -298,7 +300,8 @@ func acquire(id: String, host_entry: Dictionary, host_files: Dictionary, host_na
 	_target = target
 	_generation += 1
 	var generation := _generation
-	if Registry.compatible(Registry.capabilities(), id, host_entry):
+	var same_file: bool = str(Registry.entry(id).get("sha256", "")) == str(host_entry.get("sha256", ""))
+	if Registry.compatible(Registry.capabilities(), id, host_entry) and (not exact or same_file):
 		_report(id, "ready")
 		return
 	if int(host_entry.get("core_min", 0)) > Core.local_build():
@@ -373,7 +376,7 @@ func acquire(id: String, host_entry: Dictionary, host_files: Dictionary, host_na
 func install(id: String) -> void:
 	var entry: Dictionary = catalog.get("games", {}).get(id, {})
 	if entry.is_empty(): return
-	acquire(id, {"net": entry.net, "sha256": entry.sha256, "trust": "signed", "size": entry.size, "core_min": entry.core_min}, {}, "")
+	acquire(id, {"net": entry.net, "sha256": entry.sha256, "trust": "signed", "size": entry.size, "core_min": entry.core_min}, {}, "", true)
 
 func _acquire_untrusted(id: String, host_entry: Dictionary, host_files: Dictionary, host_name: String, generation: int) -> void:
 	var sha := str(host_entry.get("sha256", ""))

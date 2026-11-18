@@ -31,6 +31,9 @@ func run() -> void:
 	main.name_field.text = "TIM"
 	main._select_game("example")
 	await shot("menu")
+	main._show_library()
+	await shot("library")
+	main._close_library()
 	main.dev_mode = false
 	main._toggle_dev_mode()
 	await shot("dev-warning")

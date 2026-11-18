@@ -510,6 +510,7 @@ func _clear_screen() -> void:
 		child.queue_free()
 
 func _clear_overlay() -> void:
+	library_open = false
 	for child in overlay.get_children():
 		overlay.remove_child(child)
 		child.queue_free()
@@ -649,6 +650,10 @@ func _rules(id: String = "") -> void:
 ## and drop the "coming soon" tiles.
 func _game_cards(parent: Control, y: float) -> float:
 	_eyebrow(parent, "CHOOSE A GAME", Rect2(LEFT, y, COL, 20))
+	if not on_web:
+		var library := _button(parent, "GAME LIBRARY  ›", Rect2(LEFT + COL - 150, y - 6, 150, 28), _show_library, false, 12)
+		library.name = "Library"
+		library.tooltip_text = "Install or remove games"
 	var top := y + 26
 	var card_h := 92.0 if tight else 106.0
 	var c := 1.0 if tight else 0.0
@@ -1487,6 +1492,117 @@ func _page_options() -> void:
 	if options.get("join", "") == "1":
 		_join_from_page.call_deferred()
 
+# --- Game library -------------------------------------------------------------
+
+var library_open := false
+var library_note := ""
+
+## Every game: built in, installed, or published in the catalog. Install
+## ahead of a party, or remove what you no longer play.
+func _show_library() -> void:
+	_read_fields()
+	var first := not library_open
+	quiet_modal = not first
+	_clear_overlay()
+	library_open = true
+	var rows: Array = _library_rows()
+	var panel := _modal("GAME LIBRARY", "Games you install here are ready for solo play and parties. Parties also fetch a missing game by themselves.", 560)
+	quiet_modal = false
+	var scroll := ScrollContainer.new()
+	scroll.name = "LibraryList"
+	scroll.position = Vector2(24, 128)
+	scroll.size = Vector2(512, 316)
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	panel.add_child(scroll)
+	var inner := Control.new()
+	inner.custom_minimum_size = Vector2(500, maxf(1.0, rows.size()) * 62.0)
+	scroll.add_child(inner)
+	if rows.is_empty():
+		_label(inner, "No games beyond the built-in ones yet.", Rect2(8, 8, 480, 40), 16, MUTED)
+	for i in rows.size():
+		var r: Dictionary = rows[i]
+		var row := _panel(inner, Rect2(0, i * 62.0, 496, 54), Color("0e1730"), Color("2b3866"), 3, 6)
+		row.name = "Row_" + r.id
+		_label(row, str(r.number), Rect2(10, 0, 50, 54), 24, LIME if r.installed else DIM, true, ALIGN_CENTER)
+		_label(row, str(r.title), Rect2(66, 4, 250, 26), 19, INK if r.installed else MUTED, true).text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+		_label(row, str(r.detail), Rect2(66, 28, 260, 20), 13, WARN if r.warn else MUTED)
+		if r.action.is_empty(): continue
+		var key := _button(row, r.action, Rect2(350, 10, 134, 34), _library_action.bind(r.id, r.action), r.action == "INSTALL", 14)
+		key.name = r.action.capitalize().replace(" ", "") + "_" + r.id
+		key.disabled = r.busy or session.is_online()
+	var note := _label(panel, library_note if not session.is_online() else "Leave the party to change your games.", Rect2(32, 448, 496, 32), 14, WARN)
+	_wrap(note)
+	var refresh := _button(panel, "CHECK FOR NEW GAMES", Rect2(36, 484, 230, 54), _refresh_library, false, 15)
+	refresh.disabled = session.is_online()
+	var close := _button(panel, "DONE", Rect2(282, 484, 234, 54), _close_library, true, 20)
+	close.name = "LibraryDone"
+	if first: close.grab_focus()
+
+func _library_rows() -> Array:
+	var rows: Array = []
+	var catalog_games: Dictionary = packs.catalog.get("games", {})
+	var installed: Dictionary = packs.installed_packs()
+	var ids: Array = []
+	for id in Registry.ids() + catalog_games.keys() + installed.keys():
+		if id not in ids and not Registry.is_builtin(id): ids.append(id)
+	for id in ids:
+		var listed: Dictionary = catalog_games.get(id, {})
+		var loaded := Registry.entry(id)
+		var info: Dictionary = loaded.get("info", listed.get("info", {}))
+		var r := {"id": id, "number": info.get("number", "··"), "title": info.get("title", id.to_upper()),
+			"installed": not loaded.is_empty(), "detail": "", "action": "", "warn": false, "busy": false}
+		var status: Dictionary = packs.status(id)
+		var size_mb := "%.1f MB" % (float(listed.get("size", loaded.get("size", 0))) / 1048576.0)
+		if status.get("state", "") in ["downloading", "verifying"]:
+			r.detail = "Downloading %d%%" % int(status.get("progress", 0)) if status.state == "downloading" else "Checking…"
+			r.busy = true
+			r.action = "INSTALL"
+		elif str(loaded.get("trust", "")) == "untrusted":
+			r.detail = "Developer pack  ·  UNTRUSTED"
+			r.warn = true
+		elif installed.get(id, {}).has("pending") or status.get("state", "") == "restart":
+			r.detail = "Update ready: restart Gizmo Jam"
+			r.action = "REMOVE"
+		elif not loaded.is_empty() or installed.has(id):
+			var newer: bool = not listed.is_empty() and str(listed.sha256) != str(installed.get(id, {}).get("sha256", listed.sha256))
+			r.detail = ("v%s  ·  %s" % [loaded.get("version", installed.get(id, {}).get("version", "?")), size_mb]) + ("  ·  update available" if newer else "")
+			r.action = "UPDATE" if newer else "REMOVE"
+		elif int(listed.get("core_min", 0)) > Updater.Core.local_build():
+			r.detail = "Needs a newer Gizmo Jam"
+			r.warn = true
+		else:
+			r.detail = "v%s  ·  %s  ·  not installed" % [listed.get("version", "?"), size_mb]
+			if status.get("state", "") == "failed": r.detail = "Download failed: " + str(status.get("reason", ""))
+			r.warn = status.get("state", "") == "failed"
+			r.action = "INSTALL"
+		rows.append(r)
+	rows.sort_custom(func(a, b): return "%s|%s" % [str(a.number).lpad(4, "0"), a.id] < "%s|%s" % [str(b.number).lpad(4, "0"), b.id])
+	return rows
+
+func _library_action(id: String, action: String) -> void:
+	if session.is_online(): return
+	if action == "REMOVE":
+		packs.remove(id)
+		library_note = "%s removed. It stays playable until you restart Gizmo Jam." % _game_title(id).capitalize()
+	else:
+		library_note = ""
+		packs.reset()
+		packs.install(id)
+	_show_library()
+
+func _refresh_library() -> void:
+	library_note = "Checking for new games…"
+	_show_library()
+	await packs.refresh_catalog()
+	library_note = "" if not packs.catalog.is_empty() else "Could not reach the download server."
+	if library_open: _show_library()
+
+func _close_library() -> void:
+	library_open = false
+	library_note = ""
+	_clear_overlay()
+	_show_menu()
+
 ## The party is over for this player: stop serving and fetching.
 func _party_over() -> void:
 	if is_instance_valid(file_server): file_server.stop()
@@ -1504,6 +1620,7 @@ func _sync_party_game() -> void:
 func _pack_status(id: String, state: String, progress: int) -> void:
 	if session.mode == "client" and id == session.game:
 		session.report_status(state, progress)
+	if library_open: _show_library()
 
 func _pack_installed(id: String) -> void:
 	_add_game(id)
