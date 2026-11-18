@@ -75,7 +75,7 @@ func run() -> void:
 		"nodes": Performance.get_monitor(Performance.OBJECT_NODE_COUNT),
 		"rendering_driver": RenderingServer.get_current_rendering_method(),
 		"adapter": RenderingServer.get_video_adapter_name(), "resolution": "%dx%d" % [resolution.x, resolution.y], "quality": level.capitalize(),
-		"render_scale": root.scaling_3d_scale, "window": "%dx%d" % [root.size.x, root.size.y], "game": game}
+		"render_scale": main.scaled_view.scale if main.scaled_view and main.scaled_view.enabled() else root.scaling_3d_scale, "window": "%dx%d" % [root.size.x, root.size.y], "game": game}
 	var file := FileAccess.open("res://test-output/iterations/" + iteration + "/performance.json", FileAccess.WRITE)
 	file.store_string(JSON.stringify(stats, "\t") + "\n")
 	print("GRAPHICS_PROBE ", JSON.stringify(stats))

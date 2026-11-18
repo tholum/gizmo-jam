@@ -13,8 +13,24 @@ extends Node
 ## the arenas set it (it does nothing while the root draws no 3D).
 
 const LAYER := -128
+## Dynamic resolution (set_scale(value, true)): every WINDOW seconds, if frames
+## averaged slower than SLOW_MS (a little margin under 30 fps) the scale drops by STEP, never
+## below MIN_SCALE; under FAST_MS it climbs back, never above the requested
+## scale. A one-off hitch barely moves a 1.5 s average, so a machine that
+## holds 30 fps keeps the full picture; a Raspberry Pi 4 trades a little
+## sharpness for a steady frame rate.
+const WINDOW := 1.5
+const SLOW_MS := 32.0
+const FAST_MS := 22.0
+const STEP := 0.04
+const MIN_SCALE := 0.5
 
 var scale := 1.0
+## The scale asked for; the dynamic scale moves between MIN_SCALE and this.
+var ceiling := 1.0
+var dynamic := false
+var _window_time := 0.0
+var _window_frames := 0
 var view: SubViewport
 var eye: Camera3D
 var layer: CanvasLayer
@@ -30,9 +46,14 @@ func enabled() -> bool:
 	return view != null
 
 ## `value` below 1 switches the SubViewport route on at that scale; 1 or more
-## switches it off and gives the root viewport its 3D back.
-func set_scale(value: float) -> void:
+## switches it off and gives the root viewport its 3D back. With `auto` the
+## scale then follows the frame rate (see WINDOW), starting from `value`.
+func set_scale(value: float, auto: bool = false) -> void:
 	scale = value
+	ceiling = value
+	dynamic = auto and value < 1.0
+	_window_time = 0.0
+	_window_frames = 0
 	var root := get_tree().root
 	if value >= 1.0:
 		if view:
@@ -78,7 +99,34 @@ func _fit() -> void:
 		var size := Vector2(get_tree().root.size) * scale
 		view.size = Vector2i(maxi(1, roundi(size.x)), maxi(1, roundi(size.y)))
 
-func _process(_delta: float) -> void:
+## Back to the full requested scale, e.g. when a round starts.
+func restore() -> void:
+	if dynamic and scale != ceiling:
+		scale = ceiling
+		_fit()
+	_window_time = 0.0
+	_window_frames = 0
+
+func _govern(delta: float) -> void:
+	_window_time += delta
+	_window_frames += 1
+	if _window_time < WINDOW:
+		return
+	var average_ms := _window_time * 1000.0 / _window_frames
+	_window_time = 0.0
+	_window_frames = 0
+	var wanted := scale
+	if average_ms > SLOW_MS:
+		wanted = maxf(MIN_SCALE, scale - STEP)
+	elif average_ms < FAST_MS:
+		wanted = minf(ceiling, scale + STEP)
+	if not is_equal_approx(wanted, scale):
+		scale = wanted
+		_fit()
+
+func _process(delta: float) -> void:
+	if dynamic:
+		_govern(delta)
 	var source := get_tree().root.get_camera_3d()
 	if source == null:
 		return

@@ -114,6 +114,15 @@ func backdrop(delta: float) -> RefCounted:
 		demo.step(delta)
 	return demo
 
+## Every feedback call-out this game can show, with digits: main warms the
+## font up with them during the countdown (Slam.warm()).
+const CALLOUTS := ["CHARGED!  DOUBLE SURGES", "OVERDRIVE!  LOCKS ARE OFF", "SHOVED!", "DIRECT HIT!", "ZAPPED!",
+	"ZAPPED!  −7 TILES", "ZAPPED!  −12 TILES", "ZAPPED!  −34 TILES", "ZAPPED!  −56 TILES", "ZAPPED!  −89 TILES",
+	"LOOP!  +7 LOCKED", "LOOP!  +12 LOCKED", "LOOP!  +34 TILES", "LOOP!  +56 LOCKED", "LOOP!  +89 TILES", "LOOP!  +90 TILES"]
+
+func callouts() -> Array:
+	return CALLOUTS
+
 func round_started() -> void:
 	# The new model holds nothing: whatever is still down is sent again, and a
 	# direction that is already down as the round opens counts from GO.

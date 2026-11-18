@@ -64,6 +64,14 @@ func stage(on: bool, menu: bool) -> void:
 func backdrop(_delta: float) -> RefCounted:
 	return null
 
+## Every feedback call-out this game can show, with digits: main warms the
+## font up with them during the countdown (Slam.warm()).
+const CALLOUTS := ["CLEAR  +1", "3 IN A ROW!", "10 IN A ROW!", "23 IN A ROW!", "45 IN A ROW!", "67 IN A ROW!", "89 IN A ROW!",
+	"HIT!  1 LEFT", "HIT!  2 LEFT", "HIT!  3 LEFT", "HIT!  4 LEFT", "HIT!  5 LEFT", "HIT!  6 LEFT", "YOU’RE OUT!"]
+
+func callouts() -> Array:
+	return CALLOUTS
+
 func round_started() -> void:
 	was_ducking = false
 	held_duck_keys.clear()

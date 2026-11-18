@@ -1156,6 +1156,13 @@ func _round_started(seed_value: int, slots: Array, number: int) -> void:
 	_sfx("round_start")
 	_clear_overlay()
 	_show_game()
+	# Each round starts at Low's full 3D resolution; it only drops if this
+	# machine cannot hold 30 fps (scripts/scaled_view.gd).
+	if scaled_view: scaled_view.restore()
+	# The countdown rasterises the call-outs' glyphs, so the first one in play
+	# does not hitch.
+	if play.has_method("callouts"):
+		hud_count.warm(play.callouts(), hud_feedback.font_size, hud_feedback.outline_px, hud_feedback.size.x)
 
 ## The round is gone (lobby, leaving, a lost connection): nothing stays held.
 func _end_round() -> void:
@@ -1735,7 +1742,7 @@ func _apply_graphics() -> void:
 		scaled_view = ScaledView.new()
 		scaled_view.name = "ScaledView"
 		add_child(scaled_view)
-	scaled_view.set_scale(Arena.LOW_RENDER_SCALE if graphics_level == "low" else 1.0)
+	scaled_view.set_scale(Arena.LOW_RENDER_SCALE if graphics_level == "low" else 1.0, true)
 
 func _set_graphics(level: String) -> void:
 	_read_fields()
