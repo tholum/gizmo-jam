@@ -1,0 +1,40 @@
+# Gizmo Jam Pi image builder config.
+#
+# build.py copies this file to .pi-image/config.toml (repo root, gitignored) on first run.
+# Edit THAT copy, never this one: this file is tracked in a public repo.
+#
+# Secrets can also come from the environment instead of this file:
+#   GIZMO_WIFI_PASSWORD        overrides [wifi].password
+#   GIZMO_TAILSCALE_AUTH_KEY   overrides [tailscale].auth_key / auth_key_file
+
+hostname = "gizmojam"            # Pi hostname; reachable as <hostname>.local via mDNS
+username = "gizmo"               # login user (uid 1000), desktop auto-login, passwordless sudo
+
+# Public key files on the build host (~ is expanded). Every key line in every file is
+# authorized. At least one key is required: SSH accepts keys only.
+ssh_public_keys = ["~/.ssh/id_ed25519.pub"]
+
+password = ""                    # optional console/desktop password; hashed at build time
+                                 # (sha512-crypt). Empty = account password locked.
+timezone = "America/Chicago"
+locale = "en_US.UTF-8"
+keyboard_layout = "us"
+
+[wifi]                           # leave ssid empty for Ethernet only
+ssid = ""
+password = ""                    # empty with an ssid = open network
+country = "US"                   # 2-letter regulatory domain (needed for Wi-Fi to unblock)
+
+[tailscale]
+auth_key = ""                    # "tskey-auth-..."; empty = no Tailscale
+# auth_key_file = "~/.config/gizmo/tailscale.key"   # alternative to auth_key
+hostname = ""                    # tailnet machine name; default: hostname
+ssh = false                      # true = enable Tailscale SSH (tailscale up --ssh)
+
+[display]
+force_hdmi_mode = "1920x1080@60" # forces HDMI-A-1 (port next to USB-C) on even with the TV off;
+                                 # empty = no forcing (the TV's EDID decides)
+
+[extras]
+packages = ["mesa-utils", "htop"]  # apt packages installed at first boot if online
+kiosk = false                    # true = autostart the game fullscreen at login

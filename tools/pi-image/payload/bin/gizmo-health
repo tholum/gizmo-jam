@@ -1,0 +1,337 @@
+#!/usr/bin/env python3
+"""gizmo-health: Raspberry Pi temperature, clocks and throttling as JSON/CSV.
+
+One-shot:   gizmo-health                 -> one JSON object on stdout
+Watch:      gizmo-health --watch 1 [--duration 120] [--csv run.csv] [--pid PID]
+            -> one JSON object per sample (JSON lines), then a summary object
+
+Values that cannot be read (no vcgencmd, not a Pi, no permission) are null.
+Exit codes: 0 ok, 1 nothing at all could be read, 2 usage error.
+"""
+
+import argparse
+import csv
+import datetime
+import json
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import time
+
+THROTTLE_BITS = [
+    # (bit, field)
+    (0, "under_voltage_now"),
+    (1, "freq_capped_now"),
+    (2, "throttled_now"),
+    (3, "soft_temp_limit_now"),
+    (16, "under_voltage_occurred"),
+    (17, "freq_capped_occurred"),
+    (18, "throttled_occurred"),
+    (19, "soft_temp_limit_occurred"),
+]
+
+FIELDS = [
+    "time", "epoch", "temp_c", "temp_source", "arm_hz", "core_hz", "v3d_hz",
+    "core_volts", "throttled_hex",
+] + [f for _, f in THROTTLE_BITS] + [
+    "load1", "load5", "load15", "cpu_pct", "mem_available_mb", "mem_total_mb",
+    "pid", "pid_alive", "pid_cpu_pct", "pid_rss_mb",
+]
+
+# Fields that do not count as "something was read" for the exit code.
+META_FIELDS = {"time", "epoch", "temp_source", "pid", "pid_alive"}
+
+VCGENCMD = os.environ.get("GIZMO_VCGENCMD") or shutil.which("vcgencmd") \
+    or ("/usr/bin/vcgencmd" if os.path.exists("/usr/bin/vcgencmd") else None)
+CLK_TCK = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
+
+
+def vc(*args):
+    """Run vcgencmd, return its stdout or None."""
+    if not VCGENCMD:
+        return None
+    try:
+        out = subprocess.run([VCGENCMD, *args], capture_output=True, text=True,
+                             timeout=5, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    return out.stdout.strip()
+
+
+def vc_value(text, prefix):
+    """'temp=48.3'C' -> '48.3'; 'frequency(48)=1500000000' -> '1500000000'."""
+    if not text or "=" not in text:
+        return None
+    if prefix and not text.startswith(prefix):
+        return None
+    return text.split("=", 1)[1]
+
+
+def to_float(s, strip=""):
+    try:
+        return float(s.rstrip(strip)) if s is not None else None
+    except ValueError:
+        return None
+
+
+def to_int(s, base=10):
+    try:
+        return int(s, base) if s is not None else None
+    except ValueError:
+        return None
+
+
+def read_file(path):
+    try:
+        with open(path, encoding="ascii", errors="replace") as fh:
+            return fh.read()
+    except OSError:
+        return None
+
+
+def cpu_times():
+    """(busy, total) jiffies from /proc/stat, or None."""
+    text = read_file("/proc/stat")
+    if not text:
+        return None
+    parts = text.splitlines()[0].split()[1:]
+    try:
+        vals = [int(x) for x in parts]
+    except ValueError:
+        return None
+    idle = vals[3] + (vals[4] if len(vals) > 4 else 0)
+    total = sum(vals[:8])
+    return total - idle, total
+
+
+def pid_times(pid):
+    """(utime+stime jiffies, rss_mb) for a PID, or None."""
+    stat = read_file(f"/proc/{pid}/stat")
+    if not stat:
+        return None
+    fields = stat.rsplit(")", 1)[-1].split()
+    try:
+        ticks = int(fields[11]) + int(fields[12])
+    except (IndexError, ValueError):
+        return None
+    rss_mb = None
+    status = read_file(f"/proc/{pid}/status") or ""
+    for line in status.splitlines():
+        if line.startswith("VmRSS:"):
+            try:
+                rss_mb = round(int(line.split()[1]) / 1024, 1)
+            except (IndexError, ValueError):
+                pass
+    return ticks, rss_mb
+
+
+def decode_throttled(value):
+    out = {f: None for _, f in THROTTLE_BITS}
+    if value is None:
+        return out
+    for bit, field in THROTTLE_BITS:
+        out[field] = bool(value & (1 << bit))
+    return out
+
+
+class Sampler:
+    def __init__(self, pid=None):
+        self.pid = pid
+        self.prev_cpu = None
+        self.prev_pid = None
+        self.prev_time = None
+
+    def sample(self):
+        now = time.time()
+        mono = time.monotonic()
+        s = {f: None for f in FIELDS}
+        s["time"] = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="milliseconds")
+        s["epoch"] = round(now, 3)
+
+        temp = to_float(vc_value(vc("measure_temp"), "temp"), "'C")
+        if temp is not None:
+            s["temp_c"], s["temp_source"] = temp, "vcgencmd"
+        else:
+            raw = read_file("/sys/class/thermal/thermal_zone0/temp")
+            if raw and raw.strip().lstrip("-").isdigit():
+                s["temp_c"], s["temp_source"] = round(int(raw) / 1000, 1), "sysfs"
+
+        for clk in ("arm", "core", "v3d"):
+            s[f"{clk}_hz"] = to_int(vc_value(vc("measure_clock", clk), "frequency"))
+        s["core_volts"] = to_float(vc_value(vc("measure_volts", "core"), "volt"), "V")
+
+        thr = to_int(vc_value(vc("get_throttled"), "throttled"), 16)
+        if thr is not None:
+            s["throttled_hex"] = hex(thr)
+        s.update(decode_throttled(thr))
+
+        load = read_file("/proc/loadavg")
+        if load:
+            parts = load.split()
+            s["load1"], s["load5"], s["load15"] = (to_float(x) for x in parts[:3])
+
+        mem = read_file("/proc/meminfo") or ""
+        for line in mem.splitlines():
+            key, _, rest = line.partition(":")
+            if key in ("MemAvailable", "MemTotal"):
+                kb = to_int(rest.split()[0]) if rest.split() else None
+                if kb is not None:
+                    s["mem_available_mb" if key == "MemAvailable" else "mem_total_mb"] = round(kb / 1024, 1)
+
+        cpu = cpu_times()
+        if cpu and self.prev_cpu:
+            dbusy, dtotal = cpu[0] - self.prev_cpu[0], cpu[1] - self.prev_cpu[1]
+            if dtotal > 0:
+                s["cpu_pct"] = round(100.0 * dbusy / dtotal, 1)
+        self.prev_cpu = cpu
+
+        if self.pid is not None:
+            s["pid"] = self.pid
+            pt = pid_times(self.pid)
+            s["pid_alive"] = pt is not None
+            if pt:
+                ticks, s["pid_rss_mb"] = pt
+                if self.prev_pid is not None and self.prev_time is not None and mono > self.prev_time:
+                    # percent of one core, like top
+                    s["pid_cpu_pct"] = round(100.0 * (ticks - self.prev_pid) / CLK_TCK / (mono - self.prev_time), 1)
+                self.prev_pid = ticks
+        self.prev_time = mono
+        return s
+
+
+def anything_read(s):
+    return any(v is not None for k, v in s.items() if k not in META_FIELDS)
+
+
+def csv_row(s):
+    row = {}
+    for k in FIELDS:
+        v = s[k]
+        row[k] = "" if v is None else (int(v) if isinstance(v, bool) else v)
+    return row
+
+
+def summarize(samples, interrupted):
+    def stats(key):
+        vals = [s[key] for s in samples if isinstance(s.get(key), (int, float)) and not isinstance(s.get(key), bool)]
+        if not vals:
+            return None
+        return {"min": min(vals), "max": max(vals), "avg": round(sum(vals) / len(vals), 2)}
+
+    def any_true(key):
+        vals = [s[key] for s in samples if s.get(key) is not None]
+        return any(vals) if vals else None
+
+    out = {"type": "summary", "samples": len(samples), "interrupted": interrupted}
+    if samples:
+        out["start"], out["end"] = samples[0]["time"], samples[-1]["time"]
+        out["seconds"] = round(samples[-1]["epoch"] - samples[0]["epoch"], 3)
+    for key in ("temp_c", "arm_hz", "core_hz", "v3d_hz", "load1", "cpu_pct",
+                "mem_available_mb", "pid_cpu_pct", "pid_rss_mb"):
+        out[key] = stats(key)
+    for _, field in THROTTLE_BITS:
+        if field.endswith("_now"):
+            out[field.replace("_now", "_seen")] = any_true(field)
+    last = samples[-1] if samples else {}
+    out["throttled_hex_last"] = last.get("throttled_hex")
+    return out
+
+
+class Stop(Exception):
+    pass
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(
+        prog="gizmo-health",
+        description="Pi temperature, clocks and throttle state. One JSON object by default; "
+                    "--watch prints one JSON object per sample plus a final summary object "
+                    '({"type":"summary",...}).',
+        epilog="Throttle bits (vcgencmd get_throttled): 0x1 under-voltage, 0x2 ARM freq capped, "
+               "0x4 throttled, 0x8 soft temp limit; 0x10000.. same, 'has occurred since boot'. "
+               "Exit: 0 ok, 1 nothing could be read, 2 usage.")
+    ap.add_argument("--watch", type=float, metavar="SECONDS", help="sample every SECONDS until stopped")
+    ap.add_argument("--duration", type=float, metavar="S", help="with --watch: stop after S seconds")
+    ap.add_argument("--count", type=int, metavar="N", help="with --watch: stop after N samples")
+    ap.add_argument("--csv", metavar="FILE", help="with --watch: also write samples to FILE as CSV ('-' = CSV on stdout instead of JSON)")
+    ap.add_argument("--pid", type=int, help="also report CPU%% and RSS of this process (e.g. the game's PID from gizmo-run)")
+    ap.add_argument("--quiet", action="store_true", help="with --watch: print only the summary")
+    args = ap.parse_args(argv)
+
+    if args.watch is None and (args.duration or args.count or args.csv):
+        ap.error("--duration/--count/--csv need --watch")
+    if args.watch is not None and args.watch <= 0:
+        ap.error("--watch must be > 0")
+
+    sampler = Sampler(args.pid)
+
+    if args.watch is None:
+        # Take a short baseline so cpu_pct/pid_cpu_pct are meaningful.
+        sampler.sample()
+        time.sleep(0.25)
+        s = sampler.sample()
+        print(json.dumps(s))
+        return 0 if anything_read(s) else 1
+
+    def on_signal(signum, frame):
+        raise Stop()
+
+    signal.signal(signal.SIGTERM, on_signal)
+    signal.signal(signal.SIGINT, on_signal)
+
+    csv_to_stdout = args.csv == "-"
+    csv_fh = None
+    writer = None
+    if args.csv:
+        csv_fh = sys.stdout if csv_to_stdout else open(args.csv, "w", newline="", encoding="utf-8")
+        writer = csv.DictWriter(csv_fh, fieldnames=FIELDS)
+        writer.writeheader()
+        csv_fh.flush()
+
+    samples = []
+    interrupted = False
+    start = time.monotonic()
+    sampler.sample()  # baseline for deltas
+    next_t = start + args.watch
+    try:
+        while True:
+            delay = next_t - time.monotonic()
+            if delay > 0:
+                time.sleep(delay)
+            s = sampler.sample()
+            samples.append(s)
+            if writer:
+                writer.writerow(csv_row(s))
+                csv_fh.flush()
+            if not csv_to_stdout and not args.quiet:
+                print(json.dumps({"type": "sample", **s}), flush=True)
+            if args.count and len(samples) >= args.count:
+                break
+            if args.duration and time.monotonic() - start >= args.duration:
+                break
+            next_t += args.watch
+            if next_t < time.monotonic():  # fell behind; do not burst
+                next_t = time.monotonic() + args.watch
+    except Stop:
+        interrupted = True
+    finally:
+        if csv_fh and not csv_to_stdout:
+            csv_fh.close()
+
+    summary = summarize(samples, interrupted)
+    if not csv_to_stdout:
+        print(json.dumps(summary), flush=True)
+    else:
+        print(json.dumps(summary), file=sys.stderr, flush=True)
+    return 0 if any(anything_read(s) for s in samples) else 1
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except BrokenPipeError:
+        sys.exit(0)

@@ -1,0 +1,20 @@
+[Unit]
+Description=Gizmo Jam first boot: network steps (extra apt packages, Tailscale)
+Documentation=file:///var/log/gizmo-firstboot.log
+Wants=network-online.target
+After=network-online.target time-sync.target
+ConditionPathExists=!/var/lib/gizmo/net.done
+# Keep retrying for as long as it takes (the network may come up much later).
+StartLimitIntervalSec=0
+
+[Service]
+# simple, not oneshot: a oneshot that keeps failing would hold up
+# multi-user.target (and cloud-final, which is ordered after it).
+Type=simple
+ExecStart=/usr/local/lib/gizmo/firstboot.sh --net
+# exit 0 = finished (the script disables this unit); non-zero = retry later
+Restart=on-failure
+RestartSec=120
+
+[Install]
+WantedBy=multi-user.target

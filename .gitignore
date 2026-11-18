@@ -9,6 +9,10 @@ android/
 # Local Godot editor/engine binaries and export templates
 .tools/
 
+# Raspberry Pi SD image builder output: downloads, built images, local config
+# with secrets. The builder itself is tracked in tools/pi-image/.
+.pi-image/
+
 # Export output — rebuild with tools/build.py
 builds/
 

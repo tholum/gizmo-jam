@@ -1,0 +1,358 @@
+#!/bin/bash
+# gizmo-run: start Godot (or an exported game) on the Pi's desktop from SSH,
+# detached, logging to a file; stop/wait for it later by PID.
+set -u
+
+SELF=$(readlink -f "$0")
+BIN_DIR=${SELF%/*}
+GIZMO_ENV=${GIZMO_ENV_BIN:-$BIN_DIR/gizmo-env}
+DEFAULT_GODOT=${GIZMO_GODOT:-/opt/godot/godot}
+RUNTIME_BASE=${GIZMO_RUNTIME_BASE:-/run/user}
+
+usage() {
+    cat <<'EOF'
+Usage:
+  gizmo-run [options] [-- <godot args...>]   start the game in the desktop session
+  gizmo-run --stop PID [--grace S]           stop a game started by gizmo-run
+  gizmo-run --wait-for PID [--timeout S]     wait for it to exit, print exit=N
+  gizmo-run --list [--json]                  games started by gizmo-run this session
+
+Start options:
+  --driver D       rendering driver: opengl3_es (default; the Pi 4 V3D has no
+                   desktop GL 3.3), opengl3, vulkan, or "default" to pass none
+  --display D      display driver: x11 (Xwayland) or wayland; default: Godot's
+                   own choice (x11 first, falls back to wayland)
+  --fullscreen     pass --fullscreen
+  --binary PATH    run PATH (an exported game) instead of /opt/godot/godot
+  --log FILE       log file (default ~/gizmo/logs/<YYYYmmdd-HHMMSS>.log)
+  --wait           stay in the foreground until the game exits
+  --timeout S      with --wait: stop the game after S seconds (exit code 124)
+  --json           print one JSON object instead of key=value lines
+
+Runs as the desktop user even when invoked by root, with a clean environment
+plus the session variables from gizmo-env. The game runs in its own session
+(setsid), so it survives the SSH connection closing.
+
+Output (key=value lines): pid=, log=, user=; with --wait also exit=N and
+timed_out=1 when --timeout fired.
+
+Examples:
+  gizmo-run -- --path ~/gizmo/project
+  gizmo-run --fullscreen --binary ~/gizmo/game/GizmoJam.arm64
+  gizmo-run --wait --timeout 60 -- --path ~/gizmo/project --print-fps
+  gizmo-run --stop 1234
+
+Exit codes: 0 ok (with --wait: the game's exit code), 1 failure / unknown PID,
+2 usage, 3 no desktop session, 4 desktop user unknown, 124 --timeout fired.
+EOF
+}
+
+die() { local code=$1; shift; echo "gizmo-run: $*" >&2; exit "$code"; }
+
+json_str() {
+    local s=$1
+    s=${s//\\/\\\\}; s=${s//\"/\\\"}; s=${s//$'\t'/\\t}; s=${s//$'\n'/\\n}
+    printf '"%s"' "$s"
+}
+
+# starttime (clock ticks since boot) of a PID: field 22 of /proc/PID/stat.
+# Used to tell "our" process from an unrelated one that reused the PID.
+proc_starttime() {
+    local s
+    s=$(cat "/proc/$1/stat" 2>/dev/null) || return 1
+    s=${s##*) }
+    # shellcheck disable=SC2086  # deliberate word split of the stat fields
+    set -- $s
+    printf '%s\n' "${20}"
+}
+
+# Read KEY=VALUE from a registry file.
+reg_get() { sed -n "s/^$2=//p" "$1" 2>/dev/null | head -n 1; }
+
+# ---------------------------------------------------------------------------
+# Internal: the detached supervisor. Runs as the desktop user, starts the game
+# as its child, records PID/starttime in the registry, and records the exit
+# code when the game ends. Not for direct use.
+supervise() {
+    local reg=$1 log=$2 hs=$3 pid st rc
+    shift 3
+    [ "${1:-}" = -- ] && shift
+    umask 022
+    mkdir -p "$reg" && chmod 700 "$reg"
+    if ! mkdir -p "${log%/*}" 2>/dev/null || ! : >>"$log" 2>/dev/null; then
+        printf 'error=cannot write log file %s as %s\n' "$log" "$(id -un)" >"$hs.tmp"
+        mv -f "$hs.tmp" "$hs"
+        exit 1
+    fi
+    exec </dev/null >>"$log" 2>&1
+    printf '# gizmo-run: started %s as %s\n# gizmo-run: cmd:' "$(date -Is)" "$(id -un)"
+    printf ' %q' "$@"
+    printf '\n'
+    # Background children of a non-interactive shell ignore SIGINT/SIGQUIT;
+    # give the game default handlers back.
+    env --default-signal=INT,QUIT "$@" &
+    pid=$!
+    st=$(proc_starttime "$pid") || st=""
+    {
+        printf 'pid=%s\nstarttime=%s\nuser=%s\nstarted=%s\nlog=%s\ncmd=' \
+            "$pid" "$st" "$(id -un)" "$(date -Is)" "$log"
+        printf '%q ' "$@"
+        printf '\n'
+    } >"$reg/$pid.run.tmp" && mv -f "$reg/$pid.run.tmp" "$reg/$pid.run"
+    printf 'pid=%s\n' "$pid" >"$hs.tmp" && mv -f "$hs.tmp" "$hs"
+    trap 'kill -TERM "$pid" 2>/dev/null' TERM INT HUP
+    while :; do
+        wait "$pid"
+        rc=$?
+        kill -0 "$pid" 2>/dev/null || break
+    done
+    printf '# gizmo-run: exited rc=%s at %s\n' "$rc" "$(date -Is)"
+    printf '%s\n' "$rc" >"$reg/$pid.exit.tmp" && mv -f "$reg/$pid.exit.tmp" "$reg/$pid.exit"
+    exit 0
+}
+
+if [ "${1:-}" = --_supervise ]; then
+    shift
+    supervise "$@"
+fi
+
+# ---------------------------------------------------------------------------
+ACTION=run
+DRIVER=opengl3_es
+DISPLAY_DRIVER=""
+FULLSCREEN=0
+BINARY=""
+LOG=""
+WAIT=0
+TIMEOUT=0
+GRACE=10
+JSON=0
+TARGET_PID=""
+GAME_ARGS=()
+
+need_arg() { [ $# -ge 2 ] || die 2 "$1 needs a value"; }
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --driver) need_arg "$@"; DRIVER=$2; shift 2 ;;
+        --driver=*) DRIVER=${1#*=}; shift ;;
+        --display) need_arg "$@"; DISPLAY_DRIVER=$2; shift 2 ;;
+        --display=*) DISPLAY_DRIVER=${1#*=}; shift ;;
+        --fullscreen) FULLSCREEN=1; shift ;;
+        --binary) need_arg "$@"; BINARY=$2; shift 2 ;;
+        --binary=*) BINARY=${1#*=}; shift ;;
+        --log) need_arg "$@"; LOG=$2; shift 2 ;;
+        --log=*) LOG=${1#*=}; shift ;;
+        --wait) WAIT=1; shift ;;
+        --timeout) need_arg "$@"; TIMEOUT=$2; shift 2 ;;
+        --timeout=*) TIMEOUT=${1#*=}; shift ;;
+        --grace) need_arg "$@"; GRACE=$2; shift 2 ;;
+        --grace=*) GRACE=${1#*=}; shift ;;
+        --json) JSON=1; shift ;;
+        --stop) need_arg "$@"; ACTION=stop; TARGET_PID=$2; shift 2 ;;
+        --stop=*) ACTION=stop; TARGET_PID=${1#*=}; shift ;;
+        --wait-for) need_arg "$@"; ACTION=waitfor; TARGET_PID=$2; shift 2 ;;
+        --wait-for=*) ACTION=waitfor; TARGET_PID=${1#*=}; shift ;;
+        --list) ACTION=list; shift ;;
+        -h|--help) usage; exit 0 ;;
+        --) shift; GAME_ARGS=("$@"); break ;;
+        *) usage >&2; die 2 "unknown argument: $1 (put Godot arguments after --)" ;;
+    esac
+done
+
+case "$DRIVER" in opengl3_es|opengl3|vulkan|default) ;; *) die 2 "bad --driver: $DRIVER" ;; esac
+case "$DISPLAY_DRIVER" in ''|x11|wayland) ;; *) die 2 "bad --display: $DISPLAY_DRIVER" ;; esac
+case "$TIMEOUT" in ''|*[!0-9]*) die 2 "--timeout must be whole seconds" ;; esac
+case "$GRACE" in ''|*[!0-9]*) die 2 "--grace must be whole seconds" ;; esac
+if [ -n "$TARGET_PID" ]; then
+    case "$TARGET_PID" in *[!0-9]*) die 2 "PID must be a number: $TARGET_PID" ;; esac
+fi
+
+# Desktop user and the per-session registry directory.
+DUSER=$("$GIZMO_ENV" --user) || exit $?
+DUID=$(id -u "$DUSER") || die 4 "unknown user $DUSER"
+DHOME=$(getent passwd "$DUSER" | cut -d: -f6)
+REG="$RUNTIME_BASE/$DUID/gizmo-run"
+
+# ---------------------------------------------------------------------------
+# PID helpers (all keyed on the registry; nothing is ever matched by name).
+pid_state() {   # prints: running | exited | gone | unknown
+    local pid=$1 st now
+    [ -f "$REG/$pid.run" ] || { echo unknown; return; }
+    [ -f "$REG/$pid.exit" ] && { echo exited; return; }
+    st=$(reg_get "$REG/$pid.run" starttime)
+    now=$(proc_starttime "$pid") || { echo gone; return; }
+    if [ -n "$st" ] && [ "$st" = "$now" ]; then echo running; else echo gone; fi
+}
+
+exit_code_of() { cat "$REG/$1.exit" 2>/dev/null || echo unknown; }
+
+# Wait until the supervisor has written the exit code (or the PID is gone).
+wait_exit_file() {
+    local pid=$1 limit=$2 i=0
+    while [ ! -f "$REG/$pid.exit" ]; do
+        [ "$i" -ge "$limit" ] && return 1
+        sleep 0.1
+        i=$((i + 1))
+    done
+}
+
+do_stop() {   # prints status lines, returns 0 when the PID is no longer running
+    local pid=$1 state sig=TERM i=0
+    state=$(pid_state "$pid")
+    case "$state" in
+        unknown) die 1 "PID $pid was not started by gizmo-run for $DUSER (no record in $REG); refusing to signal it" ;;
+        exited) printf 'pid=%s\nstatus=already_exited\nexit=%s\n' "$pid" "$(exit_code_of "$pid")"; return 0 ;;
+        gone) printf 'pid=%s\nstatus=gone\nexit=unknown\n' "$pid"; return 0 ;;
+    esac
+    kill -TERM "$pid" 2>/dev/null
+    while [ "$(pid_state "$pid")" = running ] && [ "$i" -lt $((GRACE * 10)) ]; do
+        sleep 0.1
+        i=$((i + 1))
+    done
+    if [ "$(pid_state "$pid")" = running ]; then
+        sig=KILL
+        kill -KILL "$pid" 2>/dev/null
+    fi
+    wait_exit_file "$pid" 50 || true
+    printf 'pid=%s\nstatus=stopped\nsignal=%s\nexit=%s\n' "$pid" "$sig" "$(exit_code_of "$pid")"
+    return 0
+}
+
+do_wait_for() {   # prints exit=N [timed_out=1]; returns the game's exit code
+    local pid=$1 state start rc timed_out=0
+    state=$(pid_state "$pid")
+    [ "$state" = unknown ] && die 1 "PID $pid was not started by gizmo-run for $DUSER (no record in $REG)"
+    start=$(date +%s)
+    while :; do
+        state=$(pid_state "$pid")
+        [ "$state" = running ] || break
+        if [ "$TIMEOUT" -gt 0 ] && [ $(( $(date +%s) - start )) -ge "$TIMEOUT" ]; then
+            timed_out=1
+            do_stop "$pid" >/dev/null
+            break
+        fi
+        sleep 0.2
+    done
+    wait_exit_file "$pid" 30 || true
+    rc=$(exit_code_of "$pid")
+    if [ "$JSON" = 1 ]; then
+        printf '{"pid":%s,"exit":%s,"timed_out":%s}\n' "$pid" \
+            "$( [ "$rc" = unknown ] && echo null || echo "$rc")" \
+            "$( [ $timed_out = 1 ] && echo true || echo false)"
+    else
+        printf 'exit=%s\n' "$rc"
+        [ $timed_out = 1 ] && printf 'timed_out=1\n'
+    fi
+    [ $timed_out = 1 ] && return 124
+    [ "$rc" = unknown ] && return 1
+    return "$rc"
+}
+
+do_list() {
+    local f pid state first=1
+    [ "$JSON" = 1 ] && printf '['
+    for f in "$REG"/*.run; do
+        [ -f "$f" ] || continue
+        pid=${f##*/}; pid=${pid%.run}
+        state=$(pid_state "$pid")
+        if [ "$JSON" = 1 ]; then
+            [ $first = 1 ] || printf ','
+            printf '{"pid":%s,"state":"%s","exit":%s,"started":%s,"log":%s,"cmd":%s}' \
+                "$pid" "$state" \
+                "$( [ "$state" = exited ] && exit_code_of "$pid" || echo null)" \
+                "$(json_str "$(reg_get "$f" started)")" \
+                "$(json_str "$(reg_get "$f" log)")" \
+                "$(json_str "$(reg_get "$f" cmd)")"
+        else
+            printf 'pid=%s state=%s exit=%s started=%s log=%s\n' "$pid" "$state" \
+                "$( [ "$state" = exited ] && exit_code_of "$pid" || echo -)" \
+                "$(reg_get "$f" started)" "$(reg_get "$f" log)"
+        fi
+        first=0
+    done
+    [ "$JSON" = 1 ] && printf ']\n'
+    return 0
+}
+
+case "$ACTION" in
+    stop) do_stop "$TARGET_PID"; exit $? ;;
+    waitfor) do_wait_for "$TARGET_PID"; exit $? ;;
+    list) do_list; exit 0 ;;
+esac
+
+# ---------------------------------------------------------------------------
+# run
+SESSION_ENV=()
+plain=$("$GIZMO_ENV" --for "$DUSER" --plain) || exit $?
+while IFS= read -r line; do
+    [ -n "$line" ] && SESSION_ENV+=("$line")
+done <<<"$plain"
+
+if [ -n "$BINARY" ]; then
+    case "$BINARY" in /*) ;; *) BINARY="$PWD/$BINARY" ;; esac
+else
+    BINARY=$DEFAULT_GODOT
+fi
+[ -f "$BINARY" ] || die 1 "no such file: $BINARY"
+[ -x "$BINARY" ] || die 1 "not executable: $BINARY (chmod +x it)"
+
+CMD=("$BINARY")
+[ "$DRIVER" != default ] && CMD+=(--rendering-driver "$DRIVER")
+[ -n "$DISPLAY_DRIVER" ] && CMD+=(--display-driver "$DISPLAY_DRIVER")
+[ "$FULLSCREEN" = 1 ] && CMD+=(--fullscreen)
+CMD+=("${GAME_ARGS[@]}")
+
+if [ -z "$LOG" ]; then
+    base="$DHOME/gizmo/logs/$(date +%Y%m%d-%H%M%S)"
+    LOG="$base.log"
+    n=2
+    while [ -e "$LOG" ]; do LOG="$base-$n.log"; n=$((n + 1)); done
+else
+    case "$LOG" in /*) ;; *) LOG="$PWD/$LOG" ;; esac
+fi
+
+AS=()
+if [ "$(id -u)" = 0 ] && [ "$DUSER" != root ]; then
+    AS=(runuser -u "$DUSER" --)
+elif [ "$(id -un)" != "$DUSER" ]; then
+    die 1 "the desktop belongs to $DUSER; run as $DUSER or root"
+fi
+
+HS="$REG/.start-$(date +%s%N)-$$"
+"${AS[@]}" env -i \
+    HOME="$DHOME" USER="$DUSER" LOGNAME="$DUSER" SHELL=/bin/bash \
+    PATH=/usr/local/bin:/usr/bin:/bin LANG="${LANG:-C.UTF-8}" \
+    "${SESSION_ENV[@]}" \
+    setsid -f "$SELF" --_supervise "$REG" "$LOG" "$HS" -- "${CMD[@]}" \
+    </dev/null >/dev/null 2>&1 \
+    || die 1 "could not start the supervisor as $DUSER"
+
+i=0
+while [ ! -f "$HS" ]; do
+    [ $i -ge 100 ] && die 1 "game did not start within 10s (see $LOG)"
+    sleep 0.1
+    i=$((i + 1))
+done
+hs_content=$(cat "$HS")
+rm -f "$HS" 2>/dev/null || true
+case "$hs_content" in
+    error=*) die 1 "${hs_content#error=}" ;;
+esac
+PID=${hs_content#pid=}
+
+if [ "$JSON" = 1 ] && [ "$WAIT" = 0 ]; then
+    printf '{"pid":%s,"log":%s,"user":%s}\n' "$PID" "$(json_str "$LOG")" "$(json_str "$DUSER")"
+elif [ "$JSON" = 0 ]; then
+    printf 'pid=%s\nlog=%s\nuser=%s\n' "$PID" "$LOG" "$DUSER"
+fi
+
+if [ "$WAIT" = 1 ]; then
+    if [ "$JSON" = 1 ]; then
+        out=$(do_wait_for "$PID"); rc=$?
+        printf '{"pid":%s,"log":%s,"user":%s,%s\n' "$PID" "$(json_str "$LOG")" "$(json_str "$DUSER")" "${out#*,}"
+        exit "$rc"
+    fi
+    do_wait_for "$PID"
+    exit $?
+fi
+exit 0

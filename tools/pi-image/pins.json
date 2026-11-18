@@ -1,0 +1,26 @@
+{
+  "_comment": "Pinned inputs for tools/pi-image/build.py. Bump these deliberately; build.py refuses anything that does not match.",
+  "base_image": {
+    "name": "2026-10-06-raspios-trixie-arm64",
+    "description": "Raspberry Pi OS (64-bit) with desktop, Debian 13 trixie, released 2026-10-06",
+    "url": "https://downloads.raspberrypi.com/raspios_arm64/images/raspios_arm64-2026-10-06/2026-10-06-raspios-trixie-arm64.img.xz",
+    "sha256_url": "https://downloads.raspberrypi.com/raspios_arm64/images/raspios_arm64-2026-10-06/2026-10-06-raspios-trixie-arm64.img.xz.sha256",
+    "size": 1364720984,
+    "sha256": "976766570bee2aaf3047dd78649cfe82abb8fe9687b7f15030cd533ba4e9f7a9",
+    "extract_size": 6744440832,
+    "extract_sha256": "2e0024bca282503a5cb6755500cbd7998cfc141c8f452808b59f9178623d2f0d"
+  },
+  "godot": {
+    "version": "4.5.1-stable",
+    "filename": "Godot_v4.5.1-stable_linux.arm64.zip",
+    "url": "https://github.com/godotengine/godot/releases/download/4.5.1-stable/Godot_v4.5.1-stable_linux.arm64.zip",
+    "sha512_url": "https://github.com/godotengine/godot/releases/download/4.5.1-stable/SHA512-SUMS.txt",
+    "size": 68468991,
+    "sha512": "9d55e9cdccaa4b6528d0b39824d51c47987667babffbab7f83b05fba2ece842a59752b84128332421c9d261fe06846b88480f3b0171af255ea99383d3bc96b2c"
+  },
+  "mtools": {
+    "_comment": "Used to edit the FAT boot partition without root. If mcopy is not on PATH, build.py runs `apt-get download mtools` + `dpkg -x` into .pi-image/tools/mtools (no sudo). Or install it: sudo apt install mtools",
+    "apt_package": "mtools",
+    "commands": ["mcopy", "mmd", "mtype", "mdir"]
+  }
+}
