@@ -127,7 +127,9 @@ func sync(p: Dictionary, role_text: String, is_leading: bool, dash_charge: float
 func _draw() -> void:
 	var tint := color
 	var jolt := Vector2(sin(shake * 37.0) * 9.0, cos(shake * 29.0) * 5.0) * shake
-	draw_set_transform(jolt)
+	# Everything goes through one batch: a few draw calls instead of ~50.
+	var b := Kit.begin(self)
+	b.set_transform(jolt)
 	var w := SIZE.x
 	# Name banner: a full-width slab of the player's colour under the gauge.
 	var banner := Kit.slab(Rect2(6, 78, w - 20, 26))
@@ -138,7 +140,7 @@ func _draw() -> void:
 	Kit.plate(self, banner, tint, 4.0, 4.0)
 	var chip_w := 46.0
 	var chip_x := w - 20 - chip_w
-	draw_colored_polygon(Kit.slab(Rect2(chip_x, 81, chip_w, 20)), Kit.INK if own else Kit.OUTLINE)
+	b.polygon(Kit.slab(Rect2(chip_x, 81, chip_w, 20)), Kit.INK if own else Kit.OUTLINE)
 	var chip_ink := Kit.OUTLINE if own else (tint if role == "CPU" else Kit.INK)
 	Kit.text(self, role, Vector2(chip_x + chip_w * 0.5 + 2.5, Kit.baseline(91.0, 13)), 13, chip_ink, 0, 0.5)
 	var name_room := chip_x - 28.0
@@ -149,21 +151,21 @@ func _draw() -> void:
 	var number_size := 66 if digits.length() < 3 else 48
 	var grow := 1.0 + pop * 0.42
 	var anchor := Vector2(w - 70.0, 40.0)
-	draw_set_transform(jolt + anchor, -0.05 * pop, Vector2(grow, grow))
+	b.set_transform(jolt + anchor, -0.05 * pop, Vector2(grow, grow))
 	var number_tint := tint.lerp(Color.WHITE, clampf(pop * 1.4 + flash, 0.0, 1.0))
 	Kit.text(self, digits, Vector2(0, number_size * Kit.CAP * 0.5), number_size, number_tint, 11, 0.5, 5.0)
-	draw_set_transform(jolt)
+	b.set_transform(jolt)
 	# Leader tab: gold, hanging off the top corner above the number.
 	if crown > 0.0:
 		var s := 2.2 - 1.2 * crown
-		draw_set_transform(jolt + Vector2(w - 36.0, 11.0), 0.06, Vector2(s, s))
+		b.set_transform(jolt + Vector2(w - 36.0, 11.0), 0.06, Vector2(s, s))
 		Kit.plate(self, Kit.slab(Rect2(-33, -13, 60, 26)), Color(Kit.GOLD, clampf(crown * 1.6, 0.0, 1.0)), 4.0, 4.0)
 		Kit.text(self, "1ST", Vector2(0.0, Kit.baseline(0.0, 18)), 18, Color(Kit.OUTLINE, clampf(crown * 1.6, 0.0, 1.0)), 0, 0.5)
-		draw_set_transform(jolt)
+		b.set_transform(jolt)
 	# Dash ring.
 	var ready := charge >= 1.0 and not stunned
 	var kick := 1.0 + spark * 0.22
-	draw_set_transform(jolt + HUB * (1.0 - kick), 0.0, Vector2(kick, kick))
+	b.set_transform(jolt + HUB * (1.0 - kick), 0.0, Vector2(kick, kick))
 	var socket := Kit.OUTLINE.lerp(tint, 0.13)
 	if stunned:
 		Kit.hexring(self, HUB, 35.0, 13.0, 6.0, Kit.DANGER, socket, 3.5, flash)
@@ -175,15 +177,15 @@ func _draw() -> void:
 	if ready:
 		hub_fill = Kit.INK if own else tint.lerp(Color.WHITE, 0.25)
 		mark = Kit.OUTLINE
-	draw_colored_polygon(Kit.hexagon(HUB, 19.0), hub_fill)
+	b.polygon(Kit.hexagon(HUB, 19.0), hub_fill)
 	for dx in [-5.0, 6.0]:
-		draw_colored_polygon(Kit.chevron(HUB + Vector2(dx, 0), 18.0), mark)
-	draw_set_transform(jolt)
+		b.polygon(Kit.chevron(HUB + Vector2(dx, 0), 18.0), mark)
+	b.set_transform(jolt)
 	# Zapped: the stamp sits on the ring for as long as the stun lasts.
 	if stamp > 0.0:
 		var s := 2.4 - 1.4 * stamp
 		var ink := clampf(stamp * 1.6, 0.0, 1.0)
-		draw_set_transform(jolt + Vector2(56.0, 39.0), -0.2, Vector2(s, s))
+		b.set_transform(jolt + Vector2(56.0, 39.0), -0.2, Vector2(s, s))
 		Kit.plate(self, Kit.slab(Rect2(-50, -18, 92, 36)), Color(Kit.DANGER, ink), 4.0, 4.0)
 		Kit.text(self, "ZAP", Vector2(0, 28 * Kit.CAP * 0.5), 28, Color(Kit.INK, ink), 0, 0.5)
-	draw_set_transform(Vector2.ZERO)
+	b.flush()

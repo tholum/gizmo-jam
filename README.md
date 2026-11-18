@@ -436,6 +436,17 @@ human feel test. Hold **Tab** during play to inspect all runner names.
 The graphics probe records frame timings and staged action/result screenshots.
 Xvfb generally uses software rendering; use an accelerated display for GPU data.
 
+The HUD widgets can be checked pixel for pixel after a change to how they
+draw: `tests/hud_batch_shots.gd` renders every plate, status, cue and slam
+state at 1280x720 and 1920x1080 and prints draw calls per widget;
+`tests/hud_batch_compare.py` diffs two runs.
+
+```sh
+xvfb-run -a .tools/Godot_v4.5.1-stable_linux.x86_64 --path . --audio-driver Dummy --script tests/hud_batch_shots.gd -- --out=/tmp/hud_before
+# ...change the drawing code, then shoot again to /tmp/hud_after...
+python3 tests/hud_batch_compare.py /tmp/hud_before /tmp/hud_after --crops /tmp/hud_crops
+```
+
 The updater has unit tests in `tests/test_update.gd` (run by `run_tests.py`,
 including manifests signed by `tools/release.py` with a throwaway key) and
 these slower checks:
@@ -500,7 +511,11 @@ File map:
   validation, signatures, swap plans), `scripts/update_notice.gd` draws the
   version tag and update card, and `scripts/update_keys.gd` lists the trusted
   release keys.
-- `scripts/ui_kit.gd` — the shared palette, fonts and chunky drawing helpers.
+- `scripts/ui_kit.gd` — the shared palette, fonts and chunky drawing helpers,
+  and `Batch`, which gathers a widget's shapes into one triangle list (the
+  engine's own antialiasing geometry) so a HUD plate is a handful of draw
+  calls rather than ~60. Widgets that redraw often call `Kit.begin(self)` at
+  the top of `_draw()` and `flush()` at the end.
 - `scripts/hud_*.gd` — the HUD widgets: `hud_cue` (the top-centre call-out, for
   rods and for surges), `hud_status` (clock, stage chip, standings), `hud_slam`
   (call-out text), `hud_plate` (Spin Cycle's player plate with the coil

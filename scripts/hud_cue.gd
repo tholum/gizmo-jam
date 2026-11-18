@@ -103,7 +103,9 @@ func _draw() -> void:
 	var beat := (1.0 - _alarm) * (1.0 - _alarm) if alarm else 0.0
 	var grow := 1.0 + punch * 0.10 + (0.10 + 0.05 * beat if alarm else 0.0)
 	var pivot := Vector2(SIZE.x * 0.5, 54)
-	draw_set_transform(pivot * (1.0 - grow) + Vector2(0, -22.0 * drop), 0.0, Vector2(grow, grow))
+	# Everything goes through one batch: a few draw calls instead of ~30.
+	var b := Kit.begin(self)
+	b.set_transform(pivot * (1.0 - grow) + Vector2(0, -22.0 * drop), 0.0, Vector2(grow, grow))
 	# Plate.
 	var body := Kit.slab(Rect2(52, 20, 392, 68))
 	if alarm:
@@ -117,7 +119,7 @@ func _draw() -> void:
 	# Time-to-impact chip.
 	var chip := Kit.slab(Rect2(300, 30, 134, 48))
 	var bright := hot or alarm
-	draw_colored_polygon(chip, Kit.INK if bright else Kit.OUTLINE)
+	b.polygon(chip, Kit.INK if bright else Kit.OUTLINE)
 	var chip_text: String = str(style[3]) if hot else eta_text
 	var chip_size := Kit.fit(chip_text, 34, 116.0, 12)
 	Kit.text(self, chip_text, Vector2(373, Kit.baseline(54.0, chip_size)), chip_size, Kit.OUTLINE if bright else Kit.INK, 0, 0.5)
@@ -127,45 +129,45 @@ func _draw() -> void:
 		var wedge := Kit.wedge(Vector2(62, 46 if up else 62), 96, 84, up)
 		Kit.plate(self, wedge, Kit.INK, 5.0, 7.0)
 		var core := Kit.wedge(Vector2(62, 52 if up else 56), 50, 44, up)
-		draw_colored_polygon(core, tint)
+		b.polygon(core, tint)
 		Kit.stroke(self, core, Kit.OUTLINE, 3.0)
 	else:
-		_badge(Vector2(62, 54), shape, fill if alarm else tint)
+		_badge(b, Vector2(62, 54), shape, fill if alarm else tint)
 	if demo:
-		draw_set_transform(Vector2.ZERO)
+		b.flush()
 		return
 	# Fuse.
 	var fuse := Kit.slab(Rect2(112, 98, 340, 14))
 	Kit.plate(self, fuse, Kit.OUTLINE, 4.0, 0.0)
 	if progress > 0.01:
 		var lit := Kit.slab(Rect2(112, 98, maxf(8.0, 340.0 * progress), 14))
-		draw_colored_polygon(lit, Kit.INK if bright else tint)
+		b.polygon(lit, Kit.INK if bright else tint)
 	if not hint.is_empty():
 		Kit.text(self, hint, Vector2(286, 136), 18, Kit.INK, 7, 0.5)
-	draw_set_transform(Vector2.ZERO)
+	b.flush()
 
 ## Live Wire's leading shape: a white hex tile with the glyph punched in.
-func _badge(center: Vector2, glyph: String, tint: Color) -> void:
+func _badge(b: Kit.Batch, center: Vector2, glyph: String, tint: Color) -> void:
 	Kit.plate(self, Kit.hexagon(center, 50.0), Kit.INK, 5.0, 7.0)
 	match glyph:
 		"bolt":
 			var bolt := Kit.bolt(center + Vector2(1, 0), 33.0)
-			draw_colored_polygon(bolt, tint)
+			b.polygon(bolt, tint)
 			Kit.stroke(self, bolt, Kit.OUTLINE, 3.0)
 		"chevrons":
 			for dx in [-11.0, 13.0]:
 				var mark := Kit.chevron(center + Vector2(dx, 0), 40.0)
-				draw_colored_polygon(mark, tint)
+				b.polygon(mark, tint)
 				Kit.stroke(self, mark, Kit.OUTLINE, 3.0)
 		"arrows":
 			for k in 4:
 				var dir := Vector2.UP.rotated(k * PI * 0.5)
 				var side := dir.orthogonal()
 				var head := PackedVector2Array([center + dir * 33.0, center + dir * 13.0 + side * 15.0, center + dir * 13.0 - side * 15.0])
-				draw_colored_polygon(head, tint)
+				b.polygon(head, tint)
 				Kit.stroke(self, head, Kit.OUTLINE, 3.0)
 		"ring":
 			var loop := Kit.hexagon(center, 23.0)
 			Kit.stroke(self, loop, Kit.OUTLINE, 17.0)
 			Kit.stroke(self, loop, tint, 10.0)
-			draw_colored_polygon(Kit.hexagon(center, 8.0), Kit.OUTLINE)
+			b.polygon(Kit.hexagon(center, 8.0), Kit.OUTLINE)
