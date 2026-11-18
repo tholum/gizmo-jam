@@ -66,15 +66,27 @@ func run() -> void:
 	for r in main.arena.runners:
 		assert(not r.visual.planar.visible)
 	assert(main.arena.level == "balanced" and is_equal_approx(root.scaling_3d_scale, 1.0), "set_detail(false) is Balanced, at full 3D resolution")
-	# Low: lower 3D resolution, plainer scenery, two lights fewer, no fog, the
-	# lightest robot mesh; still blob shadows and no MSAA. Back to Balanced cleanly.
+	# Low: lower 3D resolution, the lightest robot mesh, light and fog baked into
+	# the scenery; still blob shadows and no MSAA. Back to Balanced cleanly.
 	var balanced_tris: int = main.arena.runners[0].visual.lite.mesh.surface_get_array_index_len(0) / 3
+	# On a software rasteriser Low is the plain cut: two lights fewer and the
+	# sparse scenery. Its fog and light are baked into the scenery shaders.
+	main.arena.software = true
 	main.arena.set_level("low")
 	assert(root.scaling_3d_scale < 1.0 and root.msaa_3d == Viewport.MSAA_DISABLED, "Low renders 3D below full resolution, without MSAA")
-	assert(not main.arena.environment.fog_enabled and not main.arena.high_fx.visible, "Low has no fog or High atmosphere")
-	for light in main.arena.fill_lights: assert(not light.visible, "Low keeps only the key light")
-	for node in main.arena.backdrop + main.arena.structure: assert(not node.visible, "Low hides the full scenery")
-	for node in main.arena.backdrop_lite + main.arena.structure_lite: assert(node.visible, "Low shows the sparse scenery")
+	assert(not main.arena.environment.fog_enabled and not main.arena.high_fx.visible, "Low (software) has no engine fog or High atmosphere")
+	for light in main.arena.fill_lights: assert(not light.visible, "Low (software) keeps only the key light")
+	for node in main.arena.backdrop + main.arena.structure: assert(not node.visible, "Low (software) hides the full scenery")
+	for node in main.arena.backdrop_lite + main.arena.structure_lite: assert(node.visible, "Low (software) shows the sparse scenery")
+	assert(main.arena.solid_material.shader.code.contains("unshaded") and float(main.arena.solid_material.get_shader_parameter("fog_color").w) > 0.0, "Low bakes light and fog into the scenery")
+	# On a GPU (a Raspberry Pi) Low keeps High's scenery, lights and atmosphere;
+	# only the engine fog is replaced by the baked one.
+	main.arena.software = false
+	main.arena.set_level("low")
+	assert(not main.arena.environment.fog_enabled and main.arena.high_fx.visible, "Low (GPU) shows High's atmosphere, with baked fog")
+	for light in main.arena.fill_lights: assert(light.visible, "Low (GPU) keeps all three lights")
+	for node in main.arena.backdrop + main.arena.structure: assert(node.visible, "Low (GPU) shows the full scenery")
+	for node in main.arena.backdrop_lite + main.arena.structure_lite: assert(not node.visible, "Low (GPU) hides the sparse scenery")
 	for r in main.arena.runners:
 		assert(r.visual.lite.visible and not r.visual.mesh.visible and r.visual.shadow.visible, "Low skins the light mesh over a blob shadow")
 		assert(r.visual.lite.mesh.surface_get_array_index_len(0) / 3 < balanced_tris, "Low's robot mesh is lighter than Balanced's")

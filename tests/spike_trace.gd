@@ -61,6 +61,7 @@ func run() -> void:
 	main.model.countdown = 0.0
 	main.model.phase = "running"
 	for p in main.model.players: p.bot = true
+	main.scaled_view.force_direct = true
 	var frames: Array = []
 	var deadline := Time.get_ticks_msec() + int(secs * 1000.0)
 	var prev := state(main)

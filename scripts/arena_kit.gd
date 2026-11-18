@@ -109,14 +109,17 @@ void fragment() {
 }
 """
 
-## Low only: the key light and ambient light worked out per vertex, so the
-## lit shaders below can be unshaded. This is the Compatibility renderer's own
-## formula for one directional light (Burley diffuse; ambient + key), so
-## flat-shaded scenery comes out the same as the lit version less a ~2%
-## specular sheen (tests/low_bake_compare.gd measures it). On a Raspberry Pi 4
-## that saves ~4 ms a frame: having any light on a material is what costs
-## there, not per-pixel versus per-vertex. arena.gd sets the three uniforms, in
-## linear light (no source_color: they are energies and may exceed 1).
+## Low only: the lights and the depth fog worked out per vertex, so the lit
+## shaders below can be unshaded. This is the Compatibility renderer's own
+## formula for directional lights (Burley diffuse; ambient + each light) and for
+## depth fog (pow(smoothstep(begin, end, distance), curve) * density, mixed in
+## linear before tonemapping), so flat-shaded scenery comes out as High lights
+## and fogs it, less a ~2% specular sheen (tests/low_bake_compare.gd measures
+## it). On a Raspberry Pi 4 that saves ~4 ms a frame for the lights (having any
+## light on a material is what costs there, not per-pixel versus per-vertex)
+## and ~4.6 ms for the fog. arena.gd sets the uniforms, in linear light (no
+## source_color: they are energies and may exceed 1). Fog per vertex is a
+## close match on this scenery, whose far faces are what fog reaches.
 ##
 ## Colour spaces: the Compatibility renderer treats ALBEDO and EMISSION as sRGB
 ## for every material, lit or not (it runs its srgb_to_linear() on them, and
@@ -127,17 +130,32 @@ void fragment() {
 const BAKED_LIGHT := """
 uniform vec3 key_dir = vec3(0.28, 0.9, 0.36);
 uniform vec3 key_light = vec3(1.0);
+uniform vec3 fill_dir = vec3(0.0, 1.0, 0.0);
+uniform vec3 fill_light = vec3(0.0);
+uniform vec3 up_dir = vec3(0.0, 1.0, 0.0);
+uniform vec3 up_light = vec3(0.0);
 uniform vec3 ambient_light = vec3(0.6);
+// rgb: fog colour times energy, linear; a: density (0 = no fog).
+uniform vec4 fog_color = vec4(0.0);
+// begin, end, curve.
+uniform vec3 fog_range = vec3(17.0, 70.0, 0.8);
 float baked_schlick(float x) { float m = clamp(1.0 - x, 0.0, 1.0); return m * m * m * m * m; }
-vec3 baked_light(vec3 n, vec3 world_pos, vec3 eye, float rough) {
-	vec3 l = normalize(key_dir);
-	vec3 v = normalize(eye - world_pos);
+float baked_burley(vec3 n, vec3 v, vec3 to_light, float rough) {
+	vec3 l = normalize(to_light);
 	float ndl = clamp(dot(n, l), 0.0, 1.0);
 	float ndv = max(dot(n, v), 1e-4);
 	float ldh = clamp(dot(l, normalize(v + l)), 0.0, 1.0);
 	float fd90 = 2.0 * ldh * ldh * rough - 0.5;
-	float burley = (1.0 + fd90 * baked_schlick(ndv)) * (1.0 + fd90 * baked_schlick(ndl)) * ndl;
-	return ambient_light + key_light * burley;
+	return (1.0 + fd90 * baked_schlick(ndv)) * (1.0 + fd90 * baked_schlick(ndl)) * ndl;
+}
+vec3 baked_light(vec3 n, vec3 world_pos, vec3 eye, float rough) {
+	vec3 v = normalize(eye - world_pos);
+	return ambient_light + key_light * baked_burley(n, v, key_dir, rough)
+		+ fill_light * baked_burley(n, v, fill_dir, rough) + up_light * baked_burley(n, v, up_dir, rough);
+}
+float baked_fog(vec3 view_pos) {
+	if (fog_color.a <= 0.0) return 0.0;
+	return pow(smoothstep(fog_range.x, fog_range.y, length(view_pos)), fog_range.z) * fog_color.a;
 }
 vec3 baked_to_linear(vec3 c) { return c * (c * (c * 0.305306011 + 0.682171111) + 0.012522878); }
 vec3 baked_to_albedo(vec3 l) {
@@ -149,11 +167,11 @@ vec3 baked_to_albedo(vec3 l) {
 }
 """
 
-## Low: SOLID_SHADER with baked light. The whole colour is per vertex (the
-## structure is flat-shaded, so this is exact for a directional light).
+## Low: SOLID_SHADER with baked light and fog. The whole colour is per vertex
+## (the structure is flat-shaded, so the light is exact for directional lights).
 const SOLID_BAKED_SHADER := """
 shader_type spatial;
-render_mode unshaded;
+render_mode unshaded, fog_disabled;
 uniform vec3 bounce : source_color = vec3(0.1, 0.8, 0.8);
 uniform float bounce_power = 0.3;
 uniform float roughness = 0.72;
@@ -165,71 +183,123 @@ void vertex() {
 	vec3 tint = pow(COLOR.rgb, vec3(2.2));
 	float under = 0.5 - 0.5 * n.y;
 	vec3 lit = baked_to_linear(tint) * baked_light(n, world_pos, CAMERA_POSITION_WORLD, roughness);
-	shade = baked_to_albedo(lit + baked_to_linear(tint * bounce * under * under * bounce_power));
+	lit += baked_to_linear(tint * bounce * under * under * bounce_power);
+	shade = baked_to_albedo(mix(lit, fog_color.rgb, baked_fog((MODELVIEW_MATRIX * vec4(VERTEX, 1.0)).xyz)));
 }
 void fragment() {
 	ALBEDO = shade;
 }
 """
 
-## Low: DECK_SHADER with baked light and a lighter pattern. Keeps the plates
-## and seams with their per-plate tone, the lane grooves, the travelling
-## chevrons, the kerbs with their dashed light strip and the contact shading;
-## drops the rivets and the fwidth() edge estimate (a fixed edge width instead).
+## Low: GLOW_SHADER with the fog worked out per vertex (lamps and light strips).
+const GLOW_BAKED_SHADER := """
+shader_type spatial;
+render_mode unshaded, fog_disabled;
+uniform float energy = 1.6;
+""" + BAKED_LIGHT + """
+varying vec3 shade;
+void vertex() {
+	vec3 lit = baked_to_linear(pow(COLOR.rgb, vec3(2.2)) * energy * COLOR.a);
+	shade = baked_to_albedo(mix(lit, fog_color.rgb, baked_fog((MODELVIEW_MATRIX * vec4(VERTEX, 1.0)).xyz)));
+}
+void fragment() {
+	ALBEDO = shade;
+}
+"""
+
+## The deck's moving pattern (plates, seams, per-plate tone, rivets; chevron
+## mask in alpha), rendered once into a texture across one turn of the belt by
+## arena.gd for Low's deck: the same maths as DECK_SHADER, laid out with angle
+## along x and radius (2.5 to 8.1) down y. Mipmapped and filtered, it reads like
+## the analytic version without its ~15 smoothsteps per pixel.
+const DECK_PATTERN_SHADER := """
+shader_type canvas_item;
+render_mode blend_disabled;
+uniform vec3 plate : source_color = vec3(0.30, 0.33, 0.39);
+uniform vec3 seam_tint : source_color = vec3(0.16, 0.18, 0.23);
+uniform vec2 texels = vec2(4096.0, 512.0);
+const float PANELS = 24.0;
+const float RING = 1.8667;
+float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+void fragment() {
+	float c = UV.x * TAU;
+	float r = 2.5 + UV.y * 5.6;
+	float aa = max(TAU * r / texels.x, 5.6 / texels.y);
+	float cell = c / TAU * PANELS;
+	float span = TAU / PANELS * r;
+	float along = fract(cell) * span;
+	float ring = (r - 2.5) / RING;
+	float rf = fract(ring) * RING;
+	float d_ang = min(along, span - along);
+	float d_rad = min(rf, RING - rf);
+	float seam_d = min(d_ang, d_rad);
+	float seam = 1.0 - smoothstep(0.016, 0.016 + aa, seam_d);
+	float lip = (1.0 - smoothstep(0.03, 0.10, seam_d)) * 0.10;
+	float tone = 0.95 + 0.09 * hash(vec2(mod(floor(cell), PANELS), floor(ring)));
+	vec3 col = plate * tone * (1.0 + lip);
+	float bolt = 1.0 - smoothstep(0.04, 0.04 + aa, length(vec2(d_ang - 0.17, d_rad - 0.17)));
+	col = mix(col, seam_tint * 1.25, bolt * 0.85);
+	col = mix(col, seam_tint, seam);
+	float u = (fract(c / TAU * 6.0) - 0.5) * (TAU / 6.0) * r;
+	float v = r - 5.3;
+	float s = (u - abs(v) * 0.8) / 0.4 + 1.5;
+	float chevron = (1.0 - smoothstep(0.24, 0.24 + aa * 1.8, abs(fract(s) - 0.5))) * step(0.0, s) * step(s, 3.0);
+	chevron *= 1.0 - smoothstep(0.82, 0.82 + aa, abs(v));
+	COLOR = vec4(col, chevron);
+}
+"""
+
+## Low: DECK_SHADER's look with baked light and fog, its moving pattern read
+## from DECK_PATTERN_SHADER's texture (scrolled by `belt`) and the polar
+## position from the mesh's UV (angle / TAU, radius; arena.gd tessellates the
+## deck finely for that). The parts that stay put (lane grooves, kerbs, the
+## dashed light strip, contact shading) are worked out here as before.
 const DECK_LOW_SHADER := """
 shader_type spatial;
-render_mode unshaded;
+render_mode unshaded, fog_disabled;
+uniform sampler2D pattern : repeat_enable, filter_linear_mipmap;
 uniform float belt = 0.0;
 uniform float boost = 0.0;
-uniform vec3 plate : source_color = vec3(0.30, 0.33, 0.39);
 uniform vec3 seam_tint : source_color = vec3(0.16, 0.18, 0.23);
 uniform vec3 paint : source_color = vec3(0.93, 0.95, 0.96);
 uniform vec3 kerb : source_color = vec3(0.16, 0.18, 0.23);
 uniform vec3 strip : source_color = vec3(0.2, 0.95, 1.0);
 uniform vec3 bounce : source_color = vec3(0.1, 0.8, 0.8);
 """ + BAKED_LIGHT + """
-const float PANELS = 24.0;
-const float RING = 1.8667;
-const float AA = 0.03;
-float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
-varying vec3 local;
 varying vec3 light_plate;
 varying vec3 light_paint;
+varying float fog_amount;
+varying float edge;
 void vertex() {
-	local = VERTEX;
 	vec3 n = normalize((MODEL_MATRIX * vec4(NORMAL, 0.0)).xyz);
 	vec3 world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	vec3 view_pos = (MODELVIEW_MATRIX * vec4(VERTEX, 1.0)).xyz;
 	light_plate = baked_light(n, world_pos, CAMERA_POSITION_WORLD, 0.78);
 	light_paint = baked_light(n, world_pos, CAMERA_POSITION_WORLD, 0.5);
+	fog_amount = baked_fog(view_pos);
+	// What fwidth(r) measures, per vertex: a pixel's size on the deck, widened
+	// as the deck tilts away from the camera.
+	float pixel = length(view_pos) * 2.0 / (PROJECTION_MATRIX[1][1] * VIEWPORT_SIZE.y);
+	float tilt = max(abs(dot(normalize(-view_pos), (MODELVIEW_MATRIX * vec4(NORMAL, 0.0)).xyz)), 0.25);
+	edge = clamp(pixel / tilt * 1.5, 0.004, 0.08);
 }
 void fragment() {
-	float angle = atan(local.x, local.z);
-	float r = length(local.xz);
-	float c = angle + belt;
-	float span = TAU / PANELS * r;
-	float along = fract(c / TAU * PANELS) * span;
-	float rf = fract((r - 2.5) / RING) * RING;
-	float seam_d = min(min(along, span - along), min(rf, RING - rf));
-	float seam = 1.0 - smoothstep(0.016, 0.016 + AA, seam_d);
-	float lip = (1.0 - smoothstep(0.03, 0.10, seam_d)) * 0.10;
-	float tone = 0.95 + 0.09 * hash(vec2(mod(floor(c / TAU * PANELS), PANELS), floor((r - 2.5) / RING)));
+	float r = UV.y;
+	vec4 m = texture(pattern, vec2(UV.x + belt / TAU, (r - 2.5) / 5.6));
+	vec3 col = m.rgb;
+	float chevron = m.a;
 	float lane = (r - 3.0) / 0.87 + 0.5;
 	float lane_d = abs(lane - round(lane)) * 0.87;
-	float groove = (1.0 - smoothstep(0.012, 0.012 + AA, lane_d)) * step(0.5, lane) * step(lane, 5.5);
-	vec3 col = mix(plate * tone * (1.0 + lip), seam_tint, max(seam, groove * 0.55));
-	float u = (fract(c / TAU * 6.0) - 0.5) * (TAU / 6.0) * r;
-	float v = r - 5.3;
-	float s = (u - abs(v) * 0.8) / 0.4 + 1.5;
-	float chevron = (1.0 - smoothstep(0.24, 0.24 + AA * 1.8, abs(fract(s) - 0.5))) * step(0.0, s) * step(s, 3.0);
-	chevron *= 1.0 - smoothstep(0.82, 0.82 + AA, abs(v));
+	float groove = (1.0 - smoothstep(0.012, 0.012 + edge, lane_d)) * step(0.5, lane) * step(lane, 5.5);
+	col = mix(col, seam_tint, groove * 0.55);
 	col = mix(col, paint, chevron * 0.92);
 	col = mix(col, kerb, max(smoothstep(7.84, 7.86, r), 1.0 - smoothstep(2.72, 2.74, r)));
-	float dash = step(fract(angle / TAU * 48.0), 0.72);
+	float dash = step(fract(UV.x * 48.0), 0.72);
 	float inlay = (smoothstep(7.91, 7.93, r) - smoothstep(8.0, 8.02, r) + smoothstep(2.58, 2.6, r) - smoothstep(2.66, 2.68, r)) * dash;
 	col *= mix(0.72, 1.0, smoothstep(2.5, 3.5, r)) * mix(0.86, 1.0, smoothstep(8.1, 7.5, r));
 	vec3 lit = baked_to_linear(mix(col, vec3(0.0), inlay)) * mix(light_plate, light_paint, chevron);
 	vec3 glow = strip * inlay * (1.5 + boost * 2.5) + paint * chevron * boost * 0.7 + col * bounce * 0.06;
-	ALBEDO = baked_to_albedo(lit + baked_to_linear(glow));
+	ALBEDO = baked_to_albedo(mix(lit + baked_to_linear(glow), fog_color.rgb, fog_amount));
 }
 """
 

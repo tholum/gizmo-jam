@@ -1679,8 +1679,7 @@ func _tone(frequency: float, duration: float) -> void:
 static func default_graphics(adapter_name: String) -> String:
 	var adapter := adapter_name.to_lower()
 	if adapter.is_empty(): return "balanced"
-	for software in ["llvmpipe", "softpipe", "swiftshader", "lavapipe", "software", "microsoft basic render", "gdi generic"]:
-		if software in adapter: return "low"
+	if Arena.software_renderer(adapter): return "low"
 	# Raspberry Pi GPUs (Mesa reports "V3D 4.2" on a Pi 4, "V3D 7.1" on a Pi 5,
 	# "VC4" on older boards): only Low holds 30 fps on a Pi 4.
 	for small in ["v3d", "vc4"]:
@@ -1746,6 +1745,8 @@ func _apply_graphics() -> void:
 		scaled_view = ScaledView.new()
 		scaled_view.name = "ScaledView"
 		add_child(scaled_view)
+		scaled_view.shade_source = arena.wants_picture_shade
+		scaled_view.direct_source = func(): return not test_mode
 	scaled_view.set_scale(Arena.LOW_RENDER_SCALE if graphics_level == "low" else 1.0, true)
 
 func _set_graphics(level: String) -> void:
