@@ -35,6 +35,11 @@ func state(main: Node) -> Dictionary:
 		"vmem_mb": snappedf(Performance.get_monitor(Performance.RENDER_VIDEO_MEM_USED) / 1048576.0, 0.1),
 	}
 	if "waves" in m: d["waves"] = m.waves.size()
+	# Pop-up text: a new message at a new size makes the font rasterise glyphs.
+	for key in ["hud_feedback", "hud_count", "hud_intro"]:
+		var node: Variant = main.get(key)
+		if node is Object and is_instance_valid(node) and "message" in node:
+			d[key] = str(node.message)
 	if "speed" in m: d["speed"] = snappedf(float(m.speed), 0.01)
 	return d
 

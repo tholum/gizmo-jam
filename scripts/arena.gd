@@ -82,6 +82,9 @@ var glass_material: ShaderMaterial
 var glow_material: ShaderMaterial
 var solid_material: ShaderMaterial
 var rod_templates: Dictionary = {}
+## Round-start warm-up (see _warm_up()).
+var _warm: Node3D
+var _warm_frames := 0
 var rod_materials: Dictionary = {}
 var client_motion := false
 var show_identities := false
@@ -137,6 +140,10 @@ func _ready() -> void:
 	_build_impact_line()
 	rod_root = Node3D.new()
 	add_child(rod_root)
+	# Built now, not when the first rod spawns: building one is a few ms of
+	# GDScript geometry, far more on a Raspberry Pi.
+	_rod_template("jump")
+	_rod_template("duck")
 	for i in 6:
 		_build_runner(i)
 	_build_effects()
@@ -687,6 +694,12 @@ func update_visuals(model: RefCounted, delta: float, own_slot: int = 0) -> void:
 			runners[i].hp = model.players[i].hp
 			runners[i].score = model.players[i].score
 			_reset_runner(runners[i])
+		_warm_up()
+	if _warm_frames > 0:
+		_warm_frames -= 1
+		if _warm_frames == 0 and is_instance_valid(_warm):
+			_warm.queue_free()
+			_warm = null
 	decor_time += delta
 	shake = maxf(0.0, shake - delta * 3.2)
 	boost = maxf(0.0, boost - delta * 0.9)
@@ -890,6 +903,35 @@ func _rod_template(kind: String) -> Node3D:
 		node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	rod_templates[kind] = root
 	return root
+
+## The first rod and the first dust and spark bursts must not hitch: the
+## Compatibility renderer compiles a material's shader the first time it draws
+## it, ~100-150 ms on a Raspberry Pi 4 right as the first rod arrives. So when a
+## round starts (the countdown) one rod of each kind and one burst of each kind
+## are drawn for a few frames tucked under the deck below the first runner:
+## inside the camera's view, so they are drawn and compiled, but hidden behind
+## the deck.
+func _warm_up() -> void:
+	if not is_inside_tree() or runners.is_empty():
+		return
+	if is_instance_valid(_warm):
+		_warm.queue_free()
+	_warm = Node3D.new()
+	_warm.name = "WarmUp"
+	add_child(_warm)
+	var under: Vector3 = runners[0].visual.global_position + Vector3(0.0, -1.1, 0.0)
+	_warm.global_position = under
+	for kind in ["jump", "duck"]:
+		var rod: Node3D = _rod_template(kind).duplicate()
+		rod.scale = Vector3.ONE * 0.15
+		_warm.add_child(rod)
+	for pool in [dust_pool, spark_pool]:
+		if not pool.is_empty():
+			var burst: CPUParticles3D = pool[0]
+			burst.global_position = under
+			burst.restart()
+			burst.emitting = true
+	_warm_frames = 4
 
 func _make_rod(kind: String) -> Node3D:
 	var root: Node3D = _rod_template(kind).duplicate()
