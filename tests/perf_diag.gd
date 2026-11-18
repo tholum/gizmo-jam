@@ -178,10 +178,20 @@ func run() -> void:
 	var cls: Array = []
 	layers(root, cls)
 	await variant("no_2d", func(): held = set_all(cls, "visible", false), func(): restore(cls, "visible", held))
-	await variant("no_3d", func(): root.disable_3d = true, func(): root.disable_3d = false)
-	var s: float = root.scaling_3d_scale
-	for scale in [1.0, 0.5, 0.33]:
-		await variant("scale_%s" % str(scale), func(): root.scaling_3d_scale = scale, func(): root.scaling_3d_scale = s)
+	var sview: Node = main.scaled_view
+	if sview and sview.enabled():
+		# Low through scripts/scaled_view.gd: the root draws no 3D itself.
+		var base_scale: float = sview.scale
+		await variant("no_3d", func(): sview.view.render_target_update_mode = SubViewport.UPDATE_DISABLED; sview.layer.visible = false,
+			func(): sview.view.render_target_update_mode = SubViewport.UPDATE_ALWAYS; sview.layer.visible = true)
+		for scale in [1.0, 0.5, 0.33]:
+			await variant("sv_scale_%s" % str(scale), func(): sview.set_scale(scale), func(): sview.set_scale(base_scale))
+		await variant("builtin_scaling_instead", func(): sview.set_scale(1.0), func(): sview.set_scale(base_scale))
+	else:
+		await variant("no_3d", func(): root.disable_3d = true, func(): root.disable_3d = false)
+		var s: float = root.scaling_3d_scale
+		for scale in [1.0, 0.5, 0.33]:
+			await variant("scale_%s" % str(scale), func(): root.scaling_3d_scale = scale, func(): root.scaling_3d_scale = s)
 
 	var lights: Array = active.find_children("*", "Light3D", true, false)
 	await variant("no_lights", func(): held = set_all(lights, "visible", false), func(): restore(lights, "visible", held))

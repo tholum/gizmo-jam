@@ -927,6 +927,12 @@ func set_level(value: String) -> void:
 		environment.fog_enabled = not low
 		# Two fewer lights: lift the ambient so undersides stay out of black.
 		environment.ambient_light_energy = 1.05 if low else 0.78
+	# Low bakes the key and ambient light into the structure and the deck
+	# (Kit.BAKED_LIGHT): on a Raspberry Pi 4 any lit material costs ~4 ms.
+	solid_material.shader = Kit.shader(Kit.SOLID_BAKED_SHADER if low else Kit.SOLID_SHADER)
+	belt_material.shader = Kit.shader(Kit.DECK_LOW_SHADER if low else Kit.DECK_SHADER)
+	if low:
+		_bake_light([solid_material, belt_material])
 	for light in fill_lights: light.visible = not low
 	for node in backdrop: node.visible = not low
 	for node in backdrop_lite: node.visible = low
@@ -939,6 +945,16 @@ func set_level(value: String) -> void:
 	for runner in runners:
 		# With silhouette shadows the blob only grounds the feet.
 		runner.visual.set_quality(level, 0.16 if detailed else 0.72)
+
+## The key light and ambient as Kit.BAKED_LIGHT wants them: linear, energy in.
+func _bake_light(materials: Array) -> void:
+	var to_light := key_light.basis.z.normalized()
+	var key := key_light.light_color.srgb_to_linear() * key_light.light_energy
+	var amb := environment.ambient_light_color.srgb_to_linear() * environment.ambient_light_energy
+	for mat: ShaderMaterial in materials:
+		mat.set_shader_parameter("key_dir", to_light)
+		mat.set_shader_parameter("key_light", Vector3(key.r, key.g, key.b))
+		mat.set_shader_parameter("ambient_light", Vector3(amb.r, amb.g, amb.b))
 
 func predict_action(action: String, pressed: bool) -> void:
 	if not client_motion: return

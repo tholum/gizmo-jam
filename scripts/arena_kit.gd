@@ -109,6 +109,130 @@ void fragment() {
 }
 """
 
+## Low only: the key light and ambient light worked out per vertex, so the
+## lit shaders below can be unshaded. This is the Compatibility renderer's own
+## formula for one directional light (Burley diffuse; ambient + key), so
+## flat-shaded scenery comes out the same as the lit version less a ~2%
+## specular sheen (tests/low_bake_compare.gd measures it). On a Raspberry Pi 4
+## that saves ~4 ms a frame: having any light on a material is what costs
+## there, not per-pixel versus per-vertex. arena.gd sets the three uniforms, in
+## linear light (no source_color: they are energies and may exceed 1).
+##
+## Colour spaces: the Compatibility renderer treats ALBEDO and EMISSION as sRGB
+## for every material, lit or not (it runs its srgb_to_linear() on them, and
+## passes source_color uniforms through unconverted), lights in linear, then
+## tonemaps. So the baked shaders take the lit shader's ALBEDO and EMISSION to
+## linear with that same function, light them, and hand back the sRGB value
+## that it turns into the lit result: baked_to_albedo() inverts it.
+const BAKED_LIGHT := """
+uniform vec3 key_dir = vec3(0.28, 0.9, 0.36);
+uniform vec3 key_light = vec3(1.0);
+uniform vec3 ambient_light = vec3(0.6);
+float baked_schlick(float x) { float m = clamp(1.0 - x, 0.0, 1.0); return m * m * m * m * m; }
+vec3 baked_light(vec3 n, vec3 world_pos, vec3 eye, float rough) {
+	vec3 l = normalize(key_dir);
+	vec3 v = normalize(eye - world_pos);
+	float ndl = clamp(dot(n, l), 0.0, 1.0);
+	float ndv = max(dot(n, v), 1e-4);
+	float ldh = clamp(dot(l, normalize(v + l)), 0.0, 1.0);
+	float fd90 = 2.0 * ldh * ldh * rough - 0.5;
+	float burley = (1.0 + fd90 * baked_schlick(ndv)) * (1.0 + fd90 * baked_schlick(ndl)) * ndl;
+	return ambient_light + key_light * burley;
+}
+vec3 baked_to_linear(vec3 c) { return c * (c * (c * 0.305306011 + 0.682171111) + 0.012522878); }
+vec3 baked_to_albedo(vec3 l) {
+	l = max(l, vec3(0.0));
+	vec3 y = max(vec3(1.055) * pow(l, vec3(0.416666667)) - vec3(0.055), vec3(0.0));
+	// One Newton step onto the renderer's own polynomial.
+	vec3 slope = y * (y * 0.915918033 + 1.364342222) + 0.012522878;
+	return max(y - (baked_to_linear(y) - l) / max(slope, vec3(1e-4)), vec3(0.0));
+}
+"""
+
+## Low: SOLID_SHADER with baked light. The whole colour is per vertex (the
+## structure is flat-shaded, so this is exact for a directional light).
+const SOLID_BAKED_SHADER := """
+shader_type spatial;
+render_mode unshaded;
+uniform vec3 bounce : source_color = vec3(0.1, 0.8, 0.8);
+uniform float bounce_power = 0.3;
+uniform float roughness = 0.72;
+""" + BAKED_LIGHT + """
+varying vec3 shade;
+void vertex() {
+	vec3 n = normalize((MODEL_MATRIX * vec4(NORMAL, 0.0)).xyz);
+	vec3 world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	vec3 tint = pow(COLOR.rgb, vec3(2.2));
+	float under = 0.5 - 0.5 * n.y;
+	vec3 lit = baked_to_linear(tint) * baked_light(n, world_pos, CAMERA_POSITION_WORLD, roughness);
+	shade = baked_to_albedo(lit + baked_to_linear(tint * bounce * under * under * bounce_power));
+}
+void fragment() {
+	ALBEDO = shade;
+}
+"""
+
+## Low: DECK_SHADER with baked light and a lighter pattern. Keeps the plates
+## and seams with their per-plate tone, the lane grooves, the travelling
+## chevrons, the kerbs with their dashed light strip and the contact shading;
+## drops the rivets and the fwidth() edge estimate (a fixed edge width instead).
+const DECK_LOW_SHADER := """
+shader_type spatial;
+render_mode unshaded;
+uniform float belt = 0.0;
+uniform float boost = 0.0;
+uniform vec3 plate : source_color = vec3(0.30, 0.33, 0.39);
+uniform vec3 seam_tint : source_color = vec3(0.16, 0.18, 0.23);
+uniform vec3 paint : source_color = vec3(0.93, 0.95, 0.96);
+uniform vec3 kerb : source_color = vec3(0.16, 0.18, 0.23);
+uniform vec3 strip : source_color = vec3(0.2, 0.95, 1.0);
+uniform vec3 bounce : source_color = vec3(0.1, 0.8, 0.8);
+""" + BAKED_LIGHT + """
+const float PANELS = 24.0;
+const float RING = 1.8667;
+const float AA = 0.03;
+float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+varying vec3 local;
+varying vec3 light_plate;
+varying vec3 light_paint;
+void vertex() {
+	local = VERTEX;
+	vec3 n = normalize((MODEL_MATRIX * vec4(NORMAL, 0.0)).xyz);
+	vec3 world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	light_plate = baked_light(n, world_pos, CAMERA_POSITION_WORLD, 0.78);
+	light_paint = baked_light(n, world_pos, CAMERA_POSITION_WORLD, 0.5);
+}
+void fragment() {
+	float angle = atan(local.x, local.z);
+	float r = length(local.xz);
+	float c = angle + belt;
+	float span = TAU / PANELS * r;
+	float along = fract(c / TAU * PANELS) * span;
+	float rf = fract((r - 2.5) / RING) * RING;
+	float seam_d = min(min(along, span - along), min(rf, RING - rf));
+	float seam = 1.0 - smoothstep(0.016, 0.016 + AA, seam_d);
+	float lip = (1.0 - smoothstep(0.03, 0.10, seam_d)) * 0.10;
+	float tone = 0.95 + 0.09 * hash(vec2(mod(floor(c / TAU * PANELS), PANELS), floor((r - 2.5) / RING)));
+	float lane = (r - 3.0) / 0.87 + 0.5;
+	float lane_d = abs(lane - round(lane)) * 0.87;
+	float groove = (1.0 - smoothstep(0.012, 0.012 + AA, lane_d)) * step(0.5, lane) * step(lane, 5.5);
+	vec3 col = mix(plate * tone * (1.0 + lip), seam_tint, max(seam, groove * 0.55));
+	float u = (fract(c / TAU * 6.0) - 0.5) * (TAU / 6.0) * r;
+	float v = r - 5.3;
+	float s = (u - abs(v) * 0.8) / 0.4 + 1.5;
+	float chevron = (1.0 - smoothstep(0.24, 0.24 + AA * 1.8, abs(fract(s) - 0.5))) * step(0.0, s) * step(s, 3.0);
+	chevron *= 1.0 - smoothstep(0.82, 0.82 + AA, abs(v));
+	col = mix(col, paint, chevron * 0.92);
+	col = mix(col, kerb, max(smoothstep(7.84, 7.86, r), 1.0 - smoothstep(2.72, 2.74, r)));
+	float dash = step(fract(angle / TAU * 48.0), 0.72);
+	float inlay = (smoothstep(7.91, 7.93, r) - smoothstep(8.0, 8.02, r) + smoothstep(2.58, 2.6, r) - smoothstep(2.66, 2.68, r)) * dash;
+	col *= mix(0.72, 1.0, smoothstep(2.5, 3.5, r)) * mix(0.86, 1.0, smoothstep(8.1, 7.5, r));
+	vec3 lit = baked_to_linear(mix(col, vec3(0.0), inlay)) * mix(light_plate, light_paint, chevron);
+	vec3 glow = strip * inlay * (1.5 + boost * 2.5) + paint * chevron * boost * 0.7 + col * bounce * 0.06;
+	ALBEDO = baked_to_albedo(lit + baked_to_linear(glow));
+}
+"""
+
 const GLASS_SHADER := """
 shader_type spatial;
 render_mode unshaded;

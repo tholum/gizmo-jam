@@ -1,6 +1,7 @@
 extends Node
 
 const Arena = preload("res://scripts/arena.gd")
+const ScaledView = preload("res://scripts/scaled_view.gd")
 const LiveArena = preload("res://scripts/livewire_arena.gd")
 const Network = preload("res://scripts/session.gd")
 const Kit = preload("res://scripts/ui_kit.gd")
@@ -57,6 +58,7 @@ var session: Node
 ## belongs to the game on screen is shown; see _set_stage().
 var arena: Node3D
 var live_arena: Node3D
+var scaled_view: Node
 ## Game id -> module instance.
 var games: Dictionary = {}
 ## The module of the round being played or shown in the results.
@@ -1727,6 +1729,13 @@ func _set_check_updates(on: bool) -> void:
 func _apply_graphics() -> void:
 	arena.set_level(graphics_level)
 	live_arena.set_level(graphics_level)
+	# Low's reduced 3D resolution goes through a SubViewport: on a Raspberry
+	# Pi 4 the root viewport's own 3D scaling costs several ms more.
+	if scaled_view == null:
+		scaled_view = ScaledView.new()
+		scaled_view.name = "ScaledView"
+		add_child(scaled_view)
+	scaled_view.set_scale(Arena.LOW_RENDER_SCALE if graphics_level == "low" else 1.0)
 
 func _set_graphics(level: String) -> void:
 	_read_fields()
