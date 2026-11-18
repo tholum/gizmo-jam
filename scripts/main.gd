@@ -6,13 +6,11 @@ const Network = preload("res://scripts/session.gd")
 const Kit = preload("res://scripts/ui_kit.gd")
 const Cue = preload("res://scripts/hud_cue.gd")
 const Slam = preload("res://scripts/hud_slam.gd")
-## One module per id in Network.GAMES. Everything a game shows, hears or reads
-## from the keyboard during a round lives in its module; this file only knows
-## the shared surface described at the top of game_spin_cycle.gd.
-const GAME_MODULES := {
-	"twisted": preload("res://scripts/game_spin_cycle.gd"),
-	"livewire": preload("res://scripts/game_livewire.gd"),
-}
+## One module per installed game (Registry.ids()). Everything a game shows,
+## hears or reads from the keyboard during a round lives in its module; this
+## file only knows the shared surface described at the top of
+## game_spin_cycle.gd.
+const Registry = preload("res://scripts/game_registry.gd")
 const Updater = preload("res://scripts/updater.gd")
 const INK := Kit.INK
 const MUTED := Kit.MUTED
@@ -54,7 +52,8 @@ const ALIGN_RIGHT := HORIZONTAL_ALIGNMENT_RIGHT
 
 var session: Node
 ## Spin Cycle's spiral arena and Live Wire's hex floor. Only the one that
-## belongs to the game on screen is shown; see _set_stage().
+## belongs to the game on screen is shown; see _set_stage(). Games from packs
+## create their own arena when staged and free it when not.
 var arena: Node3D
 var live_arena: Node3D
 ## Game id -> module instance.
@@ -135,6 +134,7 @@ func _ready() -> void:
 		if model: model.command(slot, action, pressed))
 	session.seat_disconnected.connect(func(slot):
 		if model and session.playing: model.take_over(slot))
+	session.party_changed.connect(_party_changed)
 	session.returned_to_lobby.connect(func():
 		_end_round()
 		_show_lobby() if session.is_online() else _show_menu())
@@ -150,9 +150,11 @@ func _ready() -> void:
 	add_child(arena)
 	live_arena = LiveArena.new()
 	add_child(live_arena)
+	for id in Registry.ids():
+		_add_game(id)
+	if not Registry.has(preferred_game): preferred_game = "twisted"
+	session.select_game(preferred_game)
 	_apply_graphics()
-	for id in Network.GAMES:
-		games[id] = GAME_MODULES[id].new(self)
 	canvas = CanvasLayer.new()
 	add_child(canvas)
 	screen = Control.new()
@@ -502,8 +504,8 @@ func _backdrop() -> void:
 			bg.draw_colored_polygon(PackedVector2Array([Vector2(a + x0, y0), Vector2(a + x1, y0), Vector2(b + x1, y1), Vector2(b + x0, y1)]), band[2])
 		bg.draw_line(Vector2(a, y0), Vector2(b, y1), Kit.OUTLINE, 4.0, true))
 	screen.add_child(bg)
-	for stage in [arena, live_arena]:
-		stage.set_inset((top + bottom) * 0.5 / area.x)
+	for stage in _arenas():
+		if stage.has_method("set_inset"): stage.set_inset((top + bottom) * 0.5 / area.x)
 
 ## Title treatment: the coil in all six player colours beside a stacked wordmark.
 func _brand(parent: Control) -> Control:
@@ -538,7 +540,29 @@ func _below_brand() -> float:
 func _stage_id() -> String:
 	if play != null and model != null and (view == "game" or view == "results"):
 		return play.ID
-	return session.game
+	if games.has(session.game): return session.game
+	# A guest who does not have the party's game yet keeps their own on stage.
+	return preferred_game if games.has(preferred_game) else "twisted"
+
+## Instantiates the module of an installed game. Called at start-up and when
+## a pack is installed while the game runs.
+func _add_game(id: String) -> void:
+	if games.has(id): return
+	var module: RefCounted = Registry.instantiate(id, self)
+	if module == null:
+		push_warning("Game %s could not be loaded" % id)
+		return
+	games[id] = module
+	var stage: Node3D = module.arena()
+	if stage and stage.has_method("set_level"): stage.set_level(graphics_level)
+
+## The arenas that exist right now.
+func _arenas() -> Array:
+	var list: Array = []
+	for id in games:
+		var stage: Node3D = games[id].arena()
+		if is_instance_valid(stage) and stage not in list: list.append(stage)
+	return list
 
 ## Puts that game's arena on screen and hides the other one, whose lights
 ## would otherwise reach these runners and whose geometry would be drawn.
@@ -551,15 +575,23 @@ func _set_stage(menu: bool) -> void:
 	games[id].stage(true, menu)
 
 func _game_title(id: String = "") -> String:
-	return str(games[id if games.has(id) else session.game].INFO.title)
+	if id.is_empty(): id = session.game
+	return str(_game_info(id).get("title", id.to_upper()))
+
+## A game's menu card: from its module when installed, else from the party.
+func _game_info(id: String) -> Dictionary:
+	if games.has(id): return games[id].INFO
+	var listed: Dictionary = session.party_games().get(id, {})
+	return listed.get("info", {"number": "··", "title": id.to_upper(), "tags": "", "blurb": ""})
 
 ## The leader's pick. Offline it applies at once; in a party the server answers
 ## with a roster, which redraws the lobby for everyone.
 func _select_game(id: String) -> void:
 	if id == session.game or not session.select_game(id):
 		return
-	preferred_game = id
-	_voice(games[id].INFO.voice)
+	if games.has(id):
+		preferred_game = id
+		_voice(str(games[id].INFO.get("voice", "")))
 	if not session.is_online():
 		_read_fields()
 		_show_menu()
@@ -568,8 +600,9 @@ func _select_game(id: String) -> void:
 ## How-to-play dialog for one game.
 func _rules(id: String = "") -> void:
 	if not games.has(id): id = session.game
+	if not games.has(id): return
 	_clear_overlay()
-	_voice(games[id].INFO.voice)
+	_voice(str(games[id].INFO.get("voice", "")))
 	games[id].build_rules()
 
 ## The game list. Returns the y below it. Compact screens use shorter cards
@@ -579,10 +612,27 @@ func _game_cards(parent: Control, y: float) -> float:
 	var top := y + 26
 	var card_h := 92.0 if tight else 106.0
 	var c := 1.0 if tight else 0.0
-	for id in Network.GAMES:
-		var info: Dictionary = games[id].INFO
+	var ids: Array = _menu_game_ids()
+	# Two cards fit as they are; more scroll in a box two cards tall.
+	var holder: Control = parent
+	var list_top := top
+	if ids.size() > 2:
+		var scroll := ScrollContainer.new()
+		scroll.name = "GameList"
+		scroll.position = Vector2(LEFT - 8, top)
+		scroll.size = Vector2(COL + 16, card_h * 2 + (8.0 if tight else 10.0))
+		scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+		parent.add_child(scroll)
+		var inner := Control.new()
+		inner.custom_minimum_size = Vector2(COL + 4, ids.size() * (card_h + (8.0 if tight else 10.0)))
+		inner.mouse_filter = Control.MOUSE_FILTER_PASS
+		scroll.add_child(inner)
+		holder = inner
+		top = 0.0
+	for id in ids:
+		var info: Dictionary = _game_info(id)
 		var chosen: bool = id == session.game
-		var card := _button(parent, "", Rect2(LEFT, top, COL, card_h), _select_game.bind(id))
+		var card := _button(holder, "", Rect2(LEFT if holder == parent else 8.0, top, COL, card_h), _select_game.bind(id))
 		card.name = "Card_" + id
 		card.tooltip_text = "%s is selected" % info.title.capitalize() if chosen else "Play %s" % info.title.capitalize()
 		if chosen:
@@ -604,8 +654,15 @@ func _game_cards(parent: Control, y: float) -> float:
 		how.tooltip_text = "How to play %s" % info.title.capitalize()
 		if chosen:
 			_tab(card, "SELECTED", Vector2(COL - 22, 48 - 6 * c), LIME, Kit.OUTLINE, 13, true)
+		_trust_badge(card, id, Vector2(COL - 22, card_h - 34 + 4 * c))
 		top += card_h + (8.0 if tight else 10.0)
+	if holder != parent:
+		var scroll: Control = holder.get_parent()
+		if _chosen_index(ids) >= 2:
+			scroll.set_deferred("scroll_vertical", int(_chosen_index(ids) * (card_h + (8.0 if tight else 10.0))))
+		return list_top + scroll.size.y
 	if tight: return top - 8.0
+	if ids.size() > 2: return top
 	var titles := ["SUMO", "ORB RACING"]
 	var tile_w := (COL - 12) / 2.0
 	for i in 2:
@@ -615,6 +672,21 @@ func _game_cards(parent: Control, y: float) -> float:
 		_label(tile, titles[i], Rect2(22, 0, 160, 44), 19, DIM, true)
 		_tab(tile, "SOON", Vector2(tile_w - 14, 10), Color("2b3866"), MUTED, 13, true)
 	return top + 44.0
+
+## The games on the menu: everything installed, in card order.
+func _menu_game_ids() -> Array:
+	return Registry.ids().filter(func(id): return games.has(id))
+
+func _chosen_index(ids: Array) -> int:
+	return maxi(0, ids.find(session.game))
+
+## A small tag on a game's card or key saying where the game came from, when
+## it did not come with the game: UNTRUSTED for a developer's unsigned pack.
+func _trust_badge(parent: Control, id: String, pos: Vector2) -> void:
+	var trust := str(Registry.entry(id).get("trust", session.party_games().get(id, {}).get("trust", "builtin")))
+	if trust == "untrusted":
+		var tag := _tab(parent, "UNTRUSTED", pos, Kit.DANGER, Kit.OUTLINE, 12, true)
+		tag.tooltip_text = "An unsigned game from developer mode. It can do anything on this computer."
 
 func _show_menu(message: String = "") -> void:
 	entering = view != "menu" or screen.get_child_count() == 0
@@ -1019,9 +1091,24 @@ func _show_lobby() -> void:
 	_game_picker(actions, top + 456 - 110 * c)
 	var foot := area.y - (66.0 if tight else 88.0)
 	var start_text: String = "START FOR EVERYONE  →" if session.is_leader() else "WAITING FOR %s" % host_name.to_upper()
-	var start := _button(actions, start_text, Rect2(LEFT, foot - 106 + 40 * c, COL, 70 - 16 * c), func(): session.start_round(), true, 28 if session.is_leader() else 22)
+	var start_rect := Rect2(LEFT, foot - 106 + 40 * c, COL, 70 - 16 * c)
+	var waiting: int = session.waiting_count() if session.is_leader() else 0
+	var out: bool = session.sitting_out()
+	if out:
+		start_text = "ROUND IN PROGRESS  ·  YOU SIT THIS ONE OUT"
+	elif waiting > 0:
+		start_text = "WAITING FOR %d PLAYER%s" % [waiting, "" if waiting == 1 else "S"]
+	if (waiting > 0 or out) and session.is_leader():
+		start_rect.size.x = COL - 200
+	var start := _button(actions, start_text, start_rect, func(): session.start_round(), true, 28 if session.is_leader() and waiting == 0 and not out else 19)
 	start.name = "Start"
-	start.disabled = not session.is_leader()
+	start.disabled = not session.is_leader() or waiting > 0 or out
+	if session.is_leader() and (waiting > 0 or out):
+		# Start anyway: members still fetching the game sit it out with a bot
+		# in their seat. A leader sitting out can end the round for everyone.
+		var other := _button(actions, "END ROUND" if out else "START ANYWAY", Rect2(LEFT + COL - 186, start_rect.position.y, 186, start_rect.size.y), func(): session.lobby() if out else session.start_round(), false, 17)
+		other.name = "EndRound" if out else "StartAnyway"
+		other.tooltip_text = "Return everyone to the lobby" if out else "Players who are not ready sit this round out; bots take their seats"
 	if not start.disabled: start.grab_focus()
 	_button(actions, "LEAVE PARTY", Rect2(LEFT, foot, 168, 46), _leave, false, 15)
 	var notice := _label(actions, session.notice, Rect2(LEFT + 190, foot, COL - 190, 46), 14, MUTED)
@@ -1043,18 +1130,45 @@ func _game_picker(parent: Control, y: float) -> void:
 	how.name = "How"
 	var width := (COL - 48 - 12) / 2.0
 	var column := 0
-	for id in Network.GAMES:
-		var info: Dictionary = games[id].INFO
+	var listed: Dictionary = session.party_games()
+	var ids: Array = listed.keys()
+	ids.sort_custom(func(a, b): return Registry.order_key({"id": a, "info": listed[a].get("info", {})}) < Registry.order_key({"id": b, "info": listed[b].get("info", {})}))
+	var holder: Control = box
+	var row_y := 26 - 6 * c
+	if ids.size() > 2:
+		# More than one row: the keys scroll inside the box, one row at a time.
+		var scroll := ScrollContainer.new()
+		scroll.name = "PickList"
+		scroll.position = Vector2(16, row_y - 4)
+		scroll.size = Vector2(COL - 32, 54 - 6 * c)
+		scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+		box.add_child(scroll)
+		var inner := Control.new()
+		inner.custom_minimum_size = Vector2(COL - 40, ceilf(ids.size() / 2.0) * (54 - 6 * c))
+		inner.mouse_filter = Control.MOUSE_FILTER_PASS
+		scroll.add_child(inner)
+		holder = inner
+		row_y = 4
+		scroll.set_deferred("scroll_vertical", int(floorf(maxi(0, ids.find(session.game)) / 2.0) * (54 - 6 * c)))
+	for i in ids.size():
+		var id: String = ids[i]
+		var info: Dictionary = listed[id].get("info", _game_info(id))
 		var chosen: bool = id == session.game
-		var pick := _button(box, "%s  %s" % [info.number, info.title], Rect2(24 + column * (width + 12), 26 - 6 * c, width, 46 - 6 * c), _select_game.bind(id), chosen, 17)
+		column = i % 2
+		var key_x := (24 if holder == box else 8) + column * (width + 12)
+		var key_y := row_y + floorf(i / 2.0) * (54 - 6 * c)
+		var pick := _button(holder, "%s  %s" % [info.get("number", ""), info.get("title", id.to_upper())], Rect2(key_x, key_y, width, 46 - 6 * c), _select_game.bind(id), chosen, 17)
 		pick.name = "Pick_" + id
 		# The chosen game stays lit for everyone; the other is a live key for the host only.
 		pick.disabled = not leader and not chosen
 		if not leader:
 			pick.mouse_default_cursor_shape = Control.CURSOR_ARROW
 			pick.focus_mode = Control.FOCUS_NONE
-		pick.tooltip_text = ("%s is up next" % info.title.capitalize()) if chosen else ("Switch the party to %s" % info.title.capitalize() if leader else "Only the party host can switch games")
-		column += 1
+		var title := str(info.get("title", id)).capitalize()
+		pick.tooltip_text = ("%s is up next" % title) if chosen else ("Switch the party to %s" % title if leader else "Only the party host can switch games")
+		if str(listed[id].get("trust", "")) == "untrusted":
+			pick.text = "⚠ " + pick.text
+			pick.tooltip_text += ". UNTRUSTED: an unsigned game from developer mode."
 
 func _member_name(peer: int) -> String:
 	for m in session.members:
@@ -1098,10 +1212,17 @@ func _roster_panel(parent: Control, origin: Vector2, width: float, compact: bool
 		var name_x := row_h * 0.95 + 30.0
 		var name_w := body_w - name_x - 220.0
 		var name_text: String = str(member.get("name", ""))
+		var state_text := _state_text(session.status_of(int(member.get("peer", 0)))) if filled and session.is_online() else ""
+		if not state_text.is_empty():
+			name_w -= Kit.text_width(state_text, 12) + 30.0
 		var name_label := _label(tile, name_text if filled else "OPEN SEAT  ·  CPU", Rect2(name_x, 0, name_w if filled else body_w - name_x - 20, row_h), font_size if filled else font_size - 4, Kit.OUTLINE if filled else DIM, true)
 		name_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 		if not filled: continue
 		var chip_y := (row_h - 25.0) / 2.0
+		if not state_text.is_empty():
+			var waiting: bool = str(session.status_of(int(member.peer)).get("state", "")) in Network.WAITING_STATES
+			var chip := _tab(tile, state_text, Vector2(body_w - 160, chip_y + 1), Kit.OUTLINE if waiting else WARN, INK if waiting else Kit.OUTLINE, 12, true)
+			chip.name = "State"
 		if mine:
 			var name_px := minf(Kit.text_width(name_text, font_size), name_w)
 			_tab(tile, "YOU", Vector2(name_x + name_px + 12, chip_y), INK, Kit.OUTLINE, 13)
@@ -1121,6 +1242,30 @@ func _roster_panel(parent: Control, origin: Vector2, width: float, compact: bool
 			_outlined(_label(parent, "Waiting for votes  ·  closes after 25 seconds", Rect2(origin.x, y + 36, width, 36), 15, MUTED), 5)
 		y += 80
 	return y
+
+## A member's state for the party's game, as a short chip; "" when ready.
+func _state_text(status: Dictionary) -> String:
+	match str(status.get("state", "ready")):
+		"ready": return ""
+		"joining": return "JOINING"
+		"missing": return "NEEDS GAME"
+		"downloading": return "DOWNLOADING %d%%" % int(status.get("progress", 0))
+		"verifying": return "CHECKING"
+		"asking": return "DECIDING"
+		"needs_update": return "NEEDS UPDATE"
+		"restart": return "RESTART TO UPDATE"
+		"declined": return "SITS OUT"
+		"untrusted": return "DEV MODE OFF"
+		"failed": return "DOWNLOAD FAILED"
+	return "NOT READY"
+
+## Capabilities, states or the round line-up changed: redraw what shows them.
+func _party_changed() -> void:
+	if not is_instance_valid(screen): return
+	if view == "lobby" or (view == "menu" and session.mode == "client"):
+		relayout = view == "lobby"
+		_show_lobby()
+		relayout = false
 
 func _roster_changed() -> void:
 	if not is_instance_valid(screen): return
@@ -1310,12 +1455,13 @@ func _physics_process(delta: float) -> void:
 				_show_results()
 
 func _process(delta: float) -> void:
-	if arena:
-		var on_stage: RefCounted = games[_stage_id()]
+	var on_stage: RefCounted = games.get(_stage_id())
+	var stage: Node3D = on_stage.arena() if on_stage else null
+	if is_instance_valid(stage):
 		var in_round: bool = model != null and session.playing and on_stage == play
 		# Between rounds the game decides what its arena shows behind the menus.
 		var state: RefCounted = model if in_round else on_stage.backdrop(delta)
-		on_stage.arena().update_visuals(state, 0.0 if paused and not session.is_online() else delta, session.my_slot() if in_round or state == null else -1)
+		stage.update_visuals(state, 0.0 if paused and not session.is_online() else delta, session.my_slot() if in_round or state == null else -1)
 	if view == "game" and model:
 		feedback_time = maxf(0.0, feedback_time - delta)
 		play.frame(delta)
@@ -1359,7 +1505,7 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		return
 	if view == "game" and play:
 		if event.physical_keycode == KEY_TAB:
-			play.arena().show_identities = event.pressed
+			if is_instance_valid(play.arena()): play.arena().set("show_identities", event.pressed)
 			get_viewport().set_input_as_handled()
 			return
 		if event.physical_keycode == KEY_ESCAPE:
@@ -1378,7 +1524,7 @@ func _focus_lost() -> void:
 	if play:
 		play.release()
 		play.forget_keys()
-		play.arena().show_identities = false
+		if is_instance_valid(play.arena()): play.arena().set("show_identities", false)
 	if not session.is_online() and view == "game" and not paused:
 		_toggle_pause()
 
@@ -1692,7 +1838,8 @@ func _load_settings() -> void:
 		server_port = int(cfg.get_value("network", "port", 7777))
 		sound_enabled = cfg.get_value("audio", "enabled", true)
 		var saved_game := str(cfg.get_value("game", "selected", preferred_game))
-		if saved_game in Network.GAMES: preferred_game = saved_game
+		# Checked against the installed games once they are loaded.
+		if Registry.valid_id(saved_game): preferred_game = saved_game
 	graphics_level = stored_graphics(cfg, graphics_level)
 	check_updates = cfg.get_value("updates", "check", true)
 
@@ -1723,10 +1870,11 @@ func _set_check_updates(on: bool) -> void:
 	_save_settings()
 	_show_menu()
 
-## Both arenas follow the graphics level.
+## Every arena follows the graphics level. Arenas made later (a pack game
+## staged for the first time) read main.graphics_level when they are built.
 func _apply_graphics() -> void:
-	arena.set_level(graphics_level)
-	live_arena.set_level(graphics_level)
+	for stage in _arenas():
+		if stage.has_method("set_level"): stage.set_level(graphics_level)
 
 func _set_graphics(level: String) -> void:
 	_read_fields()
