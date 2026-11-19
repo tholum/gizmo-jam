@@ -11,6 +11,9 @@ var font_size := 120
 var outline_px := 16
 var tilt := -0.05
 var _tween: Tween
+## Pop-up text to rasterise ahead of time (see warm()): [text, size, outline, drop].
+var _warm: Array = []
+const WARM_PER_FRAME := 4
 
 var grow := 0.0:
 	set(value):
@@ -69,16 +72,33 @@ func rattle(text_value: String, color: Color) -> void:
 	_tween.tween_property(self, "grow", 0.0, 0.16).set_ease(Tween.EASE_OUT)
 	_tween.tween_property(self, "jitter", 0.0, 0.34)
 
+## Rasterises the glyphs of `texts` as another Slam of `size_px`, `outline`
+## and `width` would draw them, so their first real appearance does not hitch:
+## a font rasterises each new size (and outline) the first time it draws it,
+## ~75 ms for a big call-out on a Raspberry Pi 4. Glyph caches belong to the
+## font, so any visible Slam can do this for another one (the countdown does it
+## for the feedback call-out). A few texts per frame, off-screen, nearly clear;
+## most share glyphs, so after the first few each costs little.
+func warm(texts: Array, size_px: int, outline: int, width: float) -> void:
+	for t in texts:
+		_warm.append([t, Kit.fit(t, size_px, width - 40.0, 12), outline, size_px * 0.06])
+	queue_redraw()
+
 func _draw() -> void:
+	for i in mini(WARM_PER_FRAME, _warm.size()):
+		var w: Array = _warm.pop_front()
+		Kit.text(self, w[0], Vector2(-100000.0, -100000.0), w[1], Color(1, 1, 1, 0.004), w[2], 0.0, w[3])
+	if not _warm.is_empty(): queue_redraw.call_deferred()
 	if message.is_empty() or alpha <= 0.0: return
 	var center := size * 0.5
+	var b := Kit.begin(self)
 	if ring < 1.0:
 		var radius := font_size * (0.45 + ring * 0.9)
-		draw_arc(center, radius, 0.0, TAU, 48, Color(Kit.OUTLINE, (1.0 - ring) * 0.8), font_size * 0.16 * (1.0 - ring) + 8.0, true)
-		draw_arc(center, radius, 0.0, TAU, 48, Color(tint, 1.0 - ring), font_size * 0.16 * (1.0 - ring), true)
+		b.arc(center, radius, 0.0, TAU, 48, Color(Kit.OUTLINE, (1.0 - ring) * 0.8), font_size * 0.16 * (1.0 - ring) + 8.0)
+		b.arc(center, radius, 0.0, TAU, 48, Color(tint, 1.0 - ring), font_size * 0.16 * (1.0 - ring))
 	var scale_now := maxf(0.05, 1.0 + grow)
 	var offset := Vector2(sin(jitter * 41.0) * 14.0, cos(jitter * 31.0) * 7.0) * jitter
-	draw_set_transform(center + offset, tilt, Vector2(scale_now, scale_now))
+	b.set_transform(center + offset, tilt, Vector2(scale_now, scale_now))
 	var fitted := Kit.fit(message, font_size, size.x - 40.0, 12)
 	Kit.text(self, message, Vector2(0, fitted * Kit.CAP * 0.5), fitted, Color(tint, alpha), outline_px, 0.5, font_size * 0.06)
-	draw_set_transform(Vector2.ZERO)
+	b.flush()

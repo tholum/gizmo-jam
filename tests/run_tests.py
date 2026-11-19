@@ -5,8 +5,11 @@ The six-process test starts the server, sends one client with an old protocol
 number (it must be turned away with the version message), then five real
 clients. See tests/network_peer.gd for what the six peers check.
 
-The last stage (tests/run_online.py) is one online Live Wire round between
-three copies of the real game scene, driven through its buttons and key events.
+The last stages are online Live Wire rounds between real copies of the game
+scene, driven through its buttons, key and gamepad events: three machines
+(tests/run_online.py), then a host with two players on its screen and a guest
+(tests/run_gamepad_online.py). tests/test_gamepads.gd covers several gamepads
+on one machine offline.
 
 LAN discovery is checked between two real game processes, once over loopback
 with junk packets sprayed at the listener and once by real broadcast.
@@ -24,6 +27,10 @@ import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
+# Hide real gamepads from every Godot the tests start (and the scripts they
+# run inherit it): a controller on the desk must not move test players. The
+# gamepad tests drive simulated pads instead.
+os.environ.setdefault("SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT", "0x0001/0x0001")
 parser = argparse.ArgumentParser()
 parser.add_argument("--godot", default=os.environ.get("GODOT", str(ROOT / ".tools/Godot_v4.5.1-stable_linux.x86_64")))
 args = parser.parse_args()
@@ -40,6 +47,12 @@ verify(subprocess.run(base + ["--script", "res://tests/test_livewire.gd"], text=
                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60))
 verify(subprocess.run(base + ["--script", "res://tests/test_presentation.gd"], text=True,
                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=20))
+# Several gamepads on one machine: joining, both games' controls, leaving.
+pads = subprocess.run(base + ["--script", "res://tests/test_gamepads.gd"], text=True,
+                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=90)
+verify(pads)
+if "GAMEPAD_TESTS PASS" not in pads.stdout:
+    raise SystemExit("Gamepad tests failed")
 # Layout at every supported window size (geometry only when headless).
 verify(subprocess.run(base + ["--script", "res://tests/screen_sizes.gd"], text=True,
                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120))
@@ -212,6 +225,12 @@ online = subprocess.run([sys.executable, str(ROOT / "tests/run_online.py"), "--g
 print(online.stdout)
 if online.returncode or "ONLINE ROUND PASS" not in online.stdout:
     raise SystemExit("Online Live Wire round failed")
+# A host with a second gamepad player and a remote guest.
+pad_online = subprocess.run([sys.executable, str(ROOT / "tests/run_gamepad_online.py"), "--godot", args.godot], text=True,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=240)
+print(pad_online.stdout)
+if pad_online.returncode or "GAMEPAD ONLINE PASS" not in pad_online.stdout:
+    raise SystemExit("Gamepad online round failed")
 # Packs in real parties: downloads from the host, a 0.2.0 guest sitting out,
 # unsigned packs and consent. Also plays against the 0.2.0 source.
 parties = subprocess.run([sys.executable, str(ROOT / "tests/run_packs.py"), "--godot", args.godot, "--no-build"], text=True,

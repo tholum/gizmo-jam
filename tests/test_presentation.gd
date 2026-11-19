@@ -66,18 +66,35 @@ func run() -> void:
 	for r in main.arena.runners:
 		assert(not r.visual.planar.visible)
 	assert(main.arena.level == "balanced" and is_equal_approx(root.scaling_3d_scale, 1.0), "set_detail(false) is Balanced, at full 3D resolution")
-	# Low: lower 3D resolution, plainer scenery, two lights fewer, no fog, the
-	# lightest robot mesh; still blob shadows and no MSAA. Back to Balanced cleanly.
+	# Low: lower 3D resolution, the lightest robot mesh, light and fog baked into
+	# the scenery; still blob shadows and no MSAA. Back to Balanced cleanly.
 	var balanced_tris: int = main.arena.runners[0].visual.lite.mesh.surface_get_array_index_len(0) / 3
+	# On a software rasteriser Low is the plain cut: two lights fewer and the
+	# sparse scenery. Its fog and light are baked into the scenery shaders.
+	main.arena.software = true
 	main.arena.set_level("low")
 	assert(root.scaling_3d_scale < 1.0 and root.msaa_3d == Viewport.MSAA_DISABLED, "Low renders 3D below full resolution, without MSAA")
-	assert(not main.arena.environment.fog_enabled and not main.arena.high_fx.visible, "Low has no fog or High atmosphere")
-	for light in main.arena.fill_lights: assert(not light.visible, "Low keeps only the key light")
-	for node in main.arena.backdrop + main.arena.structure: assert(not node.visible, "Low hides the full scenery")
-	for node in main.arena.backdrop_lite + main.arena.structure_lite: assert(node.visible, "Low shows the sparse scenery")
+	assert(not main.arena.environment.fog_enabled and not main.arena.high_fx.visible, "Low (software) has no engine fog or High atmosphere")
+	for light in main.arena.fill_lights: assert(not light.visible, "Low (software) keeps only the key light")
+	for node in main.arena.backdrop + main.arena.structure: assert(not node.visible, "Low (software) hides the full scenery")
+	for node in main.arena.backdrop_lite + main.arena.structure_lite: assert(node.visible, "Low (software) shows the sparse scenery")
+	assert(main.arena.solid_material.shader.code.contains("unshaded") and float(main.arena.solid_material.get_shader_parameter("fog_color").w) > 0.0, "Low bakes light and fog into the scenery")
+	# On a GPU (a Raspberry Pi) Low keeps High's scenery, lights and atmosphere;
+	# only the engine fog is replaced by the baked one.
+	main.arena.software = false
+	main.arena.set_level("low")
+	assert(not main.arena.environment.fog_enabled and main.arena.high_fx.visible, "Low (GPU) shows High's atmosphere, with baked fog")
+	for light in main.arena.fill_lights: assert(light.visible, "Low (GPU) keeps all three lights")
+	for node in main.arena.backdrop + main.arena.structure: assert(node.visible, "Low (GPU) shows the full scenery")
+	for node in main.arena.backdrop_lite + main.arena.structure_lite: assert(not node.visible, "Low (GPU) hides the sparse scenery")
 	for r in main.arena.runners:
-		assert(r.visual.lite.visible and not r.visual.mesh.visible and r.visual.shadow.visible, "Low skins the light mesh over a blob shadow")
+		assert(r.visual.mesh.visible and not r.visual.lite.visible and r.visual.shadow.visible and (r.visual.planar == null or not r.visual.planar.visible), "Low (GPU) skins High's robot over a blob shadow, no silhouette")
+	main.arena.software = true
+	main.arena.set_level("low")
+	for r in main.arena.runners:
+		assert(r.visual.lite.visible and not r.visual.mesh.visible and r.visual.shadow.visible, "Low (software) skins the light mesh over a blob shadow")
 		assert(r.visual.lite.mesh.surface_get_array_index_len(0) / 3 < balanced_tris, "Low's robot mesh is lighter than Balanced's")
+	main.arena.software = false
 	main.arena.set_level("balanced")
 	assert(is_equal_approx(root.scaling_3d_scale, 1.0) and main.arena.environment.fog_enabled, "Balanced restores full resolution and fog")
 	for node in main.arena.backdrop + main.arena.structure: assert(node.visible)
@@ -96,6 +113,8 @@ func run() -> void:
 	assert(Main.stored_graphics(cfg, "high") == "low", "The level key wins over the old boolean")
 	assert(Main.default_graphics("llvmpipe (LLVM 20.1.2, 256 bits)") == "low" and Main.default_graphics("SwiftShader Device") == "low", "Software renderers start on Low")
 	assert(Main.default_graphics("NVIDIA GeForce RTX 3060") == "high" and Main.default_graphics("") == "balanced")
+	assert(Main.default_graphics("V3D 4.2.14.0") == "low" and Main.default_graphics("V3D 7.1.10.2") == "low" and Main.default_graphics("VC4 V3D 2.1") == "low", "Raspberry Pi GPUs start on Low")
+	assert(Main.default_graphics("AMD Radeon Graphics (radeonsi, renoir, LLVM 20.1.2)") == "high", "Only a leading V3D/VC4 name means a Raspberry Pi")
 	# The scale rule: legible at 1024x576, not ballooning at 2560x1440.
 	assert(is_equal_approx(Main.ui_scale_for(Vector2(1024, 576)), Main.UI_SCALE_MIN) and is_equal_approx(Main.ui_scale_for(Vector2(1440, 900)), 1.0))
 	assert(is_equal_approx(Main.ui_scale_for(Vector2(2560, 1440)), Main.UI_SCALE_MAX))

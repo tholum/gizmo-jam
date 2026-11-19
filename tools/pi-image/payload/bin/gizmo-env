@@ -1,0 +1,171 @@
+#!/bin/bash
+# gizmo-env: print the environment needed to talk to the logged-in desktop
+# (labwc Wayland session + its Xwayland) from an SSH shell.
+#
+#   eval "$(gizmo-env)"            # as the desktop user, or as root
+#   gizmo-env --user               # just the desktop user name
+#   gizmo-env --plain              # KEY=VALUE lines, no quoting (for scripts)
+#   gizmo-env --json               # one JSON object
+#
+# Exit codes: 0 session found, 2 usage error, 3 no desktop session running,
+#             4 desktop user unknown.
+set -u
+
+# Overridable only so the test suite can point at fake directories.
+RUNTIME_BASE=${GIZMO_RUNTIME_BASE:-/run/user}
+X11_DIR=${GIZMO_X11_DIR:-/tmp/.X11-unix}
+LIGHTDM_CONF=${GIZMO_LIGHTDM_CONF:-/etc/lightdm/lightdm.conf}
+GIZMO_CONF=${GIZMO_CONF:-/etc/gizmo/gizmo.conf}
+
+usage() {
+    cat <<'EOF'
+Usage: gizmo-env [--for USER] [--export | --plain | --json | --user]
+
+Prints the session environment of the desktop user so commands started over
+SSH show up on the Pi's screen:
+  XDG_RUNTIME_DIR   /run/user/<uid>
+  WAYLAND_DISPLAY   detected from /run/user/<uid>/wayland-N
+  DISPLAY           Xwayland socket in /tmp/.X11-unix owned by the user
+  XAUTHORITY        ~/.Xauthority (written at login by the desktop)
+  DBUS_SESSION_BUS_ADDRESS, XDG_SESSION_TYPE, GIZMO_DESKTOP_USER
+
+Which user: --for USER, else yourself when not root, else (root) the LightDM
+autologin user, else GIZMO_USER from /etc/gizmo/gizmo.conf, else uid 1000.
+
+Output formats:
+  --export (default)  `export KEY='value'` lines, for: eval "$(gizmo-env)"
+  --plain             KEY=VALUE lines, unquoted
+  --json              a single JSON object
+  --user              only the desktop user name (exit 0 even with no session)
+
+Exit codes: 0 ok, 2 usage, 3 no desktop session running, 4 user unknown.
+EOF
+}
+
+die() { local code=$1; shift; echo "gizmo-env: $*" >&2; exit "$code"; }
+
+FOR_USER=""
+MODE="export"
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --for) [ $# -ge 2 ] || die 2 "--for needs a user name"; FOR_USER=$2; shift 2 ;;
+        --for=*) FOR_USER=${1#--for=}; shift ;;
+        --export) MODE="export"; shift ;;
+        --plain) MODE=plain; shift ;;
+        --json) MODE=json; shift ;;
+        --user) MODE=user; shift ;;
+        -h|--help) usage; exit 0 ;;
+        *) usage >&2; die 2 "unknown argument: $1" ;;
+    esac
+done
+
+valid_user() { [ -n "$1" ] && getent passwd "$1" >/dev/null 2>&1; }
+
+# The LightDM autologin user, ignoring the image's first-boot wizard account.
+lightdm_autologin_user() {
+    [ -r "$LIGHTDM_CONF" ] || return 0
+    sed -n 's/^[[:space:]]*autologin-user[[:space:]]*=[[:space:]]*\([^[:space:]]*\).*/\1/p' \
+        "$LIGHTDM_CONF" | grep -v '^rpi-first-boot-wizard$' | tail -n 1
+}
+
+conf_user() {
+    [ -r "$GIZMO_CONF" ] || return 0
+    sed -n 's/^GIZMO_USER="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$GIZMO_CONF" | tail -n 1
+}
+
+pick_user() {
+    local u
+    if [ -n "$FOR_USER" ]; then
+        printf '%s\n' "$FOR_USER"; return
+    fi
+    if [ "$(id -u)" != 0 ]; then
+        id -un; return
+    fi
+    for u in "$(lightdm_autologin_user)" "$(conf_user)" "$(getent passwd 1000 | cut -d: -f1)"; do
+        if valid_user "$u"; then printf '%s\n' "$u"; return; fi
+    done
+}
+
+DUSER=$(pick_user)
+valid_user "$DUSER" || die 4 "cannot determine the desktop user (got '${DUSER}'); use --for USER"
+
+if [ "$MODE" = user ]; then
+    printf '%s\n' "$DUSER"
+    exit 0
+fi
+
+DUID=$(id -u "$DUSER")
+DHOME=$(getent passwd "$DUSER" | cut -d: -f6)
+RUNDIR="$RUNTIME_BASE/$DUID"
+
+[ -d "$RUNDIR" ] || die 3 "no desktop session for $DUSER: $RUNDIR does not exist (is the Pi at the desktop? check 'loginctl list-sessions')"
+
+# Lowest-numbered wayland-N socket (labwc uses wl_display_add_socket_auto,
+# which starts at wayland-0; older Pi docs show wayland-1, so detect it).
+WAYLAND=""
+best=""
+for s in "$RUNDIR"/wayland-*; do
+    [ -S "$s" ] || continue
+    n=${s##*/wayland-}
+    case "$n" in ''|*[!0-9]*) continue ;; esac
+    if [ -z "$best" ] || [ "$n" -lt "$best" ]; then best=$n; fi
+done
+[ -n "$best" ] && WAYLAND="wayland-$best"
+[ -n "$WAYLAND" ] || die 3 "no desktop session for $DUSER: no Wayland socket in $RUNDIR (labwc not running?)"
+
+# Xwayland: wlroots creates /tmp/.X11-unix/X<N> owned by the compositor's user
+# and starts Xwayland lazily on the first X client.
+XDISP=""
+best=""
+for s in "$X11_DIR"/X*; do
+    [ -S "$s" ] || continue
+    [ "$(stat -c %u "$s" 2>/dev/null)" = "$DUID" ] || continue
+    n=${s##*/X}
+    case "$n" in ''|*[!0-9]*) continue ;; esac
+    if [ -z "$best" ] || [ "$n" -lt "$best" ]; then best=$n; fi
+done
+[ -n "$best" ] && XDISP=":$best"
+
+XAUTH=""
+[ -n "$XDISP" ] && [ -f "$DHOME/.Xauthority" ] && XAUTH="$DHOME/.Xauthority"
+
+DBUS=""
+[ -S "$RUNDIR/bus" ] && DBUS="unix:path=$RUNDIR/bus"
+
+# name/value pairs, empty value = unset
+NAMES=(GIZMO_DESKTOP_USER XDG_RUNTIME_DIR WAYLAND_DISPLAY DISPLAY XAUTHORITY DBUS_SESSION_BUS_ADDRESS XDG_SESSION_TYPE)
+VALUES=("$DUSER" "$RUNDIR" "$WAYLAND" "$XDISP" "$XAUTH" "$DBUS" wayland)
+
+json_str() {
+    local s=$1
+    s=${s//\\/\\\\}; s=${s//\"/\\\"}
+    printf '"%s"' "$s"
+}
+
+case "$MODE" in
+    export)
+        for i in "${!NAMES[@]}"; do
+            if [ -n "${VALUES[$i]}" ]; then
+                printf "export %s=%q\n" "${NAMES[$i]}" "${VALUES[$i]}"
+            else
+                printf 'unset %s\n' "${NAMES[$i]}"
+            fi
+        done
+        ;;
+    plain)
+        for i in "${!NAMES[@]}"; do
+            [ -n "${VALUES[$i]}" ] && printf '%s=%s\n' "${NAMES[$i]}" "${VALUES[$i]}"
+        done
+        ;;
+    json)
+        printf '{'
+        sep=""
+        for i in "${!NAMES[@]}"; do
+            printf '%s"%s":' "$sep" "${NAMES[$i]}"
+            if [ -n "${VALUES[$i]}" ]; then json_str "${VALUES[$i]}"; else printf 'null'; fi
+            sep=","
+        done
+        printf '}\n'
+        ;;
+esac
+exit 0

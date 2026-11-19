@@ -38,15 +38,38 @@ selected game against five bots, and **Host Party** opens a lobby on it. Sumo
 and Orb Racing are shown as coming soon. Menus also work from the keyboard: the
 main action is focused, so **Enter** or **Space** confirms it.
 
-Keyboard on computers, touch on phones and tablets. In every game **Esc**
-opens the menu, **Tab** (held) shows names, and **F11** toggles fullscreen.
+Keyboard or gamepad on computers, touch on phones and tablets. In every game
+**Esc** or **Start** opens the menu, **Tab** or **Y** (held) shows names, and
+**F11** toggles fullscreen.
 
-- **Spin Cycle:** **Space / Up** to jump; **hold S / Down** to duck. Jump
-  temporarily overrides a held duck; holding duck resumes it after landing.
+- **Spin Cycle:** **Space / Up** to jump; **hold S / Down** to duck. On a pad,
+  **A** or **up** jumps; **B**, **down**, a trigger or a shoulder (held) ducks.
+  Jump temporarily overrides a held duck; holding duck resumes it after landing.
 - **Live Wire:** **W A S D** or the **arrow keys** to run (hold two for a
-  diagonal); **Space** to dash in the direction you are running. A direction
-  held during the countdown counts from GO. Opening the menu, losing window
-  focus or the end of the round lets go of everything.
+  diagonal); **Space** to dash in the direction you are running. On a pad, the
+  **d-pad** or **left stick** runs and **A** dashes. A direction held during
+  the countdown counts from GO. Opening the menu, losing window focus or the
+  end of the round lets go of everything.
+
+#### Several players on one screen
+
+Plug in (or pair) a gamepad per player. Player one is the keyboard plus one
+pad: on a machine nobody has typed on yet, such as a TV box, the first pad to
+press a button is player one's, and it also drives the menus (**d-pad** or
+stick to move, **A** to confirm, **B** to go back). Every other pad joins as a
+player of its own by pressing **A** or **Start** on the menu, or in the lobby
+of a party this machine hosts, and leaves again with **B** or **Back**. The
+menu lists who is playing on this screen, and **Play** starts a round with all
+of them against bots for the empty seats. Hosting works the same way: the extra
+players take seats in the party and remote players fill the rest, up to six.
+
+A round with more than one player on the screen marks every one of their
+runners and plates, calls each player's hits, clears, zaps and loops out over
+their own plate, and leaves out the whole-screen hit effects. Unplugging a pad
+mid-round hands its runner to a bot, exactly like a dropped connection. A
+computer that joins somebody else's party has one player; there every pad
+drives it. The extra seats are ordinary party seats owned by the host
+computer, so older builds that join see them as more players.
 
 **Phones and tablets** (the Android app, and the browser version on a device
 whose main pointer is a finger) get touch controls and a larger interface.
@@ -187,18 +210,28 @@ network simulation.
   panels).
 - **Balanced** uses a lighter robot mesh (about 5,700 triangles) and soft blob
   shadows.
-- **Low** is for old or weak integrated GPUs and software rendering. It draws
-  the 3D scene at 67% of the window's resolution and stretches it up, while the
-  HUD and menus stay at full resolution. It uses the lightest robot mesh (about
-  2,100 triangles; the podium robot keeps Balanced's), a lighter cut of Spin
-  Cycle's ramp and reactor frame (half the triangles), one ring of plain
-  gantries instead of three, the key light only (with brighter ambient light),
-  no fog, and no shade band behind the HUD. Rods keep their orange and violet,
-  runners keep their team colours, and the jump, duck and hit poses are the same
-  clips on the same clock as on the other levels.
+- **Low** is for old or weak GPUs, the Raspberry Pi and software rendering. On
+  a GPU it keeps High's scenery, lighting and atmosphere: the full structure,
+  all three gantry rings, the motes and glow veil, all three lights and the fog,
+  High's full-detail robots over blob shadows, the deck's full pattern and the
+  shade bands behind the HUD. The light and fog on the scenery are worked out
+  ahead of time (per vertex, with the renderer's own formulas) instead of per
+  pixel, and the deck's pattern is read from a texture made at start-up. What
+  it gives up against High is MSAA, the silhouette shadows, a faint specular
+  sheen and resolution: the 3D is drawn at 67% of the window's resolution and
+  stretched up, while the HUD and menus stay at full resolution. That 3D
+  resolution then follows the frame rate: it steps down when the game cannot
+  hold 30 fps (never below 50%) and up when there is room (up to full); each
+  round starts at 67%. On a software rasteriser Low is lighter still: the light
+  robot mesh (about 2,100 triangles; the podium robot keeps Balanced's), a
+  lighter cut of Spin Cycle's ramp and reactor frame, one ring of plain
+  gantries, only the key light and no motes or veil. Rods keep their orange and
+  violet, runners keep their team colours, and the jump, duck and hit poses are
+  the same clips on the same clock on every level.
 
 A new installation picks **High** on a hardware GPU and **Low** on a software
-renderer (an adapter named llvmpipe, softpipe, SwiftShader, lavapipe or similar).
+renderer (an adapter named llvmpipe, softpipe, SwiftShader, lavapipe or similar)
+or a Raspberry Pi GPU (V3D or VC4).
 The choice is saved as `graphics/level` in `user://settings.cfg`. A settings file
 from an older build has only `graphics/detailed`, which is read as High (true) or
 Balanced (false); new builds still write it for older builds to read.
@@ -218,6 +251,32 @@ Low's 95th-percentile frame in Spin Cycle on two threads is 28 ms, against 44
 ms on Balanced. Live Wire's room is already baked, unlit geometry, so Low gains
 less there. The two-thread rows come from `LP_NUM_THREADS=2`, which stands in
 for an old or heavily loaded machine.
+
+On a Raspberry Pi 4 B (Mesa V3D, OpenGL ES 3.1; fan-cooled, no throttling),
+fullscreen at 1280x720, Low runs Spin Cycle at about 29 fps with its 3D at
+67% and Live Wire at about 39 fps at 87%; High manages 7 and 20 fps. Run the
+Pi's output at 720p and let the TV scale it. A 30-second trace of either game
+has no frame over twice the median once the countdown is over. What it took,
+measured with `tests/perf_diag.gd` and `tests/quality_cost.gd` (A/B costs of
+parts of a running round, and of each of High's features),
+`tests/spike_trace.gd` (slow frames and what appeared in them),
+`tests/low_bake_compare.gd` and `tests/low_vs_high.gd` (the looks):
+
+- Low's reduced-resolution 3D goes through a SubViewport
+  (`scripts/scaled_view.gd`): the root viewport's own scaled 3D cost ~9 ms a
+  frame on the Pi even for an empty scene. (Drawing the root straight to the
+  screen looked ~8 ms faster too, but only because on the Pi nothing reached
+  the screen; don't.)
+- On V3D any lit material costs ~4 ms and the engine fog ~4.6 ms, so Low bakes
+  High's three lights and its fog into unshaded scenery shaders (`BAKED_LIGHT`
+  in `scripts/arena_kit.gd`). The Compatibility renderer treats ALBEDO as sRGB
+  for every material, so the baked shaders convert with its own functions.
+- The HUD's shapes are batched (`Kit.Batch`): a player plate is 7 draw calls
+  instead of ~60, on every level.
+- Both games draw everything that would compile a shader or rasterise glyphs on
+  first use during the countdown (rods, bursts, trails, sparks, effect rings,
+  3D and HUD call-outs, identity tags): each of those first appearances cost
+  75-150 ms on the Pi.
 
 The levers that made no measurable difference on llvmpipe (a cheaper deck
 shader, vertex lighting, unshaded robots, fewer particles, hiding the sky dome)
@@ -365,7 +424,8 @@ to the lobby. This role is separate from the computer running the network server
   the person who should take over. The proposer automatically votes yes.
 - A strict majority of the **other players**, excluding the incumbent host,
   transfers control. With six humans this takes three votes; with two humans,
-  the other person can take over. Bots do not vote. Each person gets one vote.
+  the other person can take over. Bots do not vote. Each computer gets one
+  vote: players sharing a screen share their computer's.
 - The current host can hand over voluntarily using **Pass Host**.
 - Votes expire after 25 seconds. If a remote party host disconnects, leadership
   passes to a remaining player automatically.
@@ -467,9 +527,14 @@ online Live Wire round between **three copies of the real game**, driven
 through its buttons and key events: the host switches games in the lobby, a
 client's keys move its own runner and nobody else's in both the server's model
 and its own snapshot copy, a player who leaves is replaced by a bot, and
-everyone reaches the results and the lobby. `run_tests.py` runs it as its
-last stage; on its own, and with screenshots of what the joining player sees
-(`test-output/online-*.png`):
+everyone reaches the results and the lobby. Gamepads are driven the same way,
+as real pad events with their own device ids: `tests/test_gamepads.gd` joins
+and leaves pads on the menu, plays both games from several pads at once, pauses
+and unplugs one mid-round; `tests/run_gamepad_online.py` has a host with a
+second pad player and a remote guest play a Live Wire round, each seat moving
+only for its own pad or keys on the server and in the guest's copy.
+`run_tests.py` runs the online rounds as its last stages; on its own, and with
+screenshots of what the joining player sees (`test-output/online-*.png`):
 
 ```sh
 python3 tests/run_online.py --godot /path/to/godot
@@ -540,6 +605,17 @@ human feel test. Hold **Tab** during play to inspect all runner names.
 The graphics probe records frame timings and staged action/result screenshots.
 Xvfb generally uses software rendering; use an accelerated display for GPU data.
 
+The HUD widgets can be checked pixel for pixel after a change to how they
+draw: `tests/hud_batch_shots.gd` renders every plate, status, cue and slam
+state at 1280x720 and 1920x1080 and prints draw calls per widget;
+`tests/hud_batch_compare.py` diffs two runs.
+
+```sh
+xvfb-run -a .tools/Godot_v4.5.1-stable_linux.x86_64 --path . --audio-driver Dummy --script tests/hud_batch_shots.gd -- --out=/tmp/hud_before
+# ...change the drawing code, then shoot again to /tmp/hud_after...
+python3 tests/hud_batch_compare.py /tmp/hud_before /tmp/hud_after --crops /tmp/hud_crops
+```
+
 The updater has unit tests in `tests/test_update.gd` (run by `run_tests.py`,
 including manifests signed by `tools/release.py` with a throwaway key) and
 these slower checks:
@@ -604,7 +680,11 @@ File map:
   validation, signatures, swap plans), `scripts/update_notice.gd` draws the
   version tag and update card, and `scripts/update_keys.gd` lists the trusted
   release keys.
-- `scripts/ui_kit.gd` — the shared palette, fonts and chunky drawing helpers.
+- `scripts/ui_kit.gd` — the shared palette, fonts and chunky drawing helpers,
+  and `Batch`, which gathers a widget's shapes into one triangle list (the
+  engine's own antialiasing geometry) so a HUD plate is a handful of draw
+  calls rather than ~60. Widgets that redraw often call `Kit.begin(self)` at
+  the top of `_draw()` and `flush()` at the end.
 - `scripts/hud_*.gd` — the HUD widgets: `hud_cue` (the top-centre call-out, for
   rods and for surges), `hud_status` (clock, stage chip, standings), `hud_slam`
   (call-out text), `hud_plate` (Spin Cycle's player plate with the coil

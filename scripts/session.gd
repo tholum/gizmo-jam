@@ -17,6 +17,13 @@ extends Node
 ## chosen game; everyone else sits it out in the lobby and a bot takes their
 ## seat. The leader may pick any game the host has; members who lack it fetch
 ## it (main.gd and scripts/pack_manager.gd) and report progress with STATUS.
+##
+## Local seats: a machine that plays solo or hosts can seat more players of its
+## own, one per extra gamepad (add_local). They are ordinary members with this
+## machine's peer id, their own slot and a "pad" key, listed after the
+## machine's own member, so a peer's first member is always the person at its
+## keyboard. Their input is routed on the server (send_local_input), so the
+## wire format does not change and older clients only see more names.
 
 signal roster_changed
 signal round_started(seed_value: int, slots: Array, round_number: int)
@@ -140,12 +147,69 @@ func is_leader() -> bool:
 func is_online() -> bool:
 	return mode == "host" or mode == "client"
 
+## The seat of the person at this machine's keyboard: the peer's first member.
 func my_slot() -> int:
 	var id := multiplayer.get_unique_id()
 	for m in members:
 		if int(m.peer) == id:
 			return int(m.slot)
 	return 0
+
+## Whether this machine may seat players for extra gamepads: solo or hosting.
+func local_seats_allowed() -> bool:
+	return mode == "offline" or mode == "host"
+
+## Seats a player for gamepad `pad` on this machine, in the lowest open seat.
+## Returns the slot, or -1 (not solo or hosting, a round on, no room, or the
+## pad already has a seat).
+func add_local(pad: int) -> int:
+	if not local_seats_allowed() or playing or members.size() >= MAX_PLAYERS or pad_slot(pad) >= 0:
+		return -1
+	var used := members.map(func(m): return int(m.slot))
+	var slot := 0
+	while slot in used:
+		slot += 1
+	members.append({"peer": multiplayer.get_unique_id(), "name": "PLAYER %d" % (slot + 1), "slot": slot, "pad": pad})
+	if mode == "host":
+		notice = "Player %d joined on this machine." % (slot + 1)
+	_broadcast_roster()
+	return slot
+
+## Frees gamepad `pad`'s seat. Mid-round the seat is handed to a bot, exactly
+## like a player whose connection dropped.
+func remove_local(pad: int) -> void:
+	var slot := pad_slot(pad)
+	if slot < 0:
+		return
+	if playing:
+		seat_disconnected.emit(slot)
+	members = members.filter(func(m): return int(m.get("pad", -1)) != pad)
+	_broadcast_roster()
+
+## The seat of gamepad `pad`, or -1.
+func pad_slot(pad: int) -> int:
+	for m in members:
+		if m.has("pad") and int(m.pad) == pad:
+			return int(m.slot)
+	return -1
+
+## Input from one of this machine's extra seats. Only the server has those.
+func send_local_input(slot: int, action: String, pressed: bool) -> void:
+	if not playing or not is_server() or action not in Registry.actions(game):
+		return
+	for m in members:
+		if m.has("pad") and int(m.slot) == slot:
+			input_received.emit(slot, action, pressed)
+			return
+
+## Machines in the party: members with distinct peers. Extra local seats share
+## their machine's vote.
+func peer_count() -> int:
+	var seen: Array = []
+	for m in members:
+		if int(m.peer) not in seen:
+			seen.append(int(m.peer))
+	return seen.size()
 
 func clean_name(value: String) -> String:
 	var cleaned := value.strip_edges().replace("\n", " ").replace("\r", " ").replace("\t", " ").left(16)
@@ -540,7 +604,7 @@ func _vote(sender: int, yes: bool) -> void:
 	_broadcast_roster()
 
 func votes_needed() -> int:
-	return maxi(1, int(floor(float(members.size() - 1) / 2.0)) + 1)
+	return maxi(1, int(floor(float(peer_count() - 1) / 2.0)) + 1)
 
 func _evaluate_vote() -> void:
 	if election.is_empty():
@@ -549,7 +613,7 @@ func _evaluate_vote() -> void:
 		leader_id = int(election.candidate)
 		election.clear()
 		notice = "Vote passed. The new host can start games for everyone."
-	elif election.no.size() > (members.size() - 1) - votes_needed():
+	elif election.no.size() > (peer_count() - 1) - votes_needed():
 		election.clear()
 		notice = "Host vote did not pass."
 

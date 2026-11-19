@@ -1,6 +1,7 @@
 extends Node
 
 const Arena = preload("res://scripts/arena.gd")
+const ScaledView = preload("res://scripts/scaled_view.gd")
 const LiveArena = preload("res://scripts/livewire_arena.gd")
 const Network = preload("res://scripts/session.gd")
 const Kit = preload("res://scripts/ui_kit.gd")
@@ -16,6 +17,7 @@ const PackManager = preload("res://scripts/pack_manager.gd")
 const FileServer = preload("res://scripts/file_server.gd")
 const Platform = preload("res://scripts/platform.gd")
 const TouchControls = preload("res://scripts/touch_controls.gd")
+const Gamepads = preload("res://scripts/gamepads.gd")
 const INK := Kit.INK
 const MUTED := Kit.MUTED
 const DIM := Kit.DIM
@@ -65,6 +67,7 @@ var session: Node
 ## create their own arena when staged and free it when not.
 var arena: Node3D
 var live_arena: Node3D
+var scaled_view: Node
 ## Game id -> module instance.
 var games: Dictionary = {}
 ## The module of the round being played or shown in the results.
@@ -153,6 +156,15 @@ var web_party := on_web and str(JavaScriptBridge.eval("location.protocol", true)
 var store_app: bool = PackManager.store_app
 const WEB_TYPES := {"html": "text/html; charset=utf-8", "js": "application/javascript", "wasm": "application/wasm",
 	"pck": "application/octet-stream", "png": "image/png", "ico": "image/x-icon", "json": "application/json", "svg": "image/svg+xml"}
+## Gamepads (scripts/gamepads.gd): player one's pad and the extra players'.
+var pads: Gamepads
+## This round's players on this machine: one bit per slot (always my_slot).
+var local_mask := 0
+## This round's extra local seats as (slot, pad) pairs, flattened.
+var seat_pads := PackedInt32Array()
+## True for a round with more than one player on this screen: plates mark
+## every one of them, feedback goes over their own plates, nobody is "YOU".
+var shared_screen := false
 
 func _ready() -> void:
 	_load_settings()
@@ -179,6 +191,11 @@ func _ready() -> void:
 		session.select_game(preferred_game)
 		_show_menu(message))
 	session.select_game(preferred_game)
+	pads = Gamepads.new()
+	pads.name = "Gamepads"
+	pads.seats_allowed = session.local_seats_allowed
+	pads.changed.connect(_pads_changed)
+	add_child(pads)
 	_fit_window()
 	get_tree().root.size_changed.connect(_window_resized)
 	arena = Arena.new()
@@ -562,6 +579,10 @@ func _clear_overlay() -> void:
 		overlay.remove_child(child)
 		child.queue_free()
 	overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	# The screen under a dialog takes focus again (see _modal()).
+	if screen.focus_behavior_recursive != Control.FOCUS_BEHAVIOR_INHERITED:
+		screen.focus_behavior_recursive = Control.FOCUS_BEHAVIOR_INHERITED
+		_ensure_focus.call_deferred()
 	# Modal-only fields are gone; menu actions fall back to saved settings.
 	address_field = null
 	port_field = null
@@ -800,8 +821,12 @@ func _show_menu(message: String = "") -> void:
 	name_field = _field(actions, player_name, "Your name", Rect2(LEFT, y + 24, COL, field_h), 16)
 	y += 24 + field_h + (8.0 if tight else 16.0)
 	var solo_h := 56.0 if tight else 68.0
-	var solo := _button(actions, "PLAY SOLO  ·  VS 5 BOTS", Rect2(LEFT, y, COL, solo_h), _solo, true, 28)
-	solo.tooltip_text = "Play %s against five bots" % _game_title().capitalize()
+	# Extra gamepads that joined on this screen play in the same round.
+	var here := 1 + pads.extras.size()
+	var solo_text := "PLAY SOLO  ·  VS 5 BOTS" if here == 1 else ("PLAY  ·  %d PLAYERS VS %d BOTS" % [here, 6 - here] if here < 6 else "PLAY  ·  6 PLAYERS")
+	var solo := _button(actions, solo_text, Rect2(LEFT, y, COL, solo_h), _solo, true, 28 if here == 1 else 24)
+	solo.name = "Solo"
+	solo.tooltip_text = "Play %s against five bots" % _game_title().capitalize() if here == 1 else "Play %s on this screen" % _game_title().capitalize()
 	y += solo_h + (8.0 if tight else 14.0)
 	var half := (COL - 14) / 2.0
 	var party_h := 46.0 if tight else 56.0
@@ -825,7 +850,9 @@ func _show_menu(message: String = "") -> void:
 	_dev_toggle()
 	if dev_mode and message.is_empty() and not packs.problems.is_empty():
 		menu_status.text = "Developer packs: " + str(packs.problems[0])
-	solo.grab_focus()
+	if not pads.devices.is_empty():
+		_local_players(screen)
+	_focus(solo)
 
 ## Developer mode, beside the version tag in the corner of the menu.
 func _dev_toggle() -> void:
@@ -957,6 +984,7 @@ func _host() -> void:
 		if browser_guests:
 			packs.ensure_web()
 			_serve_web()
+		_sync_local_seats()
 		_advertise_party()
 		last_member_count = session.members.size()
 		_show_lobby()
@@ -998,6 +1026,7 @@ func _cancel_join() -> void:
 func _solo() -> void:
 	if not _read_fields(): return
 	session.solo(player_name)
+	_sync_local_seats()
 	session.start_round()
 
 func _lan_ips() -> Array:
@@ -1289,18 +1318,23 @@ func _show_lobby() -> void:
 		var other := _button(actions, "END ROUND" if out else "START ANYWAY", Rect2(LEFT + COL - 186, start_rect.position.y, 186, start_rect.size.y), func(): session.lobby() if out else session.start_round(), false, 17)
 		other.name = "EndRound" if out else "StartAnyway"
 		other.tooltip_text = "Return everyone to the lobby" if out else "Players who are not ready sit this round out; bots take their seats"
-	if not start.disabled: start.grab_focus()
+	if not start.disabled: _focus(start)
 	_button(actions, "LEAVE PARTY", Rect2(LEFT, foot, 168, 46), _leave, false, 15)
 	var notice := _label(actions, session.notice, Rect2(LEFT + 190, foot, COL - 190, 46), 14, MUTED)
 	_wrap(notice)
 	var seats := _section(3, Vector2(90, 0))
 	_eyebrow(seats, "PLAYERS", Rect2(RIGHT_X + 16, top - 2, 200, 24), LIME)
 	_eyebrow(seats, "%d OF 6 CONNECTED" % session.members.size(), Rect2(RIGHT_X, top - 2, RIGHT_W, 24), INK, ALIGN_RIGHT)
-	_roster_panel(seats, Vector2(RIGHT_X, top + 34), RIGHT_W, tight)
+	var below := _roster_panel(seats, Vector2(RIGHT_X, top + 34), RIGHT_W, tight)
+	if not pads.devices.is_empty():
+		var hint := "PRESS A ON ANOTHER CONTROLLER TO JOIN  ·  B TO LEAVE" if session.local_seats_allowed() else "EXTRA CONTROLLERS CAN PLAY WHEN THIS MACHINE HOSTS"
+		var pad_hint := _eyebrow(seats, hint, Rect2(RIGHT_X + 16, below + 4, RIGHT_W - 16, 22), MUTED)
+		pad_hint.name = "PadHint"
 	updater.decorate(screen, "lobby")
 	# A rebuild clears dialogs; an unanswered question about an unsigned game
 	# must not vanish with it.
 	if not relayout and not pending_consent.is_empty(): _show_consent()
+	if start.disabled: _ensure_focus()
 
 ## Lobby: the game the next round will be. Everyone sees the choice; only the
 ## party host's copy has live buttons.
@@ -1373,7 +1407,11 @@ func _roster_panel(parent: Control, origin: Vector2, width: float, compact: bool
 			if int(m.slot) == i:
 				member = m
 		var filled := not member.is_empty()
-		var mine: bool = filled and int(member.peer) == own
+		# An extra gamepad's seat on the host machine: its own player, but not
+		# that machine's party host and no vote of its own.
+		var extra: bool = filled and member.has("pad")
+		var here: bool = filled and int(member.peer) == own
+		var mine: bool = here and not extra
 		var tint: Color = Kit.colors[i]
 		var number_size := 24 if compact else 34
 		var tile := Control.new()
@@ -1383,7 +1421,7 @@ func _roster_panel(parent: Control, origin: Vector2, width: float, compact: bool
 		tile.draw.connect(func():
 			var shape := Kit.slab(Rect2(0, 0, body_w, row_h))
 			if filled:
-				if mine: Kit.stroke(tile, shape, INK, 11.0)
+				if here: Kit.stroke(tile, shape, INK, 11.0)
 				Kit.plate(tile, shape, tint, 4.0, 5.0)
 				tile.draw_colored_polygon(Kit.slab(Rect2(8, 6, row_h * 0.95, row_h - 12)), Kit.OUTLINE)
 			else:
@@ -1406,10 +1444,12 @@ func _roster_panel(parent: Control, origin: Vector2, width: float, compact: bool
 			var waiting: bool = str(session.status_of(int(member.peer)).get("state", "")) in Network.WAITING_STATES
 			var chip := _tab(tile, state_text, Vector2(body_w - 160, chip_y + 1), Kit.OUTLINE if waiting else WARN, INK if waiting else Kit.OUTLINE, 12, true)
 			chip.name = "State"
-		if mine:
+		if mine or extra:
 			var name_px := minf(Kit.text_width(name_text, font_size), name_w)
-			_tab(tile, "YOU", Vector2(name_x + name_px + 12, chip_y), INK, Kit.OUTLINE, 13)
-		if int(member.peer) == session.leader_id:
+			_tab(tile, "YOU" if mine else "CONTROLLER", Vector2(name_x + name_px + 12, chip_y), INK if here else Kit.OUTLINE, Kit.OUTLINE if here else INK, 13)
+		if extra:
+			pass
+		elif int(member.peer) == session.leader_id:
 			_tab(tile, "HOST", Vector2(body_w - 12, chip_y), Kit.OUTLINE, LIME, 13, true)
 		elif session.election.is_empty():
 			var peer: int = member.peer
@@ -1718,6 +1758,7 @@ func _round_started(seed_value: int, slots: Array, number: int) -> void:
 	play = games[session.game]
 	model = play.make_model()
 	model.begin(seed_value, slots, number)
+	_seat_round()
 	paused = false
 	last_count = 4
 	snapshot_clock = 0.0
@@ -1728,6 +1769,15 @@ func _round_started(seed_value: int, slots: Array, number: int) -> void:
 	_sfx("round_start")
 	_clear_overlay()
 	_show_game()
+	# Each round starts at Low's full 3D resolution; it only drops if this
+	# machine cannot hold 30 fps (scripts/scaled_view.gd).
+	if scaled_view: scaled_view.restore()
+	# The countdown rasterises the call-outs' glyphs, so the first one in play
+	# does not hitch.
+	if play.has_method("callouts"):
+		hud_count.warm(play.callouts(), hud_feedback.font_size, hud_feedback.outline_px, hud_feedback.size.x)
+		if shared_screen:
+			hud_count.warm(play.callouts(), PLATE_CALL_SIZE, PLATE_CALL_OUTLINE, PLATE_CALL_W)
 
 ## The round is gone (lobby, leaving, a lost connection): nothing stays held.
 func _end_round() -> void:
@@ -1825,9 +1875,10 @@ func _hud_feedback(rect: Rect2, font_size: int, outline_px: int) -> Control:
 ## Menu button and the names hint, top-right. The button never takes keyboard
 ## focus, so Space always reaches the game.
 func _hud_corner() -> void:
-	hud_menu = _button(hud_root, "MENU" if Platform.handheld else "ESC  ·  MENU", Rect2(area.x - 194, 22, 162, 46), _toggle_pause, false, 16)
+	var pad := pad_captions()
+	hud_menu = _button(hud_root, "MENU" if Platform.handheld else ("START  ·  MENU" if pad else "ESC  ·  MENU"), Rect2(area.x - 194, 22, 162, 46), _toggle_pause, false, 16)
 	hud_menu.focus_mode = Control.FOCUS_NONE
-	hud_names = _outlined(_label(hud_root, "HOLD TAB  ·  NAMES", Rect2(area.x - 260, 76, 232, 22), 14, INK, true, ALIGN_RIGHT), 6)
+	hud_names = _outlined(_label(hud_root, "HOLD Y  ·  NAMES" if pad else "HOLD TAB  ·  NAMES", Rect2(area.x - 260, 76, 232, 22), 14, INK, true, ALIGN_RIGHT), 6)
 	if Platform.handheld:
 		# The touch layer presses it (any finger, not only the first), and
 		# there is no Tab key to hint at.
@@ -1868,7 +1919,16 @@ func _hud_intro() -> Control:
 	return hud_intro
 
 func _role(slot: int, p: Dictionary, my_slot: int) -> String:
+	if shared_screen and is_local(slot): return "P%d" % (slot + 1)
 	return "YOU" if slot == my_slot else ("CPU" if p.bot else "P%d" % (slot + 1))
+
+## Whether `slot` is played on this machine in the current round.
+func is_local(slot: int) -> bool:
+	return (local_mask >> slot) & 1 == 1
+
+## The plate drawn larger in the row: the local player's, or none on a shared screen.
+func plate_focus() -> int:
+	return -1 if shared_screen else session.my_slot()
 
 ## Short rattle of the whole HUD layer when the local runner is hit.
 func _shake_hud() -> void:
@@ -1901,9 +1961,11 @@ func _process(delta: float) -> void:
 		var in_round: bool = model != null and session.playing and on_stage == play
 		# Between rounds the game decides what its arena shows behind the menus.
 		var state: RefCounted = model if in_round else on_stage.backdrop(delta)
+		if "local_mask" in stage: stage.local_mask = local_mask if in_round and shared_screen else 0
 		stage.update_visuals(state, 0.0 if paused and not session.is_online() else delta, session.my_slot() if in_round or state == null else -1)
 	if view == "game" and model:
 		feedback_time = maxf(0.0, feedback_time - delta)
+		if shared_screen: _fade_plate_calls(delta)
 		play.frame(delta)
 		hud_clock += delta
 		if hud_clock > 0.033:
@@ -1936,6 +1998,315 @@ func _update_hud() -> void:
 		hud_feedback.visible = false
 	else:
 		hud_feedback.alpha = clampf(feedback_time / 0.12, 0.0, 1.0)
+
+# --- Gamepads -------------------------------------------------------------------
+# Player one is the keyboard plus the primary pad. Every other pad that presses
+# A or Start on the menu, or in a lobby this machine hosts, takes a seat of its
+# own; B or Back gives it up (scripts/gamepads.gd keeps the list). Only player
+# one's pad reaches the menus; the others' events stop here.
+
+## Shared screen: the call-out over each local player's plate.
+const PLATE_CALL_SIZE := 28
+const PLATE_CALL_OUTLINE := 8
+const PLATE_CALL_W := 236.0
+## Per slot: that plate's call-out (a Slam), or null for a seat not played here.
+var plate_calls: Array = []
+var plate_call_time := PackedFloat32Array()
+## The screen control that had focus when a dialog opened; it gets it back.
+var focus_return: Control
+
+func _input(event: InputEvent) -> void:
+	if event is InputEventKey:
+		if event.pressed and not event.echo:
+			pads.keyboard_used = true
+			pads.pad_last = false
+		return
+	if not (event is InputEventJoypadButton or event is InputEventJoypadMotion):
+		return
+	pads.note(event)
+	if not _pad_event(event):
+		get_viewport().set_input_as_handled()
+
+## Acts on one pad event. True when the GUI may have it too (focus moves,
+## accept), false when it was used up here.
+func _pad_event(event: InputEvent) -> bool:
+	var device: int = event.device
+	var button: int = event.button_index if event is InputEventJoypadButton else -1
+	var press: bool = event is InputEventJoypadButton and event.pressed
+	var in_round := view == "game" and model != null
+	if not session.local_seats_allowed():
+		# A guest in somebody else's party plays alone: every pad is player one.
+		return _menu_pad(event, button, press, in_round)
+	if pads.is_extra(device):
+		if press and button in [JOY_BUTTON_B, JOY_BUTTON_BACK] and _can_seat():
+			pads.leave(device)
+			_ui_sound("ui_click")
+		return false
+	if device != pads.primary:
+		if not press:
+			return false
+		# On a TV with no keyboard the first pad to press anything is player
+		# one. Once the keyboard has been used, new pads join instead.
+		if pads.primary < 0 and (not pads.keyboard_used or not _can_seat()):
+			pads.claim(device)
+		elif _can_seat() and button in [JOY_BUTTON_A, JOY_BUTTON_START]:
+			if pads.join(device, _local_room()):
+				_ui_sound("ui_click")
+			return false
+		else:
+			return false
+	return _menu_pad(event, button, press, in_round)
+
+## Player one's pad: moving focus, the menus' accept and back, and Start to
+## pause a round. During play nothing reaches the GUI; the games poll the pad.
+func _menu_pad(event: InputEvent, button: int, press: bool, in_round: bool) -> bool:
+	var steer := pads.nav(event)
+	if press:
+		pads.pad_last = true
+	if in_round and not paused:
+		if press and button == JOY_BUTTON_START:
+			_toggle_pause()
+		elif button == JOY_BUTTON_Y and event is InputEventJoypadButton:
+			# Held Y shows everyone's names, like Tab.
+			if is_instance_valid(play.arena()): play.arena().set("show_identities", event.pressed)
+		return false
+	if steer != 0:
+		_move_focus(steer)
+		return false
+	if event is InputEventJoypadMotion or button in [JOY_BUTTON_DPAD_UP, JOY_BUTTON_DPAD_DOWN, JOY_BUTTON_DPAD_LEFT, JOY_BUTTON_DPAD_RIGHT]:
+		return false
+	if not press:
+		return true
+	if in_round and (button == JOY_BUTTON_START or button == JOY_BUTTON_B):
+		_toggle_pause()
+		return false
+	if button == JOY_BUTTON_B and overlay.get_child_count() > 0:
+		if session.mode == "joining": _cancel_join()
+		else: _clear_overlay()
+		return false
+	return true
+
+## Moves focus to the nearest control in a pad's direction, among the open
+## dialog's controls or else the screen's. Godot's own neighbour search gets
+## stuck on these free-form screens (and works from positions mid-animation),
+## so pads use this; the keyboard's arrows are left to Godot.
+func _move_focus(bits: int) -> void:
+	var dir := Vector2.ZERO
+	if bits & Gamepads.UP: dir = Vector2.UP
+	elif bits & Gamepads.DOWN: dir = Vector2.DOWN
+	elif bits & Gamepads.LEFT: dir = Vector2.LEFT
+	elif bits & Gamepads.RIGHT: dir = Vector2.RIGHT
+	var scope: Control = overlay if overlay.get_child_count() > 0 else screen
+	var current := get_viewport().gui_get_focus_owner()
+	if current == null or not scope.is_ancestor_of(current):
+		_ensure_focus()
+		return
+	var cur := current.get_global_rect()
+	var best: Control = null
+	var best_score := INF
+	for c in scope.find_children("*", "Control", true, false):
+		if c == current or not (c is BaseButton or c is LineEdit) or c.focus_mode == Control.FOCUS_NONE or not c.is_visible_in_tree():
+			continue
+		if c is BaseButton and c.disabled:
+			continue
+		var r: Rect2 = c.get_global_rect()
+		var delta: Vector2 = r.get_center() - cur.get_center()
+		if delta.dot(dir) < 8.0:
+			continue
+		# A key inside a card (its HOW TO PLAY) is beside it, never above or below.
+		if dir.y != 0.0 and r.intersects(cur):
+			continue
+		# The gap between facing edges, plus twice the sideways gap (0 when the
+		# two overlap sideways), with the centre distance to break ties.
+		var gap := 0.0
+		var side := 0.0
+		if dir.y != 0.0:
+			gap = r.position.y - cur.end.y if dir.y > 0.0 else cur.position.y - r.end.y
+			side = maxf(r.position.x - cur.end.x, cur.position.x - r.end.x)
+		else:
+			gap = r.position.x - cur.end.x if dir.x > 0.0 else cur.position.x - r.end.x
+			side = maxf(r.position.y - cur.end.y, cur.position.y - r.end.y)
+		var score := maxf(gap, 0.0) + maxf(side, 0.0) * 2.0 + delta.length() * 0.05
+		if score < best_score:
+			best_score = score
+			best = c
+	if best:
+		best.grab_focus()
+
+## Whether a pad may join or leave now: on the menu or in this machine's lobby,
+## between rounds, with no dialog open.
+func _can_seat() -> bool:
+	return session.local_seats_allowed() and not session.playing and (view == "menu" or view == "lobby") and overlay.get_child_count() == 0
+
+## How many more players fit on this machine.
+func _local_room() -> int:
+	if session.mode == "host":
+		return Network.MAX_PLAYERS - session.members.size()
+	return Network.MAX_PLAYERS - 1 - pads.extras.size()
+
+func _pads_changed() -> void:
+	if not is_instance_valid(screen) or not is_instance_valid(overlay):
+		return
+	_sync_local_seats()
+	if view == "menu" or view == "lobby":
+		_refresh_screen()
+
+## Rebuilds the screen in place, keeping the focused button.
+func _refresh_screen() -> void:
+	var owner_now := get_viewport().gui_get_focus_owner()
+	var focus_text: String = owner_now.text if owner_now is Button and screen.is_ancestor_of(owner_now) else ""
+	_apply_layout()
+	if focus_text.is_empty() or overlay.get_child_count() > 0:
+		return
+	for button in screen.find_children("*", "Button", true, false):
+		if button.text == focus_text and not button.disabled and button.focus_mode != Control.FOCUS_NONE:
+			button.grab_focus()
+			return
+
+## Brings this machine's extra seats in line with the pads that joined: seats
+## for new ones (between rounds), none for pads that left or were unplugged
+## (mid-round a bot takes over, as for a dropped connection).
+func _sync_local_seats() -> void:
+	if not session.local_seats_allowed():
+		return
+	for m in session.members.duplicate():
+		if m.has("pad") and not pads.is_extra(int(m.pad)):
+			session.remove_local(int(m.pad))
+	if not session.members.is_empty() and not session.playing:
+		for device in pads.extras:
+			if session.pad_slot(device) < 0:
+				session.add_local(device)
+	if model and session.playing:
+		_seat_round(false)
+
+## This round's seats on this machine. `start`: a new round, which also
+## decides whether the screen is shared for the whole round.
+func _seat_round(start: bool = true) -> void:
+	var own := multiplayer.get_unique_id()
+	local_mask = 1 << session.my_slot()
+	seat_pads.clear()
+	for m in session.members:
+		if m.has("pad") and int(m.peer) == own:
+			seat_pads.append(int(m.slot))
+			seat_pads.append(int(m.pad))
+			local_mask |= 1 << int(m.slot)
+	if start:
+		shared_screen = not seat_pads.is_empty()
+
+## Shows button captions for a pad rather than the keyboard.
+func pad_captions() -> bool:
+	return shared_screen or pads.pad_last or (not pads.devices.is_empty() and not pads.keyboard_used)
+
+## Shared screen: one call-out over each local player's plate, for the round HUD.
+func _plate_callouts() -> void:
+	plate_calls.clear()
+	plate_call_time.resize(6)
+	plate_call_time.fill(0.0)
+	for i in 6:
+		var call: Control = null
+		if shared_screen and is_local(i):
+			call = Slam.new()
+			call.size = Vector2(PLATE_CALL_W, 60)
+			call.font_size = PLATE_CALL_SIZE
+			call.outline_px = PLATE_CALL_OUTLINE
+			hud_root.add_child(call)
+		plate_calls.append(call)
+
+## Puts the call-outs just above the plates' drawn rectangles.
+func place_plate_calls(rects: Array) -> void:
+	for i in mini(plate_calls.size(), rects.size()):
+		var call: Control = plate_calls[i]
+		if call:
+			var r: Rect2 = rects[i]
+			call.position = Vector2(roundf(r.get_center().x - PLATE_CALL_W * 0.5), r.position.y - call.size.y - 2.0)
+
+## A call-out over `slot`'s plate: a rattle for bad news, a pop for good.
+func plate_say(slot: int, text_value: String, color: Color, bad: bool, seconds: float) -> void:
+	if slot < 0 or slot >= plate_calls.size() or plate_calls[slot] == null:
+		return
+	if bad: plate_calls[slot].rattle(text_value, color)
+	else: plate_calls[slot].pop(text_value, color)
+	plate_call_time[slot] = seconds
+
+func _fade_plate_calls(delta: float) -> void:
+	for i in plate_calls.size():
+		var call: Control = plate_calls[i]
+		if call == null or plate_call_time[i] <= 0.0:
+			continue
+		plate_call_time[i] = maxf(0.0, plate_call_time[i] - delta)
+		if plate_call_time[i] < 0.12:
+			call.alpha = plate_call_time[i] / 0.12
+			if plate_call_time[i] <= 0.0: call.visible = false
+
+## Grabs focus for a screen control, unless a dialog is open over the screen.
+func _focus(control: Control) -> void:
+	if screen.focus_behavior_recursive != Control.FOCUS_BEHAVIOR_DISABLED and control.focus_mode != Control.FOCUS_NONE:
+		control.grab_focus()
+
+## After a dialog closes, focus goes back where it was. A screen with nothing
+## focused by default (a guest's lobby or results) gets something focused once
+## a gamepad is around, so the d-pad can move from it.
+func _ensure_focus() -> void:
+	if not is_instance_valid(screen) or view == "game" or overlay.get_child_count() > 0:
+		return
+	if get_viewport().gui_get_focus_owner() != null:
+		return
+	var back := focus_return
+	focus_return = null
+	if is_instance_valid(back) and back.is_inside_tree() and back.is_visible_in_tree() and back.focus_mode != Control.FOCUS_NONE:
+		back.grab_focus()
+		return
+	if pads.devices.is_empty():
+		return
+	var fallback: Control = null
+	for button in screen.find_children("*", "Button", true, false):
+		if button.disabled or button.focus_mode == Control.FOCUS_NONE or not button.is_visible_in_tree():
+			continue
+		if button.name == "How":
+			button.grab_focus()
+			return
+		if fallback == null:
+			fallback = button
+	if fallback:
+		fallback.grab_focus()
+
+## Menu: who plays on this screen, once a gamepad has shown up. Seats are
+## handed out in this order when the round starts.
+func _local_players(parent: Control) -> void:
+	var rows := 1 + pads.extras.size()
+	var row_h := 34.0
+	var pitch := 40.0
+	var w := 380.0
+	var h := 30.0 + rows * pitch + 26.0
+	var box := Control.new()
+	box.name = "LocalPlayers"
+	box.position = Vector2(area.x - w - 48.0, area.y - 86.0 - h)
+	box.size = Vector2(w, h)
+	box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	parent.add_child(box)
+	_enter(box, 4, Vector2(90, 0))
+	_eyebrow(box, "PLAYERS ON THIS SCREEN", Rect2(0, 0, w, 22), LIME)
+	var p1_how := "KEYBOARD"
+	if pads.primary >= 0: p1_how = "KEYBOARD + PAD" if pads.keyboard_used else "CONTROLLER"
+	for k in rows:
+		var tint: Color = Kit.colors[k]
+		var who := player_name.to_upper() if k == 0 else "PLAYER %d" % (k + 1)
+		var how := p1_how if k == 0 else "B TO LEAVE"
+		var lean := row_h * Kit.SLANT
+		var tile := Control.new()
+		tile.position = Vector2(0, 30.0 + k * pitch)
+		tile.size = Vector2(w, row_h)
+		tile.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		tile.draw.connect(func():
+			var shape := Kit.slab(Rect2(0, 0, w - lean, row_h))
+			Kit.plate(tile, shape, tint, 3.0, 4.0)
+			tile.draw_colored_polygon(Kit.slab(Rect2(6, 5, row_h, row_h - 10)), Kit.OUTLINE)
+			Kit.text(tile, str(k + 1), Vector2(6 + row_h * 0.5 + (row_h - 10) * Kit.SLANT * 0.5, Kit.baseline(row_h * 0.5, 20)), 20, tint, 0, 0.5)
+			Kit.text(tile, who, Vector2(row_h + 18, Kit.baseline(row_h * 0.5, 18)), Kit.fit(who, 18, w - 200.0, 12), Kit.OUTLINE)
+			Kit.text(tile, how, Vector2(w - lean - 14, Kit.baseline(row_h * 0.5, 12)), 12, Kit.OUTLINE, 0, 1.0))
+		box.add_child(tile)
+	var hint := "PRESS A ON ANOTHER CONTROLLER TO JOIN" if rows < Network.MAX_PLAYERS else "ALL SIX SEATS ARE TAKEN"
+	_eyebrow(box, hint, Rect2(0, 30.0 + rows * pitch, w, 22), MUTED).name = "PadHint"
 
 func _unhandled_key_input(event: InputEvent) -> void:
 	if not event is InputEventKey or event.echo: return
@@ -1995,6 +2366,12 @@ func _show_pause() -> void:
 ## Dialog: a thick-edged slab with its title on a ribbon that overhangs the corner.
 func _modal(title: String, description: String, height: float = 250) -> Panel:
 	overlay.mouse_filter = Control.MOUSE_FILTER_STOP
+	# Arrow keys and a gamepad's d-pad move focus by geometry across the whole
+	# canvas, so the screen under the dialog gives up focus while it is open.
+	if screen.focus_behavior_recursive != Control.FOCUS_BEHAVIOR_DISABLED:
+		var owner_now := get_viewport().gui_get_focus_owner()
+		focus_return = owner_now if owner_now != null and screen.is_ancestor_of(owner_now) else null
+		screen.focus_behavior_recursive = Control.FOCUS_BEHAVIOR_DISABLED
 	var shade := ColorRect.new()
 	shade.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	shade.color = Color(0.01, 0.02, 0.05, 0.8)
@@ -2095,7 +2472,7 @@ func _show_results() -> void:
 	for rank in 6:
 		var i: int = order[rank]
 		var p: Dictionary = model.players[i]
-		var mine: bool = i == my_slot
+		var mine: bool = is_local(i)
 		var champ: bool = rank == 0 and single_winner
 		var tint: Color = play.result_tint(i, champ)
 		var lean := row_h * Kit.SLANT
@@ -2117,7 +2494,7 @@ func _show_results() -> void:
 		var name_w: float = body_w - 78.0 - play.result_row(tile, i, champ, body_w, row_h, mine)
 		_label(tile, name_text, Rect2(78, 0, name_w, row_h), 22, Kit.OUTLINE, true).text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 		if mine:
-			_tab(tile, "YOU", Vector2(78 + minf(Kit.text_width(name_text, 22), name_w) + 10, (row_h - 26.0) * 0.5), INK, Kit.OUTLINE, 13)
+			_tab(tile, "P%d" % (i + 1) if shared_screen else "YOU", Vector2(78 + minf(Kit.text_width(name_text, 22), name_w) + 10, (row_h - 26.0) * 0.5), INK, Kit.OUTLINE, 13)
 	play.result_headers(screen, table_w)
 	var actions := _section(10)
 	var half := (table_w - 14) / 2.0
@@ -2131,7 +2508,8 @@ func _show_results() -> void:
 	var back := _button(actions, "PARTY LOBBY" if session.is_online() else "GAME MENU", Rect2(LEFT + half + 14, action_y, half, action_h), func(): session.lobby(), false, 22)
 	back.name = "Back"
 	back.disabled = not session.is_leader()
-	if not again.disabled: again.grab_focus()
+	if not again.disabled: _focus(again)
+	else: _ensure_focus()
 	if session.is_online():
 		var note := _label(actions, session.notice if session.is_leader() else "Waiting for %s to start the next round." % _member_name(session.leader_id), Rect2(LEFT, foot, table_w, 44), 14, MUTED)
 		_wrap(note)
@@ -2145,7 +2523,7 @@ func _show_results() -> void:
 		announced_round = model.round_id
 		if not single_winner:
 			_voice("draw")
-		elif order[0] == my_slot:
+		elif is_local(order[0]):
 			_voice("you_win")
 		else:
 			_voice("winner")
@@ -2257,8 +2635,11 @@ func _tone(frequency: float, duration: float) -> void:
 static func default_graphics(adapter_name: String) -> String:
 	var adapter := adapter_name.to_lower()
 	if adapter.is_empty(): return "balanced"
-	for software in ["llvmpipe", "softpipe", "swiftshader", "lavapipe", "software", "microsoft basic render", "gdi generic"]:
-		if software in adapter: return "low"
+	if Arena.software_renderer(adapter): return "low"
+	# Raspberry Pi GPUs (Mesa reports "V3D 4.2" on a Pi 4, "V3D 7.1" on a Pi 5,
+	# "VC4" on older boards): only Low holds 30 fps on a Pi 4.
+	for small in ["v3d", "vc4"]:
+		if adapter.begins_with(small): return "low"
 	return "high"
 
 ## Graphics level stored in a settings file. Files written before Low existed
@@ -2326,6 +2707,14 @@ func _set_check_updates(on: bool) -> void:
 func _apply_graphics() -> void:
 	for stage in _arenas():
 		if stage.has_method("set_level"): stage.set_level(graphics_level)
+	# Low's reduced 3D resolution goes through a SubViewport: on a Raspberry
+	# Pi 4 the root viewport's own 3D scaling costs several ms more.
+	if scaled_view == null:
+		scaled_view = ScaledView.new()
+		scaled_view.name = "ScaledView"
+		add_child(scaled_view)
+		scaled_view.shade_source = arena.wants_picture_shade
+	scaled_view.set_scale(Arena.LOW_RENDER_SCALE if graphics_level == "low" else 1.0, true)
 
 func _set_graphics(level: String) -> void:
 	_read_fields()
@@ -2337,4 +2726,4 @@ func _set_graphics(level: String) -> void:
 	_show_menu()
 	relayout = false
 	for key in screen.find_children("*", "Button", true, false):
-		if key.get_meta("graphics", "") == level: key.grab_focus()
+		if key.get_meta("graphics", "") == level: _focus(key)

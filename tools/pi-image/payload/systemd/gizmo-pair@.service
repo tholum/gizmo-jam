@@ -1,0 +1,37 @@
+# Gizmo Jam controller pairing page (http://<pi>:8080/, LAN only).
+# Instance = the desktop user it runs as: gizmo-pair@gizmo.service.
+# Installed and enabled by firstboot.sh; port from /etc/gizmo/pair.env.
+[Unit]
+Description=Gizmo Jam controller pairing page for %i
+Documentation=file:///usr/local/bin/gizmo-pair
+Wants=bluetooth.service
+After=bluetooth.service network.target
+
+[Service]
+Type=simple
+User=%i
+EnvironmentFile=-/etc/gizmo/pair.env
+# "+": as root, outside the sandbox. A soft-blocked radio cannot be powered on.
+ExecStartPre=+/usr/local/bin/gizmo-pair unblock
+ExecStart=/usr/local/bin/gizmo-pair serve
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_BLUETOOTH
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
