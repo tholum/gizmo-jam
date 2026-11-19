@@ -169,19 +169,24 @@ network simulation.
   panels).
 - **Balanced** uses a lighter robot mesh (about 5,700 triangles) and soft blob
   shadows.
-- **Low** is for old or weak integrated GPUs, the Raspberry Pi and software
-  rendering. It draws the 3D scene at 67% of the window's resolution and
-  stretches it up, while the HUD and menus stay at full resolution; if the
-  machine cannot hold 30 fps, the 3D resolution steps down, never below 50%,
-  and climbs back when there is room (each round starts at 67%). It uses the
-  lightest robot mesh (about 2,100 triangles; the podium robot keeps
-  Balanced's), a lighter cut of Spin Cycle's ramp and reactor frame (half the
-  triangles), one ring of plain gantries instead of three, the key light only
-  (with brighter ambient light) worked out ahead of time for the scenery, a
-  plainer deck pattern (no rivets), no fog, and no shade band behind the HUD.
-  Rods keep their orange and violet, runners keep their team colours, and the
-  jump, duck and hit poses are the same clips on the same clock as on the other
-  levels.
+- **Low** is for old or weak GPUs, the Raspberry Pi and software rendering. On
+  a GPU it keeps High's scenery, lighting and atmosphere: the full structure,
+  all three gantry rings, the motes and glow veil, all three lights and the fog,
+  High's full-detail robots over blob shadows, the deck's full pattern and the
+  shade bands behind the HUD. The light and fog on the scenery are worked out
+  ahead of time (per vertex, with the renderer's own formulas) instead of per
+  pixel, and the deck's pattern is read from a texture made at start-up. What
+  it gives up against High is MSAA, the silhouette shadows, a faint specular
+  sheen and resolution: the 3D is drawn at 67% of the window's resolution and
+  stretched up, while the HUD and menus stay at full resolution. That 3D
+  resolution then follows the frame rate: it steps down when the game cannot
+  hold 30 fps (never below 50%) and up when there is room (up to full); each
+  round starts at 67%. On a software rasteriser Low is lighter still: the light
+  robot mesh (about 2,100 triangles; the podium robot keeps Balanced's), a
+  lighter cut of Spin Cycle's ramp and reactor frame, one ring of plain
+  gantries, only the key light and no motes or veil. Rods keep their orange and
+  violet, runners keep their team colours, and the jump, duck and hit poses are
+  the same clips on the same clock on every level.
 
 A new installation picks **High** on a hardware GPU and **Low** on a software
 renderer (an adapter named llvmpipe, softpipe, SwiftShader, lavapipe or similar)
@@ -207,24 +212,30 @@ less there. The two-thread rows come from `LP_NUM_THREADS=2`, which stands in
 for an old or heavily loaded machine.
 
 On a Raspberry Pi 4 B (Mesa V3D, OpenGL ES 3.1; fan-cooled, no throttling),
-Low at 1280x720 runs Spin Cycle at 31 fps (32 ms a frame) and Live Wire at 37
-fps (27 ms). Run the Pi's output at 720p and let the TV scale it: at 1920x1080
-Low drops to 16 and 20 fps. What it took, measured with `tests/perf_diag.gd`
-(an A/B breakdown of a running round) and `tests/spike_trace.gd` (slow frames
-and what changed around them):
+fullscreen at 1280x720, Low runs Spin Cycle at about 34 fps with its 3D at
+67-71% and Live Wire at about 48 fps at 87%; High manages 7 and 20 fps. Run the
+Pi's output at 720p and let the TV scale it. A 30-second trace of either game
+has no frame over twice the median once the countdown is over. What it took,
+measured with `tests/perf_diag.gd` and `tests/quality_cost.gd` (A/B costs of
+parts of a running round, and of each of High's features),
+`tests/spike_trace.gd` (slow frames and what appeared in them),
+`tests/low_bake_compare.gd` and `tests/low_vs_high.gd` (the looks):
 
-- On V3D any lit material costs ~4 ms, whether lit per pixel or per vertex, so
-  Low bakes the key and ambient light into unshaded scenery shaders
-  (`BAKED_LIGHT` in `scripts/arena_kit.gd`; `tests/low_bake_compare.gd` shows the
-  result is within 1.4/255 of the lit one).
-- The root viewport's own reduced-resolution 3D costs ~9 ms there even with an
-  empty scene, so Low renders it through a SubViewport (`scripts/scaled_view.gd`),
-  which also does the dynamic resolution.
+- With the 3D in a SubViewport (`scripts/scaled_view.gd`), the root viewport
+  draws only 2D, so outside tests it draws straight into the window instead of
+  into a render target that is then copied to the screen: ~8 ms a frame on the
+  Pi. (Tests read the screen back, so they keep it off.) The root viewport's own
+  scaled 3D also cost ~9 ms there even for an empty scene.
+- On V3D any lit material costs ~4 ms and the engine fog ~4.6 ms, so Low bakes
+  High's three lights and its fog into unshaded scenery shaders (`BAKED_LIGHT`
+  in `scripts/arena_kit.gd`). The Compatibility renderer treats ALBEDO as sRGB
+  for every material, so the baked shaders convert with its own functions.
 - The HUD's shapes are batched (`Kit.Batch`): a player plate is 7 draw calls
   instead of ~60, on every level.
-- Spin Cycle compiles its rod and burst shaders during the countdown, and the
-  countdown rasterises the call-outs' glyphs, so the first rod and the first
-  "CLEAR +1" no longer hitch (they cost 150 and 75 ms on the Pi).
+- Both games draw everything that would compile a shader or rasterise glyphs on
+  first use during the countdown (rods, bursts, trails, sparks, effect rings,
+  3D and HUD call-outs, identity tags): each of those first appearances cost
+  75-150 ms on the Pi.
 
 The levers that made no measurable difference on llvmpipe (a cheaper deck
 shader, vertex lighting, unshaded robots, fewer particles, hiding the sky dome)
