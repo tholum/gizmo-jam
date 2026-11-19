@@ -1,0 +1,185 @@
+extends Node
+## Low's reduced-resolution 3D, drawn through a SubViewport instead of the root
+## viewport's own 3D scaling.
+##
+## Both give the same picture: the 3D at `scale` of the window, stretched up
+## bilinearly, with the HUD and menus at full resolution on top. But on a
+## Raspberry Pi 4 (Mesa V3D, GLES 3.1) the root viewport's scaled path costs
+## ~9 ms a frame even with nothing in the scene, against ~5 ms for this route;
+## at full scale neither costs anything. So while enabled this node switches the
+## root viewport's 3D off, renders the same World3D into a SubViewport from a
+## camera that copies whichever camera is current, and shows the result on a
+## CanvasLayer below every other layer. The root's scaling_3d_scale is left as
+## the arenas set it (it does nothing while the root draws no 3D).
+##
+## Do not try viewport_set_render_direct_to_screen on the root to skip its copy
+## to the window: on the Pi (labwc, GLES 3.1) it times ~8 ms faster only because
+## nothing reaches the screen at all; the splash stays up.
+
+const LAYER := -128
+## The stretch pass. With `shade` on it also darkens the bands behind the HUD
+## exactly as arena.gd's hud_shade strips blend over the picture (top 20% up to
+## 0.2, bottom 30% up to 0.5, smoothstep ramps), for no extra pass.
+const PICTURE_SHADER := """
+shader_type canvas_item;
+uniform float shade = 0.0;
+void fragment() {
+	vec4 c = texture(TEXTURE, UV);
+	float top = smoothstep(0.0, 1.0, 1.0 - UV.y / 0.2) * 0.2 * step(UV.y, 0.2);
+	float bottom = smoothstep(0.0, 1.0, (UV.y - 0.7) / 0.3) * 0.5 * step(0.7, UV.y);
+	COLOR = vec4(mix(c.rgb, vec3(0.02, 0.07, 0.13), (top + bottom) * shade), 1.0);
+}
+"""
+## Dynamic resolution (set_scale(value, true)): every WINDOW seconds, if the
+## median frame was slower than SLOW_MS (missing 30 fps) the scale drops by STEP, never
+## below MIN_SCALE; under FAST_MS it climbs, up to full resolution (MAX_SCALE).
+## It starts at the requested scale. A one-off hitch does not move a median, so a machine that
+## holds 30 fps keeps the full picture; a Raspberry Pi 4 trades a little
+## sharpness for a steady frame rate. SLOW_MS sits between 33.3 ms and 50 ms
+## on purpose: with vsync on a 60 Hz screen a frame that holds 30 fps is shown
+## for exactly 33.3 ms and one that misses for 50, so the scale only drops when
+## 30 fps is really lost (and only climbs when 60 is within reach).
+const WINDOW := 1.5
+const SLOW_MS := 36.0
+const FAST_MS := 30.0
+const STEP := 0.04
+const MIN_SCALE := 0.5
+const MAX_SCALE := 1.0
+
+var scale := 1.0
+## The scale asked for: where the dynamic scale starts (and restarts each round).
+var ceiling := 1.0
+var dynamic := false
+var _window_time := 0.0
+var _window_ms: Array[float] = []
+## Whether to darken the bands behind the HUD in the stretch pass (the
+## Spin Cycle arena says; see arena.wants_picture_shade()).
+var shade_source: Callable
+var _shade := -1.0
+var view: SubViewport
+var eye: Camera3D
+var layer: CanvasLayer
+var picture: TextureRect
+
+func _ready() -> void:
+	# After everything that moves a camera this frame.
+	process_priority = 1000
+	set_process(false)
+	get_tree().root.size_changed.connect(_fit)
+
+func enabled() -> bool:
+	return view != null
+
+## `value` below 1 switches the SubViewport route on at that scale; 1 or more
+## switches it off and gives the root viewport its 3D back. With `auto` the
+## scale then follows the frame rate (see WINDOW), starting from `value`.
+func set_scale(value: float, auto: bool = false) -> void:
+	scale = value
+	ceiling = value
+	dynamic = auto and value < 1.0
+	_window_time = 0.0
+	_window_ms.clear()
+	var root := get_tree().root
+	if value >= 1.0:
+		if view:
+			root.disable_3d = false
+			layer.queue_free()
+			view.queue_free()
+			view = null
+			eye = null
+			layer = null
+			picture = null
+		set_process(false)
+		return
+	if view == null:
+		view = SubViewport.new()
+		view.name = "ScaledView3D"
+		view.world_3d = root.world_3d
+		view.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+		view.msaa_3d = Viewport.MSAA_DISABLED
+		view.positional_shadow_atlas_size = 0
+		# RGBA8 instead of the opaque default, RGB10_A2: cheaper on a Pi. The
+		# stretch pass ignores the alpha.
+		view.transparent_bg = true
+		eye = Camera3D.new()
+		view.add_child(eye)
+		add_child(view)
+		eye.current = true
+		layer = CanvasLayer.new()
+		layer.name = "ScaledView2D"
+		layer.layer = LAYER
+		picture = TextureRect.new()
+		picture.texture = view.get_texture()
+		picture.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		picture.stretch_mode = TextureRect.STRETCH_SCALE
+		picture.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
+		picture.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		picture.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		var stretch := Shader.new()
+		stretch.code = PICTURE_SHADER
+		picture.material = ShaderMaterial.new()
+		picture.material.shader = stretch
+		_shade = -1.0
+		layer.add_child(picture)
+		add_child(layer)
+		root.disable_3d = true
+	_fit()
+	set_process(true)
+	_process(0.0)
+
+func _fit() -> void:
+	if view:
+		var size := Vector2(get_tree().root.size) * scale
+		view.size = Vector2i(maxi(1, roundi(size.x)), maxi(1, roundi(size.y)))
+
+## Back to the full requested scale, e.g. when a round starts.
+func restore() -> void:
+	if dynamic and scale != ceiling:
+		scale = ceiling
+		_fit()
+	_window_time = 0.0
+	_window_ms.clear()
+
+func _govern(delta: float) -> void:
+	_window_time += delta
+	_window_ms.append(delta * 1000.0)
+	if _window_time < WINDOW:
+		return
+	# The median, not the mean: a hitch (a round starting, a shader compiling)
+	# must not cost the rest of the round its resolution.
+	_window_ms.sort()
+	var typical: float = _window_ms[_window_ms.size() / 2]
+	_window_time = 0.0
+	_window_ms.clear()
+	var wanted := scale
+	if typical > SLOW_MS:
+		wanted = maxf(MIN_SCALE, scale - STEP)
+	elif typical < FAST_MS:
+		wanted = minf(MAX_SCALE, scale + STEP)
+	if not is_equal_approx(wanted, scale):
+		scale = wanted
+		_fit()
+
+func _process(delta: float) -> void:
+	if dynamic:
+		_govern(delta)
+	var want := 1.0 if shade_source.is_valid() and shade_source.call() else 0.0
+	if want != _shade:
+		_shade = want
+		picture.material.set_shader_parameter("shade", want)
+	var source := get_tree().root.get_camera_3d()
+	if source == null:
+		return
+	eye.global_transform = source.global_transform
+	eye.projection = source.projection
+	eye.fov = source.fov
+	eye.size = source.size
+	eye.frustum_offset = source.frustum_offset
+	eye.near = source.near
+	eye.far = source.far
+	eye.keep_aspect = source.keep_aspect
+	eye.h_offset = source.h_offset
+	eye.v_offset = source.v_offset
+	eye.cull_mask = source.cull_mask
+	eye.environment = source.environment
+	eye.attributes = source.attributes

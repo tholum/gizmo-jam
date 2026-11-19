@@ -1,0 +1,119 @@
+#!/bin/bash
+# gizmo-shot: screenshot of the Pi's HDMI output (labwc session) via grim.
+set -u
+
+SELF=$(readlink -f "$0")
+BIN_DIR=${SELF%/*}
+GIZMO_ENV=${GIZMO_ENV_BIN:-$BIN_DIR/gizmo-env}
+
+usage() {
+    cat <<'EOF'
+Usage: gizmo-shot [--output NAME] [--no-wake] [--json] [OUT.png]
+
+Takes a PNG screenshot of the desktop with grim and prints its path.
+  OUT.png       where to write it (default ~/gizmo/shots/<YYYYmmdd-HHMMSS>.png
+                in the desktop user's home)
+  --output NAME capture this output (see wlr-randr); default: the first enabled
+                HDMI-A-* output, else the whole desktop
+  --no-wake     do not power the output on with wlopm if it is off
+  --json        print {"path":..,"output":..,"woke":..} instead of the path
+
+Works as the desktop user or as root (grim runs as the desktop user; the file is
+written by the caller). Exit codes: 0 ok, 1 grim failed, 2 usage,
+3 no desktop session, 4 desktop user unknown.
+EOF
+}
+
+die() { local code=$1; shift; echo "gizmo-shot: $*" >&2; exit "$code"; }
+
+OUTPUT=""
+WAKE=1
+JSON=0
+OUT=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --output) [ $# -ge 2 ] || die 2 "--output needs a name"; OUTPUT=$2; shift 2 ;;
+        --output=*) OUTPUT=${1#*=}; shift ;;
+        --no-wake) WAKE=0; shift ;;
+        --json) JSON=1; shift ;;
+        -h|--help) usage; exit 0 ;;
+        -*) usage >&2; die 2 "unknown option: $1" ;;
+        *) [ -z "$OUT" ] || die 2 "only one output file"; OUT=$1; shift ;;
+    esac
+done
+
+DUSER=$("$GIZMO_ENV" --user) || exit $?
+plain=$("$GIZMO_ENV" --for "$DUSER" --plain) || exit $?
+SESSION_ENV=()
+while IFS= read -r line; do
+    [ -n "$line" ] && SESSION_ENV+=("$line")
+done <<<"$plain"
+DHOME=$(getent passwd "$DUSER" | cut -d: -f6)
+
+AS=()
+if [ "$(id -u)" = 0 ] && [ "$DUSER" != root ]; then
+    AS=(runuser -u "$DUSER" --)
+fi
+# Run a Wayland client as the desktop user inside its session.
+in_session() {
+    "${AS[@]}" env -i HOME="$DHOME" PATH=/usr/local/bin:/usr/bin:/bin "${SESSION_ENV[@]}" "$@"
+}
+
+# Pick an output: first enabled HDMI-A-*, else nothing (= whole layout).
+if [ -z "$OUTPUT" ] && command -v wlr-randr >/dev/null 2>&1; then
+    OUTPUT=$(in_session wlr-randr 2>/dev/null | awk '
+        /^[^ \t]/ { name = $1; next }
+        /^[ \t]+Enabled:[ \t]+yes/ && name ~ /^HDMI-A-/ && !found { print name; found = 1 }')
+    if [ -z "$OUTPUT" ]; then
+        echo "gizmo-shot: warning: no enabled HDMI output (is a screen or dummy plug connected?); capturing the whole desktop" >&2
+    fi
+fi
+
+# Wake the output if DPMS turned it off (grim fails on a powered-off output).
+WOKE=0
+if [ "$WAKE" = 1 ] && [ -n "$OUTPUT" ] && command -v wlopm >/dev/null 2>&1; then
+    if in_session wlopm 2>/dev/null | awk -v o="$OUTPUT" '$1 == o && $2 == "off" { f = 1 } END { exit !f }'; then
+        in_session wlopm --on "$OUTPUT" >/dev/null 2>&1 && WOKE=1
+        sleep 0.5
+    fi
+fi
+
+if [ -z "$OUT" ]; then
+    OUT="$DHOME/gizmo/shots/$(date +%Y%m%d-%H%M%S).png"
+    n=2
+    while [ -e "$OUT" ]; do OUT="$DHOME/gizmo/shots/$(date +%Y%m%d-%H%M%S)-$n.png"; n=$((n + 1)); done
+    DEFAULT_PATH=1
+else
+    DEFAULT_PATH=0
+    case "$OUT" in /*) ;; *) OUT="$PWD/$OUT" ;; esac
+fi
+mkdir -p "${OUT%/*}" || die 1 "cannot create ${OUT%/*}"
+if [ "$DEFAULT_PATH" = 1 ] && [ "$(id -u)" = 0 ]; then
+    chown "$DUSER:" "$DHOME/gizmo" "$DHOME/gizmo/shots" 2>/dev/null || true
+fi
+
+GRIM_ARGS=()
+[ -n "$OUTPUT" ] && GRIM_ARGS=(-o "$OUTPUT")
+tmp="$OUT.tmp.$$"
+if ! in_session grim "${GRIM_ARGS[@]}" - >"$tmp"; then
+    rm -f "$tmp"
+    die 1 "grim failed${OUTPUT:+ on output $OUTPUT}"
+fi
+if [ ! -s "$tmp" ]; then
+    rm -f "$tmp"
+    die 1 "grim produced an empty image"
+fi
+mv -f "$tmp" "$OUT"
+if [ "$DEFAULT_PATH" = 1 ] && [ "$(id -u)" = 0 ]; then
+    chown "$DUSER:" "$OUT" 2>/dev/null || true
+fi
+
+if [ "$JSON" = 1 ]; then
+    o=${OUT//\\/\\\\}; o=${o//\"/\\\"}
+    printf '{"path":"%s","output":%s,"woke":%s}\n' "$o" \
+        "$( [ -n "$OUTPUT" ] && printf '"%s"' "$OUTPUT" || echo null)" \
+        "$( [ "$WOKE" = 1 ] && echo true || echo false)"
+else
+    printf '%s\n' "$OUT"
+fi
+exit 0

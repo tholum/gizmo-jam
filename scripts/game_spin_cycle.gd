@@ -15,6 +15,8 @@ extends RefCounted
 ##   layout_hud()                  place it on the visible canvas (also on resize)
 ##   frame(delta)                  per-frame work while the round is on screen
 ##   key(event) -> bool            round keys; true when the event was used
+##   frame() also reads the pads:  player one's (main.pads.player_one()) and
+##                                 each extra local seat's (main.seat_pads)
 ##   release() / forget_keys()     let go of held input / of the keys themselves
 ##   finish_hold() / finished()    seconds to stay on the board at the end, and the cue for it
 ##   build_rules()                 the how-to-play dialog
@@ -25,6 +27,10 @@ const Model = preload("res://scripts/round_model.gd")
 const Plate = preload("res://scripts/hud_plate.gd")
 const Cue = preload("res://scripts/hud_cue.gd")
 const Status = preload("res://scripts/hud_status.gd")
+const Pads = preload("res://scripts/gamepads.gd")
+## Pad buttons: A or up jumps; B, down, a trigger or a shoulder ducks.
+const PAD_JUMP := Pads.A | Pads.UP
+const PAD_DUCK := Pads.B | Pads.DOWN | Pads.TRIGGER
 
 ## The game's id on the wire and in saved settings. Builds since 0.2.0 send it,
 ## so it must never change.
@@ -45,6 +51,15 @@ var last_score := 0
 var last_stage := 0
 var last_alive := 6
 var warned_wave := -1
+## Player one's pad last frame, for press edges.
+var pad_before := 0
+## Per slot, for this machine's extra seats: pad last frame, and whether the
+## server has been told the seat is ducking.
+var seat_before := PackedInt32Array([0, 0, 0, 0, 0, 0])
+var seat_ducking := PackedInt32Array([0, 0, 0, 0, 0, 0])
+## Per slot on a shared screen: what the HUD last saw, for the plate call-outs.
+var seat_hp := PackedInt32Array([7, 7, 7, 7, 7, 7])
+var seat_score := PackedInt32Array([0, 0, 0, 0, 0, 0])
 
 func _init(owner: Node) -> void:
 	main = owner
@@ -64,6 +79,17 @@ func stage(on: bool, menu: bool) -> void:
 func backdrop(_delta: float) -> RefCounted:
 	return null
 
+## Every feedback call-out this game can show: main warms the font up with
+## them during the countdown (Slam.warm()). Every digit appears in a one- and a
+## two-digit count (a glyph the font has not drawn at that size hitches).
+func callouts() -> Array:
+	var texts := ["CLEAR  +1", "YOU’RE OUT!"]
+	for n in [10, 21, 32, 43, 54, 65, 76, 87, 98, 19, 3, 4, 5, 6, 7, 8, 9]:
+		texts.append("%d IN A ROW!" % n)
+	for n in range(1, 7):
+		texts.append("HIT!  %d LEFT" % n)
+	return texts
+
 func round_started() -> void:
 	was_ducking = false
 	held_duck_keys.clear()
@@ -72,6 +98,11 @@ func round_started() -> void:
 	last_stage = 0
 	last_alive = 6
 	warned_wave = -1
+	pad_before = main.pads.player_one()
+	seat_before.fill(0)
+	seat_ducking.fill(0)
+	seat_hp.fill(7)
+	seat_score.fill(0)
 	main.arena.client_motion = main.session.mode == "client"
 
 func finish_hold() -> float:
@@ -102,14 +133,15 @@ func build_hud() -> void:
 	for i in 6:
 		var p: Dictionary = main.model.players[i]
 		var plate := Plate.new()
-		plate.setup(Kit.colors[i], p, main._role(i, p, my_slot), i == my_slot)
+		plate.setup(Kit.colors[i], p, main._role(i, p, my_slot), main.is_local(i))
 		root.add_child(plate)
 		plates.append(plate)
+	main._plate_callouts()
 	main._hud_shade()
 	# Countdown and a one-time controls reminder, drawn in the same shapes as the cue.
 	main._hud_count()
 	var intro: Control = main._hud_intro()
-	var samples := [["jump", "SPACE"], ["duck", "HOLD S"]]
+	var samples := [["jump", "A"], ["duck", "HOLD B"]] if main.pad_captions() else [["jump", "SPACE"], ["duck", "HOLD S"]]
 	for i in 2:
 		var sample := Cue.new()
 		sample.pivot_offset = Vector2.ZERO
@@ -130,7 +162,9 @@ func layout_hud() -> void:
 	var area: Vector2 = main.area
 	status.position = Vector2(28, 16)
 	cue.position = Vector2(roundf(area.x * 0.5 - Cue.SIZE.x * 0.5), 12)
-	main.place_plates(plates, main.plate_rects(area, main.session.my_slot(), Plate.SIZE, 16.0), Plate.SIZE)
+	var rects: Array = main.plate_rects(area, main.plate_focus(), Plate.SIZE, 16.0)
+	main.place_plates(plates, rects, Plate.SIZE)
+	main.place_plate_calls(rects)
 
 func update_hud() -> void:
 	var model: RefCounted = main.model
@@ -149,16 +183,25 @@ func update_hud() -> void:
 		main._voice("last_two")
 	last_alive = alive
 	var own: Dictionary = model.players[my_slot]
+	# On a shared screen the cue is for everyone here: spectating once all of
+	# this screen's runners are out.
+	var playing_here: bool = own.hp > 0
+	if main.shared_screen:
+		for i in 6:
+			if main.is_local(i) and int(model.players[i].hp) > 0: playing_here = true
 	var wave: Dictionary = model.next_obstacle()
 	if not wave.is_empty():
 		var jump: bool = wave.kind == "jump"
 		var eta := maxf(0.0, (float(wave.at) - model.progress) / model.speed)
 		var now: bool = eta <= 0.35 and model.phase == "running"
-		var caption := "SPECTATING" if own.hp <= 0 else ("SPACE / ↑" if jump else "HOLD S / ↓")
+		var caption := "SPECTATING" if not playing_here else (("A / ↑" if jump else "HOLD B / ↓") if main.pad_captions() else ("SPACE / ↑" if jump else "HOLD S / ↓"))
 		cue.sync(str(wave.kind), int(wave.id), "%.1fs" % eta, clampf(1.0 - (float(wave.at) - model.progress) / 1.35, 0, 1), now, caption)
-		if now and int(wave.id) != warned_wave and own.hp > 0:
+		if now and int(wave.id) != warned_wave and playing_here:
 			warned_wave = int(wave.id)
 			main._sfx("rod_warn")
+	if main.shared_screen:
+		_update_seats(model)
+		return
 	if own.hp < last_hp:
 		main.hud_feedback.rattle("HIT!  %d LEFT" % own.hp if own.hp > 0 else "YOU’RE OUT!", Kit.DANGER)
 		main.feedback_time = 0.95 if own.hp > 0 else 1.5
@@ -176,14 +219,55 @@ func update_hud() -> void:
 	last_hp = own.hp
 	last_score = own.score
 
+## Shared screen: each local runner's hits and clears, called out over its own
+## plate. The whole-screen effects (hazard frame, HUD shake) belong to one
+## player, so they stay off.
+func _update_seats(model: RefCounted) -> void:
+	for i in 6:
+		if not main.is_local(i): continue
+		var p: Dictionary = model.players[i]
+		var hp := int(p.hp)
+		var score := int(p.score)
+		if hp < seat_hp[i]:
+			main.plate_say(i, "HIT!  %d LEFT" % hp if hp > 0 else "OUT!", Kit.DANGER, true, 0.95 if hp > 0 else 1.5)
+			main._sfx("hit" if hp > 0 else "eliminated", 120 if hp > 0 else 90)
+		elif score > seat_score[i]:
+			var streak := int(p.streak)
+			main.plate_say(i, "+1" if streak < 3 else "%d IN A ROW!" % streak, Kit.LIME if streak < 3 else Kit.GOLD, false, 0.6)
+			main._sfx("clear", 760)
+		seat_hp[i] = hp
+		seat_score[i] = score
+
 func frame(_delta: float) -> void:
 	var shade: ColorRect = main.damage_shade
-	if is_instance_valid(shade):
+	if is_instance_valid(shade) and not main.shared_screen:
 		var flash: float = main.model.players[main.session.my_slot()].flash
 		shade.visible = flash > 0
 		if shade.visible: shade.material.set_shader_parameter("strength", clampf(flash / 0.42, 0.0, 1.0))
+	var pad: int = main.pads.player_one()
 	if not main.paused:
-		sync_duck(not held_duck_keys.is_empty() or Input.is_physical_key_pressed(KEY_S) or Input.is_physical_key_pressed(KEY_DOWN))
+		if pad & ~pad_before & PAD_JUMP:
+			send_control("jump", true)
+		sync_duck(not held_duck_keys.is_empty() or Input.is_physical_key_pressed(KEY_S) or Input.is_physical_key_pressed(KEY_DOWN) or pad & PAD_DUCK != 0)
+	pad_before = pad
+	_seat_pads()
+
+## This machine's extra seats, one pad each, straight to the server's model.
+func _seat_pads() -> void:
+	var seats: PackedInt32Array = main.seat_pads
+	var live: bool = not main.paused and main.model.phase == "running"
+	for k in range(0, seats.size(), 2):
+		var slot := seats[k]
+		var pad: int = main.pads.mask(seats[k + 1])
+		var alive: bool = int(main.model.players[slot].hp) > 0
+		if live and pad & ~seat_before[slot] & PAD_JUMP:
+			main.session.send_local_input(slot, "jump", true)
+			if alive: main._sfx("jump")
+		var duck := 1 if live and pad & PAD_DUCK != 0 else 0
+		if duck != seat_ducking[slot]:
+			seat_ducking[slot] = duck
+			main.session.send_local_input(slot, "duck", duck == 1)
+		seat_before[slot] = pad
 
 # --------------------------------------------------------------------- keys
 
@@ -215,6 +299,10 @@ func sync_duck(pressed: bool) -> void:
 func release() -> void:
 	main.session.send_input("duck", false)
 	was_ducking = false
+	for slot in 6:
+		if seat_ducking[slot] == 1:
+			main.session.send_local_input(slot, "duck", false)
+			seat_ducking[slot] = 0
 
 func forget_keys() -> void:
 	held_duck_keys.clear()

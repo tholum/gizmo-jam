@@ -1,0 +1,293 @@
+#!/bin/bash
+# gizmo-kiosk: launch the game fullscreen automatically at desktop login.
+set -u
+
+SELF=$(readlink -f "$0")
+BIN_DIR=${SELF%/*}
+GIZMO_ENV=${GIZMO_ENV_BIN:-$BIN_DIR/gizmo-env}
+GIZMO_RUN=${GIZMO_RUN_BIN:-$BIN_DIR/gizmo-run}
+RUNTIME_BASE=${GIZMO_RUNTIME_BASE:-/run/user}
+
+usage() {
+    cat <<'EOF'
+Usage: gizmo-kiosk on [--restart] | off [--keep-running] | status [--json]
+       gizmo-kiosk start | stop
+
+  on          launch the game fullscreen at every desktop login (XDG autostart
+              entry ~/.config/autostart/gizmo-kiosk.desktop). Does not start it
+              now; use `start` for that.
+  --restart   with on: restart the game if it exits with an error (backoff
+              2s, 4s, ... 60s). Off by default: a crash ends kiosk mode until
+              the next login or `start`.
+  off         remove the autostart entry and stop a running kiosk game
+              (--keep-running: leave the current one running)
+  status      kiosk=on|off, restart=, running=PID|no, target=, target_path=
+  start       start the kiosk loop in the current desktop session now
+  stop        stop the kiosk loop and its game (by recorded PID only)
+
+What it launches, first match wins:
+  ~/gizmo/kiosk.sh                 your script, run with bash in the
+                                   foreground (exec the game from it)
+  ~/gizmo/game/GizmoJam.arm64      exported game: gizmo-run --fullscreen --binary ...
+  ~/gizmo/project/project.godot    project: gizmo-run --fullscreen -- --path ~/gizmo/project
+The kiosk loop logs to ~/gizmo/logs/kiosk.log; game logs go to ~/gizmo/logs/.
+
+Works as the desktop user or root. Exit codes: 0 ok, 1 failure, 2 usage,
+3 no desktop session (start), 4 desktop user unknown.
+EOF
+}
+
+die() { local code=$1; shift; echo "gizmo-kiosk: $*" >&2; exit "$code"; }
+
+[ $# -ge 1 ] || { usage >&2; exit 2; }
+CMD=$1
+shift
+RESTART_FLAG=""
+KEEP_RUNNING=0
+JSON=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --restart) RESTART_FLAG=1; shift ;;
+        --no-restart) RESTART_FLAG=0; shift ;;
+        --keep-running) KEEP_RUNNING=1; shift ;;
+        --json) JSON=1; shift ;;
+        -h|--help) usage; exit 0 ;;
+        *) usage >&2; die 2 "unknown argument: $1" ;;
+    esac
+done
+case "$CMD" in
+    -h|--help|help) usage; exit 0 ;;
+    on|off|status|start|stop|run) ;;
+    *) usage >&2; die 2 "unknown command: $CMD" ;;
+esac
+
+DUSER=$("$GIZMO_ENV" --user) || exit $?
+DUID=$(id -u "$DUSER") || die 4 "unknown user $DUSER"
+DHOME=$(getent passwd "$DUSER" | cut -d: -f6)
+AUTOSTART="$DHOME/.config/autostart/gizmo-kiosk.desktop"
+CONF="$DHOME/.config/gizmo/kiosk.conf"
+PIDFILE="$RUNTIME_BASE/$DUID/gizmo-kiosk.pid"
+KLOG="$DHOME/gizmo/logs/kiosk.log"
+
+AS=()
+if [ "$(id -u)" = 0 ] && [ "$DUSER" != root ]; then
+    AS=(runuser -u "$DUSER" --)
+elif [ "$(id -un)" != "$DUSER" ]; then
+    die 1 "the desktop belongs to $DUSER; run as $DUSER or root"
+fi
+
+# Write stdin to FILE as the desktop user (so ownership is right under root).
+write_as_user() {
+    "${AS[@]}" mkdir -p "${1%/*}" && "${AS[@]}" tee "$1.tmp" >/dev/null && "${AS[@]}" mv -f "$1.tmp" "$1"
+}
+
+conf_restart() {
+    local v
+    v=$(sed -n 's/^RESTART=\([01]\)$/\1/p' "$CONF" 2>/dev/null | tail -n 1)
+    printf '%s\n' "${v:-0}"
+}
+
+# Prints "<kind> <path>" for what the kiosk would launch.
+target() {
+    if [ -f "$DHOME/gizmo/kiosk.sh" ]; then
+        echo "script $DHOME/gizmo/kiosk.sh"
+    elif [ -f "$DHOME/gizmo/game/GizmoJam.arm64" ]; then
+        echo "binary $DHOME/gizmo/game/GizmoJam.arm64"
+    elif [ -f "$DHOME/gizmo/project/project.godot" ]; then
+        echo "project $DHOME/gizmo/project"
+    else
+        echo "none -"
+    fi
+}
+
+proc_starttime() {
+    local s
+    s=$(cat "/proc/$1/stat" 2>/dev/null) || return 1
+    s=${s##*) }
+    # shellcheck disable=SC2086  # deliberate word split of the stat fields
+    set -- $s
+    printf '%s\n' "${20}"
+}
+
+# PID of the running kiosk loop, verified against the recorded start time and
+# its command line; empty when not running.
+running_pid() {
+    local pid st
+    [ -f "$PIDFILE" ] || return 0
+    read -r pid st <"$PIDFILE" || return 0
+    case "$pid" in ''|*[!0-9]*) return 0 ;; esac
+    [ "$(proc_starttime "$pid" 2>/dev/null)" = "$st" ] || return 0
+    tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | grep -q 'gizmo-kiosk run' || return 0
+    printf '%s\n' "$pid"
+}
+
+do_stop() {
+    local pid i=0
+    pid=$(running_pid)
+    if [ -z "$pid" ]; then
+        echo "status=not_running"
+        return 0
+    fi
+    kill -TERM "$pid" 2>/dev/null
+    while [ -n "$(running_pid)" ] && [ $i -lt 150 ]; do sleep 0.1; i=$((i + 1)); done
+    if [ -n "$(running_pid)" ]; then
+        kill -KILL "$pid" 2>/dev/null
+        echo "status=killed pid=$pid"
+    else
+        echo "status=stopped pid=$pid"
+    fi
+}
+
+do_start() {
+    local pid plain i=0 line
+    local session_env=()
+    pid=$(running_pid)
+    if [ -n "$pid" ]; then
+        echo "status=already_running pid=$pid"
+        return 0
+    fi
+    plain=$("$GIZMO_ENV" --for "$DUSER" --plain) || exit $?
+    while IFS= read -r line; do
+        [ -n "$line" ] && session_env+=("$line")
+    done <<<"$plain"
+    "${AS[@]}" env -i HOME="$DHOME" USER="$DUSER" LOGNAME="$DUSER" SHELL=/bin/bash \
+        PATH=/usr/local/bin:/usr/bin:/bin LANG="${LANG:-C.UTF-8}" GIZMO_KIOSK_DELAY=0 \
+        "${session_env[@]}" setsid -f "$SELF" run </dev/null >/dev/null 2>&1 \
+        || die 1 "could not start the kiosk loop"
+    while [ -z "$(running_pid)" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+    pid=$(running_pid)
+    [ -n "$pid" ] || die 1 "kiosk loop did not start (see $KLOG)"
+    echo "status=started pid=$pid"
+}
+
+# The loop itself; started by the autostart entry or `start`, as the desktop user.
+do_run() {
+    local kind path out pid rc started delay=2 i=0 game_pid="" child="" stopping=0 restart
+    [ "$(id -un)" = "$DUSER" ] || die 1 "run must be started as $DUSER (use: gizmo-kiosk start)"
+    if [ -n "$(running_pid)" ]; then
+        echo "gizmo-kiosk: already running" >&2
+        exit 0
+    fi
+    mkdir -p "${PIDFILE%/*}" "${KLOG%/*}" || exit 1
+    printf '%s %s\n' "$$" "$(proc_starttime $$)" >"$PIDFILE"
+    exec </dev/null >>"$KLOG" 2>&1
+    log() { printf '%s gizmo-kiosk: %s\n' "$(date -Is)" "$*"; }
+    log "loop started (pid $$)"
+    # shellcheck disable=SC2329,SC2317  # invoked via trap
+    on_term() {
+        stopping=1
+        log "stop requested"
+        [ -n "$game_pid" ] && "$GIZMO_RUN" --stop "$game_pid" >/dev/null 2>&1
+        [ -n "$child" ] && kill -TERM "$child" 2>/dev/null
+    }
+    trap on_term TERM INT HUP
+
+    # At login the autostart entry can run before the session is complete
+    # (.Xauthority is written by another autostart entry); give it a moment.
+    while ! "$GIZMO_ENV" --for "$DUSER" >/dev/null 2>&1; do
+        [ $i -ge 60 ] && { log "no desktop session after 60s; giving up"; rm -f "$PIDFILE"; exit 3; }
+        sleep 1 & wait $!
+        i=$((i + 1))
+    done
+    sleep "${GIZMO_KIOSK_DELAY:-3}" & wait $!
+
+    while [ $stopping = 0 ]; do
+        read -r kind path <<<"$(target)"
+        restart=$(conf_restart)
+        started=$(date +%s)
+        game_pid=""
+        child=""
+        case "$kind" in
+            none)
+                log "nothing to launch (no ~/gizmo/kiosk.sh, ~/gizmo/game/GizmoJam.arm64 or ~/gizmo/project/project.godot)"
+                break ;;
+            script)
+                log "running $path"
+                bash "$path" &
+                child=$!
+                while :; do wait "$child"; rc=$?; kill -0 "$child" 2>/dev/null || break; done
+                child="" ;;
+            binary|project)
+                if [ "$kind" = binary ]; then
+                    [ -x "$path" ] || chmod u+x "$path" 2>/dev/null
+                    out=$("$GIZMO_RUN" --fullscreen --binary "$path" 2>&1)
+                else
+                    out=$("$GIZMO_RUN" --fullscreen -- --path "$path" 2>&1)
+                fi
+                pid=$(printf '%s\n' "$out" | sed -n 's/^pid=//p')
+                if [ -z "$pid" ]; then
+                    log "launch failed: $out"
+                    rc=1
+                else
+                    game_pid=$pid
+                    log "launched $kind $path: pid $pid, log $(printf '%s\n' "$out" | sed -n 's/^log=//p')"
+                    "$GIZMO_RUN" --wait-for "$pid" >/dev/null 2>&1 &
+                    child=$!
+                    while :; do wait "$child"; rc=$?; kill -0 "$child" 2>/dev/null || break; done
+                    child=""
+                    # a signal can interrupt the wait before the game is gone
+                    [ $stopping = 1 ] && "$GIZMO_RUN" --stop "$pid" >/dev/null 2>&1
+                fi ;;
+        esac
+        log "exited rc=$rc"
+        [ $stopping = 1 ] && break
+        # Logged out / compositor gone: this loop belongs to a dead session.
+        "$GIZMO_ENV" --for "$DUSER" >/dev/null 2>&1 || { log "desktop session is gone"; break; }
+        [ "$rc" = 0 ] && { log "clean exit; kiosk loop done"; break; }
+        [ "$restart" = 1 ] || { log "restart is off; kiosk loop done"; break; }
+        [ $(( $(date +%s) - started )) -ge 60 ] && delay=2
+        log "restarting in ${delay}s"
+        sleep "$delay" & wait $!
+        delay=$((delay * 2))
+        [ $delay -gt 60 ] && delay=60
+    done
+    log "loop ended"
+    rm -f "$PIDFILE"
+    exit 0
+}
+
+case "$CMD" in
+    on)
+        restart=${RESTART_FLAG:-$(conf_restart)}
+        write_as_user "$CONF" <<EOF || die 1 "cannot write $CONF"
+# gizmo-kiosk settings (written by gizmo-kiosk on)
+RESTART=$restart
+EOF
+        write_as_user "$AUTOSTART" <<EOF || die 1 "cannot write $AUTOSTART"
+[Desktop Entry]
+Type=Application
+Name=Gizmo Jam kiosk
+Comment=Start the game fullscreen at login (gizmo-kiosk on/off)
+Exec=$SELF run
+Terminal=false
+NoDisplay=true
+EOF
+        read -r kind path <<<"$(target)"
+        echo "kiosk=on"
+        echo "restart=$restart"
+        echo "target=$kind"
+        [ "$kind" = none ] && echo "gizmo-kiosk: note: nothing to launch yet (rsync the game to ~/gizmo/game or ~/gizmo/project)" >&2
+        exit 0 ;;
+    off)
+        rm -f "$AUTOSTART"
+        echo "kiosk=off"
+        [ "$KEEP_RUNNING" = 1 ] || do_stop
+        exit 0 ;;
+    status)
+        state=off
+        [ -f "$AUTOSTART" ] && state=on
+        pid=$(running_pid)
+        read -r kind path <<<"$(target)"
+        if [ "$JSON" = 1 ]; then
+            printf '{"kiosk":"%s","restart":%s,"running":%s,"target":"%s","target_path":%s}\n' \
+                "$state" "$( [ "$(conf_restart)" = 1 ] && echo true || echo false)" \
+                "${pid:-null}" "$kind" "$( [ "$path" = - ] && echo null || printf '"%s"' "$path")"
+        else
+            printf 'kiosk=%s\nrestart=%s\nrunning=%s\ntarget=%s\ntarget_path=%s\n' \
+                "$state" "$(conf_restart)" "${pid:-no}" "$kind" "$path"
+        fi
+        exit 0 ;;
+    start) do_start; exit $? ;;
+    stop) do_stop; exit $? ;;
+    run) do_run ;;
+esac

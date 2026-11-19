@@ -14,6 +14,20 @@ const INNER_RADIUS := 3.0
 const RUNNER_SPACING := 0.87
 const TRACK_INNER := 2.5
 const TRACK_OUTER := 8.1
+## Draw order of the big static meshes. The renderer sorts opaque meshes by
+## distance in bands of camera.far / 16 (here ~19 units, so the whole arena
+## shares one band) and then by shader, which can shade the structure under the
+## deck, or the sky behind everything, before what covers them. Pushing them
+## into later bands draws the deck, runners and rods first and lets the depth
+## test skip what they hide. Opaque, so the picture is the same; on a GPU that
+## is short of pixel throughput (a Raspberry Pi) it is less work.
+const SORT_OFFSETS := {"Structure": -20.0, "Backdrop": -40.0}
+
+## Deck tessellation: steps per turn and rings across (see _build_track()).
+const DECK_STEPS := 128.0
+const DECK_RINGS := 6
+## Low's deck pattern texture: one turn across, the deck's width down.
+const DECK_PATTERN_SIZE := Vector2i(4096, 512)
 ## Rod centre heights above the deck and roller radius. These mirror what the
 ## simulation treats as a hit: a jump clears the low roller once the runner is
 ## 0.36 up, and only a ducking runner fits under the high one.
@@ -42,6 +56,10 @@ const LOW_RENDER_SCALE := 0.67
 ## sit beside the menu column, which covers the left of the screen: they slide
 ## the picture so the target is centred in the space right of the column.
 const KEY_ENERGY := 1.05
+## Ambient light energy with all three lights, and on Low on a software
+## rasteriser, which drops the two fill lights.
+const AMBIENT := 0.78
+const SOFTWARE_LOW_AMBIENT := 1.05
 const GAME_VIEW := {"az": 0.88, "radius": 10.6, "height": 4.9, "target": Vector3(0.5, 0.35, 5.45), "fov": 34.0, "framed": false}
 const MENU_VIEW := {"az": 0.9, "radius": 14.5, "height": 6.6, "target": Vector3(0.3, 0.9, 4.6), "fov": 36.0, "framed": true}
 const PODIUM_VIEW := {"az": 0.95, "radius": 12.0, "height": 3.6, "target": Vector3(0.0, 1.9, 5.2), "fov": 34.0, "framed": true}
@@ -65,6 +83,10 @@ var display_progress := 0.0
 var last_progress := -1.0
 var impact_line: Node3D
 var local_slot := 0
+## Several players on this screen (one bit per slot), set by main.gd; 0 when
+## there is only own_slot. Every one of them gets the ring and a name tag, and
+## the single YOU marker stays hidden.
+var local_mask := 0
 var key_light: DirectionalLight3D
 var environment: Environment
 ## "low", "balanced" or "high". `detailed` is true only on High.
@@ -82,6 +104,15 @@ var glass_material: ShaderMaterial
 var glow_material: ShaderMaterial
 var solid_material: ShaderMaterial
 var rod_templates: Dictionary = {}
+## Rendering on a software rasteriser: Low keeps its lighter scene there.
+var software := false
+## Low's deck pattern texture (Kit.DECK_PATTERN_SHADER), and its renderer while
+## it is being made.
+var _deck_pattern: ImageTexture
+var _deck_painter: SubViewport
+## Round-start warm-up (see _warm_up()).
+var _warm: Node3D
+var _warm_frames := 0
 var rod_materials: Dictionary = {}
 var client_motion := false
 var show_identities := false
@@ -110,6 +141,7 @@ static func team_color(index: int) -> Color:
 	return Color.from_hsv(c.h, clampf(c.s * 1.5, 0.0, 0.88), maxf(c.v, 0.97))
 
 func _ready() -> void:
+	software = software_renderer(RenderingServer.get_video_adapter_name())
 	display_font = load("res://assets/fonts/Kanit-BlackItalic.ttf") if ResourceLoader.exists("res://assets/fonts/Kanit-BlackItalic.ttf") else load("res://assets/fonts/Display.ttf")
 	_build_environment()
 	solid_material = Kit.shader_material(Kit.SOLID_SHADER, {"bounce": Color("6fe6de"), "bounce_power": 1.5})
@@ -137,6 +169,10 @@ func _ready() -> void:
 	_build_impact_line()
 	rod_root = Node3D.new()
 	add_child(rod_root)
+	# Built now, not when the first rod spawns: building one is a few ms of
+	# GDScript geometry, far more on a Raspberry Pi.
+	_rod_template("jump")
+	_rod_template("duck")
 	for i in 6:
 		_build_runner(i)
 	_build_effects()
@@ -149,7 +185,7 @@ func _build_environment() -> void:
 	environment.background_color = HAZE
 	environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 	environment.ambient_light_color = Color("c9f4f0")
-	environment.ambient_light_energy = 0.78
+	environment.ambient_light_energy = AMBIENT
 	environment.tonemap_mode = Environment.TONE_MAPPER_FILMIC
 	environment.tonemap_white = 1.6
 	environment.fog_enabled = true
@@ -203,6 +239,9 @@ func _build_environment() -> void:
 	dome.mesh = sphere
 	dome.material_override = Kit.shader_material(Kit.SKY_SHADER)
 	dome.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	# Drawn after everything else, so the depth test skips it wherever
+	# something covers it (see SORT_OFFSETS).
+	dome.sorting_offset = -1000.0
 	add_child(dome)
 	camera = Camera3D.new()
 	camera.projection = Camera3D.PROJECTION_PERSPECTIVE
@@ -247,6 +286,7 @@ func _commit_static(batch: Kit.Batch, prefix: String) -> Array:
 	for node in made:
 		node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		node.name = prefix + "_" + str(node.name).trim_prefix("Batch_")
+		node.sorting_offset = SORT_OFFSETS.get(prefix.trim_suffix("Lite"), 0.0)
 	return made
 
 ## Position on the spiral: `y` is height above the deck at that angle.
@@ -394,16 +434,22 @@ func _build_track() -> void:
 	surface.begin(Mesh.PRIMITIVE_TRIANGLES)
 	var from := -2.75 * TAU
 	var to := 2.1 * TAU
-	var steps := int((to - from) / (TAU / 64.0))
+	# Fine enough that the interpolated UV (angle / TAU, radius) stays within a
+	# fraction of a seam's width of the true polar position, so Low's deck
+	# shader can read it instead of an atan() and a length() per pixel.
+	var steps := int((to - from) / (TAU / DECK_STEPS))
 	for i in steps:
 		var a := lerpf(from, to, float(i) / steps)
 		var b := lerpf(from, to, float(i + 1) / steps)
-		var corners := [[TRACK_INNER, a], [TRACK_OUTER, a], [TRACK_OUTER, b], [TRACK_INNER, b]]
-		for index in [0, 2, 1, 0, 3, 2]:
-			var corner: Array = corners[index]
-			surface.set_uv(Vector2(corner[1] / TAU, corner[0]))
-			surface.set_normal(Vector3.UP)
-			surface.add_vertex(_point(corner[0], corner[1], 0.0))
+		for ring in DECK_RINGS:
+			var r0 := lerpf(TRACK_INNER, TRACK_OUTER, float(ring) / DECK_RINGS)
+			var r1 := lerpf(TRACK_INNER, TRACK_OUTER, float(ring + 1) / DECK_RINGS)
+			var corners := [[r0, a], [r1, a], [r1, b], [r0, b]]
+			for index in [0, 2, 1, 0, 3, 2]:
+				var corner: Array = corners[index]
+				surface.set_uv(Vector2(corner[1] / TAU, corner[0]))
+				surface.set_normal(Vector3.UP)
+				surface.add_vertex(_point(corner[0], corner[1], 0.0))
 	belt_material = Kit.shader_material(Kit.DECK_SHADER, {"bounce": Color("38e0d8")})
 	var deck := MeshInstance3D.new()
 	deck.name = "Deck"
@@ -687,6 +733,12 @@ func update_visuals(model: RefCounted, delta: float, own_slot: int = 0) -> void:
 			runners[i].hp = model.players[i].hp
 			runners[i].score = model.players[i].score
 			_reset_runner(runners[i])
+		_warm_up()
+	if _warm_frames > 0:
+		_warm_frames -= 1
+		if _warm_frames == 0 and is_instance_valid(_warm):
+			_warm.queue_free()
+			_warm = null
 	decor_time += delta
 	shake = maxf(0.0, shake - delta * 3.2)
 	boost = maxf(0.0, boost - delta * 0.9)
@@ -782,7 +834,8 @@ func update_visuals(model: RefCounted, delta: float, own_slot: int = 0) -> void:
 			_burst("dust", visual.position + Vector3(0.05, 0.08, 0), Color(0.93, 0.98, 1.0))
 		r.airborne = airborne
 		var jump := Model.jump_height({"jump": jump_clock})
-		visual.set_ring(i == own_slot and model != null, 0.5 + 0.5 * sin(decor_time * 5.0))
+		var local := i == own_slot or (local_mask >> i) & 1 == 1
+		visual.set_ring(local and model != null, 0.5 + 0.5 * sin(decor_time * 5.0))
 		r.tag.position.y = 1.62 + jump + (0.3 * (i % 2) if show_identities else 0.0)
 		if model and not model.players.is_empty():
 			var score: int = model.players[i].score
@@ -796,11 +849,13 @@ func update_visuals(model: RefCounted, delta: float, own_slot: int = 0) -> void:
 		else:
 			r.hp = 7
 			r.score = 0
-		r.tag.visible = model != null and show_identities and model.phase != "finished" and hp > 0
-		if r.tag.visible: r.tag.text = "%02d / %s" % [i + 1, model.players[i].name]
+		r.tag.visible = model != null and (show_identities or (local_mask >> i) & 1 == 1) and model.phase != "finished" and hp > 0
+		if r.tag.visible:
+			var tag_text := "%02d / %s" % [i + 1, model.players[i].name]
+			if r.tag.text != tag_text: r.tag.text = tag_text
 		if i == own_slot:
 			# Hidden near the top of a jump, where it would leave the screen.
-			you_marker.visible = model != null and model.phase != "finished" and hp > 0 and not show_identities and not is_instance_valid(victory) and jump < 0.45
+			you_marker.visible = model != null and model.phase != "finished" and hp > 0 and not show_identities and local_mask == 0 and not is_instance_valid(victory) and jump < 0.45
 			you_marker.position = visual.position + Vector3(0, 1.72 + jump * 0.85 + sin(decor_time * 5.0) * 0.045 - (0.55 if duck else 0.0), 0)
 			you_marker.get_node("Pointer").material_override.set_shader_parameter("fill", team_color(i))
 			you_marker.get_node("Text").modulate = team_color(i)
@@ -891,6 +946,35 @@ func _rod_template(kind: String) -> Node3D:
 	rod_templates[kind] = root
 	return root
 
+## The first rod and the first dust and spark bursts must not hitch: the
+## Compatibility renderer compiles a material's shader the first time it draws
+## it, ~100-150 ms on a Raspberry Pi 4 right as the first rod arrives. So when a
+## round starts (the countdown) one rod of each kind and one burst of each kind
+## are drawn for a few frames tucked under the deck below the first runner:
+## inside the camera's view, so they are drawn and compiled, but hidden behind
+## the deck.
+func _warm_up() -> void:
+	if not is_inside_tree() or runners.is_empty():
+		return
+	if is_instance_valid(_warm):
+		_warm.queue_free()
+	_warm = Node3D.new()
+	_warm.name = "WarmUp"
+	add_child(_warm)
+	var under: Vector3 = runners[0].visual.global_position + Vector3(0.0, -1.1, 0.0)
+	_warm.global_position = under
+	for kind in ["jump", "duck"]:
+		var rod: Node3D = _rod_template(kind).duplicate()
+		rod.scale = Vector3.ONE * 0.15
+		_warm.add_child(rod)
+	for pool in [dust_pool, spark_pool]:
+		if not pool.is_empty():
+			var burst: CPUParticles3D = pool[0]
+			burst.global_position = under
+			burst.restart()
+			burst.emitting = true
+	_warm_frames = 4
+
 func _make_rod(kind: String) -> Node3D:
 	var root: Node3D = _rod_template(kind).duplicate()
 	root.set_meta("kind", kind)
@@ -917,28 +1001,109 @@ func set_level(value: String) -> void:
 	level = value if value in LEVELS else "balanced"
 	detailed = level == "high"
 	var low := level == "low"
+	# Low on a real GPU (a Raspberry Pi) keeps High's scenery, lights and fog:
+	# measured there, the full structure, the full gantry rings, the motes and
+	# the glow veil cost nothing, and the light and fog are baked into the
+	# scenery shaders. A software rasteriser keeps Low's lighter cut, where
+	# every triangle and blended pixel is CPU time.
+	var full_scene := not low or not software
 	var viewport := get_viewport()
 	viewport.msaa_3d = Viewport.MSAA_4X if detailed else Viewport.MSAA_DISABLED
 	# Bilinear is the only 3D scaler the Compatibility renderer has.
 	viewport.scaling_3d_mode = Viewport.SCALING_3D_MODE_BILINEAR
 	viewport.scaling_3d_scale = LOW_RENDER_SCALE if low else 1.0
-	if high_fx: high_fx.visible = detailed
+	if high_fx: high_fx.visible = detailed or (low and not software)
 	if environment:
+		# Low's fog is baked into the scenery shaders instead (~4.6 ms on a Pi).
 		environment.fog_enabled = not low
-		# Two fewer lights: lift the ambient so undersides stay out of black.
-		environment.ambient_light_energy = 1.05 if low else 0.78
-	for light in fill_lights: light.visible = not low
-	for node in backdrop: node.visible = not low
-	for node in backdrop_lite: node.visible = low
-	for node in structure: node.visible = not low
-	for node in structure_lite: node.visible = low
-	# The shade strips behind the HUD blend half the screen at full
-	# resolution: about 3 ms a frame on llvmpipe. Low leans on the plates'
-	# own outlines and drop shadows instead.
+		# Without the fill lights, lift the ambient so undersides stay out of black.
+		environment.ambient_light_energy = SOFTWARE_LOW_AMBIENT if low and software else AMBIENT
+	for light in fill_lights: light.visible = not (low and software)
+	# Low bakes the lights and the fog into the structure, the lamps and the
+	# deck (Kit.BAKED_LIGHT): on a Raspberry Pi 4 any lit material costs ~4 ms.
+	solid_material.shader = Kit.shader(Kit.SOLID_BAKED_SHADER if low else Kit.SOLID_SHADER)
+	# Low's deck reads its moving pattern from a texture rendered once; until
+	# that is ready (a frame or two) it keeps the analytic shader.
+	if low and _deck_pattern == null:
+		_render_deck_pattern()
+	belt_material.shader = Kit.shader(Kit.DECK_LOW_SHADER if low and _deck_pattern else Kit.DECK_SHADER)
+	glow_material.shader = Kit.shader(Kit.GLOW_BAKED_SHADER if low else Kit.GLOW_SHADER)
+	if low:
+		_bake_light([solid_material, belt_material, glow_material])
+	for node in backdrop: node.visible = full_scene
+	for node in backdrop_lite: node.visible = not full_scene
+	for node in structure: node.visible = full_scene
+	for node in structure_lite: node.visible = not full_scene
+	# The shade strips behind the HUD blend half the screen at full resolution:
+	# ~3 ms a frame on llvmpipe and on a Pi. On Low, scripts/scaled_view.gd
+	# folds them into the pass that stretches the 3D up (wants_picture_shade()).
 	if hud_shade: hud_shade.visible = not menu_mode and not low
 	for runner in runners:
-		# With silhouette shadows the blob only grounds the feet.
-		runner.visual.set_quality(level, 0.16 if detailed else 0.72)
+		# With silhouette shadows the blob only grounds the feet. Low on a GPU
+		# (a Raspberry Pi) uses High's full-detail robot, measured no dearer
+		# there than Balanced's, over the blob shadow: the silhouette shadows
+		# are what cost.
+		runner.visual.set_quality("high" if low and not software else level, 0.16 if detailed else 0.72, detailed)
+
+## Renders Kit.DECK_PATTERN_SHADER once into a 4096x512 texture with mipmaps
+## for Low's deck (Kit.DECK_LOW_SHADER), then switches the deck to it if Low is
+## still the level. Takes a frame; the deck keeps its analytic shader till then.
+func _render_deck_pattern() -> void:
+	if _deck_painter or not is_inside_tree():
+		return
+	_deck_painter = SubViewport.new()
+	_deck_painter.size = DECK_PATTERN_SIZE
+	_deck_painter.disable_3d = true
+	_deck_painter.transparent_bg = true
+	_deck_painter.render_target_update_mode = SubViewport.UPDATE_ONCE
+	var canvas := ColorRect.new()
+	canvas.size = Vector2(DECK_PATTERN_SIZE)
+	canvas.material = Kit.shader_material(Kit.DECK_PATTERN_SHADER, {"texels": Vector2(DECK_PATTERN_SIZE)})
+	_deck_painter.add_child(canvas)
+	add_child(_deck_painter)
+	await RenderingServer.frame_post_draw
+	var image := _deck_painter.get_texture().get_image()
+	_deck_painter.queue_free()
+	_deck_painter = null
+	if image == null or image.is_empty():
+		return
+	image.convert(Image.FORMAT_RGBA8)
+	image.generate_mipmaps()
+	_deck_pattern = ImageTexture.create_from_image(image)
+	belt_material.set_shader_parameter("pattern", _deck_pattern)
+	if level == "low":
+		belt_material.shader = Kit.shader(Kit.DECK_LOW_SHADER)
+		_bake_light([belt_material])
+
+## Whether scripts/scaled_view.gd should darken the bands behind the HUD, as
+## the hud_shade strips do on the other levels.
+func wants_picture_shade() -> bool:
+	return visible and not menu_mode and level == "low"
+
+## A software rasteriser (llvmpipe, SwiftShader and the like).
+static func software_renderer(adapter_name: String) -> bool:
+	var adapter := adapter_name.to_lower()
+	for name_part in ["llvmpipe", "softpipe", "swiftshader", "lavapipe", "software", "microsoft basic render", "gdi generic"]:
+		if name_part in adapter: return true
+	return false
+
+## High's lighting and fog as Kit.BAKED_LIGHT wants them: linear, energy in.
+## Always High's three lights and ambient, whichever lights are on now, so the
+## baked scenery matches High on every machine.
+func _bake_light(materials: Array) -> void:
+	var lights := [key_light] + fill_lights
+	var names := ["key", "fill", "up"]
+	var amb := environment.ambient_light_color.srgb_to_linear() * AMBIENT
+	var fog := environment.fog_light_color.srgb_to_linear() * environment.fog_light_energy
+	for mat: ShaderMaterial in materials:
+		for i in names.size():
+			var light: DirectionalLight3D = lights[i]
+			var c := light.light_color.srgb_to_linear() * light.light_energy
+			mat.set_shader_parameter(names[i] + "_dir", light.basis.z.normalized())
+			mat.set_shader_parameter(names[i] + "_light", Vector3(c.r, c.g, c.b))
+		mat.set_shader_parameter("ambient_light", Vector3(amb.r, amb.g, amb.b))
+		mat.set_shader_parameter("fog_color", Vector4(fog.r, fog.g, fog.b, environment.fog_density))
+		mat.set_shader_parameter("fog_range", Vector3(environment.fog_depth_begin, environment.fog_depth_end, environment.fog_depth_curve))
 
 func predict_action(action: String, pressed: bool) -> void:
 	if not client_motion: return
@@ -963,7 +1128,7 @@ func celebrate(slot: int) -> void:
 	hero.name = "Hero"
 	victory.add_child(hero)
 	hero.setup(team_color(slot))
-	hero.set_quality("balanced" if level == "low" else level, 0.0, false)
+	hero.set_quality(("balanced" if software else "high") if level == "low" else level, 0.0, false)
 	hero.set_markers(false)
 	hero.position.y = 0.62
 	hero.scale = Vector3.ONE * 2.2
