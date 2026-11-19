@@ -45,7 +45,11 @@ verify(subprocess.run(base + ["--script", "res://tests/test_round.gd"], text=Tru
                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=20))
 verify(subprocess.run(base + ["--script", "res://tests/test_livewire.gd"], text=True,
                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60))
-for game_test in ("sumo/tests/rules_test.gd", "orb_racing/tests/race_test.gd"):
+for game_test in (
+    "sumo/tests/rules_test.gd",
+    "orb_racing/tests/race_test.gd",
+    "stampede_sheriff/tests/rules_test.gd",
+):
     verify(subprocess.run(base + ["--script", "res://games/" + game_test], text=True,
                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60))
 verify(subprocess.run(base + ["--script", "res://tests/test_presentation.gd"], text=True,

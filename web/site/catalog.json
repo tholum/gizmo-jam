@@ -106,6 +106,25 @@
         },
         "alt": "Racers on the Orb Racing track with lap and position indicators."
       }
+    },
+    {
+      "id": "stampede-sheriff",
+      "name": "Stampede Sheriff",
+      "caption": "Herd critters and steal them from your rivals.",
+      "description": "Walk behind wind-up critters to guide them into your pen. Clap to scatter a herd or steal it from a rival. Watch the hatches for double-value critters. Most points after 90 seconds wins.",
+      "controls": "`W``A``S``D` or the arrow keys to move. Press `Space` to clap in the last direction you moved.",
+      "touchControls": "drag your left thumb to move and tap the right side to clap.",
+      "desktopLibrary": true,
+      "screenshot": {
+        "file": "img/stampede-sheriff.webp",
+        "width": 1280,
+        "height": 800,
+        "sources": {
+          "320": "img/stampede-sheriff-320.webp",
+          "640": "img/stampede-sheriff-640.webp"
+        },
+        "alt": "Robots herd wind-up critters toward colored pens as a gold critter emerges from a hatch."
+      }
     }
   ],
   "extraScreenshots": [

@@ -769,7 +769,9 @@ func _game_cards(parent: Control, y: float) -> float:
 		card.add_theme_stylebox_override("focus", Kit.ring_box(INK, 4, 0.05, 9))
 		_outlined(_label(card, info.number, Rect2(14, 10 - 6 * c, 104, 80), 62 - int(8 * c), LIME if chosen else Color("54649a"), true, ALIGN_CENTER), 10)
 		_label(card, info.tags, Rect2(130, 9 - 4 * c, 240, 18), 13, Kit.CYAN if chosen else DIM, true)
-		_label(card, info.title, Rect2(128, 23 - 6 * c, 240, 36 - 4 * c), 28 - int(2 * c), INK if chosen else MUTED, true)
+		var title_width := COL - 158.0 - 128.0 - 8.0
+		var title_size := Kit.fit(info.title, 28 - int(2 * c), title_width, 16, display_font)
+		_label(card, info.title, Rect2(128, 23 - 6 * c, title_width, 36 - 4 * c), title_size, INK if chosen else MUTED, true)
 		_label(card, info.blurb, Rect2(130, 55 - 10 * c, COL - 152, 38), 14, MUTED if chosen else DIM)
 		# Right-hand column: the rules, and which game is picked.
 		var how := _button(card, "HOW TO PLAY  ›", Rect2(COL - 158, 10, 140, 30), _rules.bind(id), false, 13)
@@ -2438,7 +2440,8 @@ func _show_results() -> void:
 	_land(_brand(screen), 1.35)
 	var order: Array = model.ranking()
 	var winner: Dictionary = model.players[order[0]]
-	var single_winner: bool = model.winners().size() == 1
+	var winners: Array = model.winners()
+	var single_winner := winners.size() == 1
 	var my_slot: int = session.my_slot()
 	# The table may run past the column, but never into the party roster.
 	var table_w := minf(COL + 72.0, RIGHT_X - LEFT - 28.0) if session.is_online() else COL + 72.0
@@ -2476,6 +2479,7 @@ func _show_results() -> void:
 		var p: Dictionary = model.players[i]
 		var mine: bool = is_local(i)
 		var champ: bool = rank == 0 and single_winner
+		var place := 1 if i in winners else rank + 1
 		var tint: Color = play.result_tint(i, champ)
 		var lean := row_h * Kit.SLANT
 		var body_w := table_w - lean - rank * 12.0
@@ -2488,7 +2492,7 @@ func _show_results() -> void:
 			if mine: Kit.stroke(tile, shape, INK, 11.0)
 			Kit.plate(tile, shape, tint, 4.0, 5.0)
 			tile.draw_colored_polygon(Kit.slab(Rect2(8, 6, 46, row_h - 12)), Kit.OUTLINE)
-			Kit.text(tile, str(rank + 1), Vector2(8 + 23 + (row_h - 12) * Kit.SLANT * 0.5, Kit.baseline(row_h * 0.5, 26 - int(3 * c))), 26 - int(3 * c), Kit.GOLD if champ else tint, 0, 0.5))
+			Kit.text(tile, str(place), Vector2(8 + 23 + (row_h - 12) * Kit.SLANT * 0.5, Kit.baseline(row_h * 0.5, 26 - int(3 * c))), 26 - int(3 * c), Kit.GOLD if champ else tint, 0, 0.5))
 		screen.add_child(tile)
 		_enter(tile, rank + 4)
 		var name_text := str(p.name)

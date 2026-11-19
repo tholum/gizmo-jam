@@ -21,6 +21,9 @@ console party minigames. Play on desktop, Android, or the web.
   respawn, and the high score after 90 seconds wins.
 - **05 Orb Racing** — steer a rolling orb through ordered checkpoints.
   Drive over charge strips to refill your boost and finish three laps first.
+- **06 Stampede Sheriff** — guide wind-up critters into your pen. Clap to
+  scatter or steal a herd. Gold critters score double, and the highest score
+  after 90 seconds wins. Requires Gizmo Jam 0.3.4 or newer.
 
 ## Play
 
@@ -40,8 +43,8 @@ Choose a game by clicking its card on the main menu; the selected card is
 outlined in lime, the arena behind the menu changes to match, and the choice is
 remembered. Each card has a **How to Play** button. **Play Solo** plays the
 selected game against five bots, and **Host Party** opens a lobby on it. On desktop,
-install Bumper Cars, Sumo, and Orb Racing through **Game Library**. The public
-browser build and Android app include them. Menus also work from the keyboard: the
+install additional games through **Game Library**. The public browser build and
+Android app include them. Menus also work from the keyboard: the
 main action is focused, so **Enter** or **Space** confirms it.
 
 Keyboard or gamepad on computers, touch on phones and tablets. In every game
@@ -59,6 +62,8 @@ Keyboard or gamepad on computers, touch on phones and tablets. In every game
 - **Bumper Cars, Sumo, and Orb Racing:** **WASD**, **arrows**, the **left stick**,
   or the **d-pad** to steer. **Space** or **A** boosts in Bumper Cars and Orb
   Racing and shoves in Sumo. In Sumo, release movement to brace.
+- **Stampede Sheriff:** **WASD**, **arrows**, the **left stick**, or the **d-pad**
+  to move. Press **Space** or **A** to clap in your last movement direction.
 
 #### Several players on one screen
 
@@ -86,9 +91,9 @@ Computers, including touchscreen laptops, keep the keyboard layout unchanged.
 
 - **Spin Cycle:** **tap the right half** of the screen to jump, **hold the
   left half** to duck.
-- **Live Wire, Bumper Cars, Sumo, and Orb Racing:** drag your **left thumb**
-  to move. The stick appears under your thumb and follows it past the rim.
-  **Tap the right half** to dash, boost, or shove.
+- **Live Wire, Bumper Cars, Sumo, Orb Racing, and Stampede Sheriff:** drag your
+  **left thumb** to move. The stick appears under your thumb and follows it
+  past the rim. **Tap the right half** to dash, boost, shove, or clap.
 - **MENU** (top right) pauses, with any finger.
 - **Notches:** on a phone with a camera cut-out, the interface stays clear of
   it; the 3D scene still fills the screen.

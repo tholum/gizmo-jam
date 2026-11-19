@@ -1,0 +1,15 @@
+{
+  "id": "stampede_sheriff",
+  "version": "1.0.0",
+  "net": 1,
+  "core_min": 7,
+  "actions": ["up", "down", "left", "right", "clap"],
+  "input_budget": 240,
+  "info": {
+    "number": "06",
+    "title": "STAMPEDE SHERIFF",
+    "tags": "HERDING  ·  SCORE ATTACK",
+    "blurb": "Herd critters into your pen.\nClap to push. Gold scores double.",
+    "voice": ""
+  }
+}
