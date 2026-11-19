@@ -731,8 +731,8 @@ Wasabi layout, bucket `timholum.com`, region `us-central-1`, public base
 - `games/gizmo-jam/releases/<version>/GizmoJam-Windows.exe`,
   `GizmoJam-Linux.x86_64` and `GizmoJam-macOS.zip`: immutable, never overwritten.
 - `games/gizmo-jam/web/<version>/GizmoJam-web-<version>.zip`: the browser
-  build party hosts serve; `web/<version>/play/`: the same build unpacked for
-  the website, wasm, pck and js gzipped (`Content-Encoding: gzip`).
+  build party hosts serve; `web/<version>/play/`: the website's standalone
+  export, with wasm, pck and js gzipped (`Content-Encoding: gzip`).
 - `games/gizmo-jam/updates/catalog-stable.json`: the signed game catalog.
 - `games/gizmo-jam/updates/stable.json`: the signed manifest, `Cache-Control:
   no-cache`. Its URL is a constant in `scripts/update_core.gd`.
@@ -822,12 +822,18 @@ python3 tools/release_games.py --web --publish
 
 It also uploads the build unpacked to `web/<version>/play/` for the website's
 **Play on the web** button. Opened over https rather than from a party host,
-the browser build plays solo against bots, and its party button opens the
-download page instead: an https page cannot open a plain WebSocket to a
-computer on the LAN.
+the browser build plays solo against bots, with the games in the signed
+catalog at export time bundled into the build. Its party button opens the
+download page because an HTTPS page cannot open a plain WebSocket to a
+computer on the LAN. To ship a new pack with the next web version, include
+it in the same release command, for example
+`python3 tools/release_games.py --game bumper_cars --web --publish`. The
+website button then needs the new versioned URL.
 
 `tools/build.py --web` builds it alone into `builds/web/` and
-`builds/GizmoJam-web-<version>.zip`. `tests/run_browser.py` (also run by
+`builds/GizmoJam-web-<version>.zip`. Pass `--bundle <id>` for each extra game
+to include in the standalone export at `builds/web-play/<version>/`.
+`tests/run_browser.py` (also run by
 `run_tests.py` when Node and Google Chrome are installed) has headless Chrome
 load it from a host on this machine's LAN address, join, play and press keys.
 

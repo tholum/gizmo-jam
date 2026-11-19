@@ -216,8 +216,13 @@ func _ready() -> void:
 	var scripted: bool = Engine.get_main_loop().get_script() != null
 	if store_app:
 		packs.load_bundled()
-	elif not scripted or Array(OS.get_cmdline_user_args()).any(func(a): return a.begins_with("--packs-dir=")):
-		packs.load_all()
+	else:
+		# The public web export carries its solo games. A LAN guest gets the
+		# exact game selected by the host through the usual pack flow.
+		if on_web and not web_party:
+			packs.load_bundled()
+		if not scripted or Array(OS.get_cmdline_user_args()).any(func(a): return a.begins_with("--packs-dir=")):
+			packs.load_all()
 	for id in Registry.ids():
 		_add_game(id)
 	if not Registry.has(preferred_game): preferred_game = "twisted"
@@ -728,16 +733,20 @@ func _game_cards(parent: Control, y: float) -> float:
 	var card_h := (100.0 if Platform.handheld else 92.0) if tight else 106.0
 	var c := 1.0 if tight else 0.0
 	var ids: Array = _menu_game_ids()
-	# Two cards fit as they are; more scroll in a box two cards tall.
+	# Public desktop browsers have room for all three launch games.
+	var visible_cards := 3 if on_web and not web_party and not tight else 2
 	var holder: Control = parent
 	var list_top := top
-	if ids.size() > 2:
+	if ids.size() > visible_cards:
 		var scroll := ScrollContainer.new()
 		scroll.name = "GameList"
+		scroll.follow_focus = true
 		scroll.position = Vector2(LEFT - 8, top)
-		scroll.size = Vector2(COL + 16, card_h * 2 + (8.0 if tight else 10.0))
+		scroll.size = Vector2(COL + 16, card_h * visible_cards + (visible_cards - 1) * (8.0 if tight else 10.0))
 		scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 		parent.add_child(scroll)
+		if on_web:
+			_eyebrow(parent, "SCROLL FOR MORE  ↓", Rect2(LEFT + COL - 150, y, 150, 20), MUTED)
 		var inner := Control.new()
 		inner.custom_minimum_size = Vector2(COL + 4, ids.size() * (card_h + (8.0 if tight else 10.0)))
 		inner.mouse_filter = Control.MOUSE_FILTER_PASS
@@ -773,7 +782,7 @@ func _game_cards(parent: Control, y: float) -> float:
 		top += card_h + (8.0 if tight else 10.0)
 	if holder != parent:
 		var scroll: Control = holder.get_parent()
-		if _chosen_index(ids) >= 2:
+		if _chosen_index(ids) >= visible_cards:
 			scroll.set_deferred("scroll_vertical", int(_chosen_index(ids) * (card_h + (8.0 if tight else 10.0))))
 		return list_top + scroll.size.y
 	if tight: return top - 8.0

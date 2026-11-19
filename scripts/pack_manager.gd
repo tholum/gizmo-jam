@@ -139,9 +139,9 @@ func load_all() -> void:
 	_write_index()
 	for p in problems: print("[packs] ", p)
 
-## Store apps: registers the games built into the app (tools/build.py
-## --android puts the published ones under res://games/). They count as signed
-## with no file hash, so they match a host's signed pack on id and net alone.
+## Registers the games exported inside the store app or public web build.
+## They count as signed with no file hash, so they match a host's signed pack
+## on id and net alone.
 func load_bundled() -> void:
 	var ids := Array(DirAccess.get_directories_at("res://games"))
 	ids.sort()

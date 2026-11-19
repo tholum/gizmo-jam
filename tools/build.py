@@ -10,6 +10,7 @@
     tools/build.py --packs               a pack for every game in games/
     tools/build.py --web                 the browser build party hosts serve, in
                                          builds/web/ and as builds/GizmoJam-web-<version>.zip
+    tools/build.py --web --bundle ID     include a game in public browser solo play
     tools/build.py --android             the Android store app (.aab) and a sideload .apk,
                                          in builds/android/, with every published game built in
 
@@ -21,8 +22,8 @@ normally 0), so it rises with every core release and every game release. It is s
 ~/.config/gizmo-jam/android-upload.env (never in the repo); Google Play
 re-signs it with the release key.
 
-Packs are written to builds/packs/<id>-<version>.pck. The core builds leave
-out games/ (built-in games live in scripts/), so packs never ship inside them.
+Packs are written to builds/packs/<id>-<version>.pck. Desktop builds leave
+out games/ (built-in games live in scripts/).
 """
 import argparse
 import hashlib
@@ -44,7 +45,7 @@ parser.add_argument("--dev-install", action="store_true", help="also install eac
 parser.add_argument("--web", action="store_true", help="build the browser version party hosts serve")
 parser.add_argument("--android", action="store_true", help="build the Android store app (.aab) and a sideload .apk")
 parser.add_argument("--bundle", action="append", default=[], metavar="ID",
-                    help="Android: bundle games/ID instead of the live catalog's games (repeatable; 'none' for none)")
+                    help="Web or Android: bundle games/ID (repeatable; 'none' for built-ins only)")
 parser.add_argument("--serial", type=int, help="Android: catalog serial for the version code (default: the live catalog's)")
 parser.add_argument("--android-revision", type=int, default=0, metavar="N",
                     help="Android: 0-9, for a rebuild of the same core and catalog (Play never takes a version code twice)")
@@ -117,15 +118,52 @@ def build_pack(game_id):
     return out
 
 
-def build_web():
-    """The browser build: single-threaded, a shell that runs from a plain-HTTP
-    LAN address (see web/shell.html). The zip is flat; the game unpacks it
-    and checks every name (pack_manager.gd)."""
-    folder = ROOT / "builds" / "web"
+def include_game_bundles(section, ids):
+    if not ids:
+        return section
+    others = [f"games/{path.name}/*" for path in sorted((ROOT / "games").iterdir())
+              if path.is_dir() and path.name not in ids]
+    game_files = [f"games/{game_id}/game.json" for game_id in ids]
+    section = re.sub(r'^exclude_filter="([^"]*)"',
+                     lambda m: 'exclude_filter="' + ",".join([p for p in m[1].split(",") if p != "games/*"] + others) + '"',
+                     section, count=1, flags=re.M)
+    return re.sub(r'^include_filter="([^"]*)"',
+                  lambda m: 'include_filter="' + ",".join(filter(None, [m[1]] + game_files)) + '"',
+                  section, count=1, flags=re.M)
+
+
+def web_bundle_preset(presets, ids):
+    for game_id in ids:
+        if not re.fullmatch(r"[a-z0-9_]{1,24}", game_id):
+            raise SystemExit(f"invalid game id {game_id!r}")
+        game_file = ROOT / "games" / game_id / "game.json"
+        if not game_file.is_file():
+            raise SystemExit(f"cannot bundle {game_id}: games/{game_id}/game.json is not in this tree")
+        game = json.loads(game_file.read_text())
+        if game.get("id") != game_id or game.get("publish") is False:
+            raise SystemExit(f"cannot bundle {game_id}: check id and publish in {game_file.relative_to(ROOT)}")
+    match = re.search(r'^\[preset\.\d+\]\nname="Web".*?(?=^\[preset\.\d+\]|\Z)', presets, re.M | re.S)
+    if not match:
+        raise SystemExit('export_presets.cfg has no "Web" preset')
+    return presets[:match.start()] + include_game_bundles(match[0], ids) + presets[match.end():]
+
+
+def export_web(folder):
     if folder.exists():
         shutil.rmtree(folder)
     folder.mkdir(parents=True)
     subprocess.run(base + ["--export-release", "Web", str(folder / "index.html")], check=True)
+
+
+def build_web():
+    """Hosts serve the core-only ZIP so guests can install the host's pack.
+    The standalone HTTPS export can carry games for solo play."""
+    ids = [] if args.bundle == ["none"] else sorted(set(args.bundle))
+    presets = ROOT / "export_presets.cfg"
+    original = presets.read_text()
+    bundled = web_bundle_preset(original, ids) if ids else original
+    folder = ROOT / "builds" / "web"
+    export_web(folder)
     version = re.search(r'^config/version="([^"]+)"', (ROOT / "project.godot").read_text(), re.M).group(1)
     archive = ROOT / "builds" / f"GizmoJam-web-{version}.zip"
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as output:
@@ -134,6 +172,14 @@ def build_web():
                 output.write(file, arcname=file.name)
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
     print(f"{archive}  size={archive.stat().st_size}  sha256={digest}")
+    if ids:
+        play = ROOT / "builds" / "web-play" / version
+        try:
+            presets.write_text(bundled)
+            export_web(play)
+        finally:
+            presets.write_text(original)
+        print(f"{play / 'index.html'}  games={','.join(ids)}")
     return archive
 
 
@@ -261,12 +307,7 @@ def build_android():
             start = patched.index(head)
             end = patched.find("\n[preset.", patched.index(options) + 1)
             end = len(patched) if end < 0 else end
-            section = patched[start:end]
-            # Leave out every game folder except the bundled ones.
-            others = [f"games/{p.name}/*" for p in sorted((ROOT / "games").iterdir()) if p.is_dir() and p.name not in ids]
-            section = re.sub(r'^exclude_filter="([^"]*)"',
-                             lambda m: 'exclude_filter="' + ",".join([f for f in m.group(1).split(",") if f != "games/*"] + others) + '"',
-                             section, count=1, flags=re.M)
+            section = include_game_bundles(patched[start:end], ids)
             section = re.sub(r"^version/code=.*$", f"version/code={code}", section, count=1, flags=re.M)
             section = re.sub(r'^version/name=.*$', f'version/name="{version}"', section, count=1, flags=re.M)
             section = re.sub(r"^gradle_build/export_format=.*$", f"gradle_build/export_format={fmt}", section, count=1, flags=re.M)

@@ -1,0 +1,15 @@
+{
+  "id": "bumper_cars",
+  "version": "1.0.0",
+  "net": 1,
+  "core_min": 4,
+  "actions": ["left", "right", "up", "down", "dash"],
+  "input_budget": 240,
+  "info": {
+    "number": "03",
+    "title": "BUMPER CARS",
+    "tags": "DRIVING  ·  SURVIVAL",
+    "blurb": "Ram rivals into the water as the dock shrinks.\nLast car afloat wins.",
+    "voice": ""
+  }
+}

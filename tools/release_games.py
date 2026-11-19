@@ -17,9 +17,10 @@ upload: packs first (never overwritten), the catalog last.
 
 The browser build that party hosts serve must be the host's exact core build,
 so publish it with --web for every core release (tools/release.py). --web also
-uploads the unpacked build to games/gizmo-jam/web/<version>/play/ (wasm, pck
-and js gzipped, served with Content-Encoding: gzip): the website's "Play on
-the web" button opens play/index.html there, where the game plays solo.
+uploads the standalone export, including catalog games, to
+games/gizmo-jam/web/<version>/play/ (wasm, pck and js gzipped, served with
+Content-Encoding: gzip). The website's "Play on the web" button opens
+play/index.html there, where the game plays solo.
 
 Each publish raises the catalog's serial; the game refuses a catalog with a
 lower serial than one it has seen, so an old catalog cannot be replayed to
@@ -114,12 +115,10 @@ def pack_entry(game, pack, base_url):
             "info": {k: str(game["info"][k]) for k in ("number", "title", "tags", "blurb")}}
 
 
-def next_catalog(live, added, removed, channel, web=None):
+def next_catalog(live, added, removed, channel):
     """The catalog to publish. `live` is the current payload or None; `added`
-    maps id -> new entry; `removed` lists ids to unlist; `web` replaces the
-    browser build entry."""
+    maps id -> new entry; `removed` lists ids to unlist."""
     games = dict(live["games"]) if live else {}
-    web = web or (live.get("web") if live else None)
     for game_id, entry in added.items():
         old = games.get(game_id)
         if old and release.version_key(entry["version"]) <= release.version_key(old["version"]):
@@ -131,8 +130,8 @@ def next_catalog(live, added, removed, channel, web=None):
         del games[game_id]
     catalog = {"schema": 1, "game": release.GAME_ID, "kind": "catalog", "channel": channel,
                "serial": (int(live["serial"]) if live else 0) + 1, "games": games}
-    if web:
-        catalog["web"] = web
+    if live and "web" in live:
+        catalog["web"] = live["web"]
     return catalog
 
 
@@ -180,6 +179,10 @@ def main(argv=None):
         added[game_id] = pack_entry(game, pack, base_url)
         packs[game_id] = pack
 
+    live = live_catalog(f"{base_url}/{catalog_key(args.channel)}", trusted)
+    print("No live catalog yet: this will be the first." if live is None else f"Live catalog: serial {live['serial']}, {len(live['games'])} games")
+    catalog = next_catalog(live, added, args.remove, args.channel)
+
     web = None
     web_upload = []
     if args.web:
@@ -188,6 +191,16 @@ def main(argv=None):
             command = [sys.executable, str(ROOT / "tools/build.py"), "--web"]
             if args.godot:
                 command += ["--godot", args.godot]
+            for game_id, entry in sorted(catalog["games"].items()):
+                game_file = ROOT / "games" / game_id / "game.json"
+                if not game_file.is_file():
+                    raise SystemExit(f"cannot bundle catalog game {game_id}: {game_file.relative_to(ROOT)} is missing")
+                game = json.loads(game_file.read_text())
+                if game.get("version") != entry["version"] or game.get("net") != entry["net"]:
+                    raise SystemExit(f"cannot bundle {game_id}: local version and net must match the new catalog")
+                if int(entry["core_min"]) > build:
+                    raise SystemExit(f"cannot bundle {game_id}: needs core build {entry['core_min']}")
+                command += ["--bundle", game_id]
             subprocess.run(command, check=True)
         archive = ROOT / "builds" / f"GizmoJam-web-{version}.zip"
         if not archive.exists():
@@ -195,11 +208,12 @@ def main(argv=None):
         data = archive.read_bytes()
         web_key = f"{WEB_PREFIX}/{version}/{archive.name}"
         web = {"build": build, "size": len(data), "sha256": hashlib.sha256(data).hexdigest(), "url": f"{base_url}/{web_key}"}
-        web_upload = [(archive, web_key, "application/zip", IMMUTABLE, "")] + play_files(ROOT / "builds/web", version)
+        catalog["web"] = web
+        play_dir = ROOT / "builds/web-play" / version if catalog["games"] else ROOT / "builds/web"
+        if not play_dir.is_dir():
+            raise SystemExit(f"missing {play_dir}; run without --skip-build to export the standalone web build")
+        web_upload = [(archive, web_key, "application/zip", IMMUTABLE, "")] + play_files(play_dir, version)
 
-    live = live_catalog(f"{base_url}/{catalog_key(args.channel)}", trusted)
-    print("No live catalog yet: this will be the first." if live is None else f"Live catalog: serial {live['serial']}, {len(live['games'])} games")
-    catalog = next_catalog(live, added, args.remove, args.channel, web)
     envelope = release.sign_manifest(catalog, key)
     release.verify_envelope(envelope, trusted)
     out = ROOT / "builds/release/catalog"

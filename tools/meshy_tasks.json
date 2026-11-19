@@ -240,6 +240,43 @@
         "id": "01a1eba5-fc99-75ac-a982-dcefdb9e5773",
         "status": "SUCCEEDED",
         "consumed_credits": 12
+      },
+      "bumper_car_preview": {
+        "endpoint": "text-to-3d",
+        "payload": {
+          "mode": "preview",
+          "model_type": "smart-topology",
+          "ai_model": "meshy-t2.5",
+          "target_polycount": 4500,
+          "prompt": "Single stylized retro-futurist arcade bumper car, a squat oval toy vehicle with a thick black rubber doughnut bumper encircling the entire base, a glossy ivory molded hull, a low dark empty open cockpit with one bucket seat, and two recessed round headlights at the short rounded nose. Strong chunky silhouette. Flat underside, hidden wheels, symmetrical left to right, clearly distinguishable nose and rounded tail. One isolated game prop, no driver, floor, base stand, logos, cables or writing.",
+          "target_formats": [
+            "glb"
+          ]
+        },
+        "estimated_credits": 20,
+        "created": "2026-11-19T10:16:15",
+        "id": "01a1f498-2c2b-745f-a1eb-b4d1c72118d3",
+        "status": "SUCCEEDED",
+        "consumed_credits": 5
+      },
+      "bumper_car_refine": {
+        "endpoint": "text-to-3d",
+        "payload": {
+          "mode": "refine",
+          "preview_task_id": "01a1f498-2c2b-745f-a1eb-b4d1c72118d3",
+          "ai_model": "meshy-7",
+          "enable_pbr": true,
+          "texture_resolution": "2k",
+          "texture_prompt": "Pearl ivory enamel shell, near-black heavy rubber bumper around the entire oval base, dark graphite bucket seat and controls, brushed metal details, two amber headlights at the nose, toy-like clean arcade finish, no words or logo.",
+          "target_formats": [
+            "glb"
+          ]
+        },
+        "estimated_credits": 10,
+        "created": "2026-11-19T10:17:18",
+        "id": "01a1f499-21c2-7364-8478-6f8832de5559",
+        "status": "SUCCEEDED",
+        "consumed_credits": 10
       }
     }
   }
