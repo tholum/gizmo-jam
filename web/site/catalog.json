@@ -144,6 +144,25 @@
         },
         "alt": "Robots tilt a tabletop with rolling marbles, wedges, and six colored scoring pockets."
       }
+    },
+    {
+      "id": "salvage-line",
+      "name": "Salvage Line",
+      "caption": "Tow cargo home and cut rival lines.",
+      "description": "Hook floating crates and tow them into your numbered harbor to deliver them. Heavy crates slow your tug but score double. Cut a rival’s exposed tow rope to send their cargo adrift. The most cargo weight delivered in 90 seconds wins.",
+      "controls": "`W``A``S``D` or the arrow keys to steer. Press `Space` to hook, cut, or release. Tap it inside your harbor to deliver your cargo.",
+      "touchControls": "drag your left thumb to steer and tap the right side to use the winch.",
+      "desktopLibrary": true,
+      "screenshot": {
+        "file": "img/salvage-line.webp",
+        "width": 1280,
+        "height": 800,
+        "sources": {
+          "320": "img/salvage-line-320.webp",
+          "640": "img/salvage-line-640.webp"
+        },
+        "alt": "Numbered tugboats tow floating crates across the harbor with their tow lines visible."
+      }
     }
   ],
   "extraScreenshots": [

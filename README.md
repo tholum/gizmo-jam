@@ -26,6 +26,9 @@ console party minigames. Play on desktop, Android, or the web.
   after 90 seconds wins. Requires Gizmo Jam 0.3.4 or newer.
 - **07 Plate Panic** — tilt a shared table to roll marbles into your pocket.
   Place a wedge to redirect a marble. Most marbles banked in 90 seconds wins.
+- **08 Salvage Line** — hook drifting cargo and tow it back to your harbor.
+  Cut exposed rival ropes to steal a haul. Heavy crates move slower and score
+  double. Most cargo weight delivered in 90 seconds wins.
 
 ## Play
 
@@ -68,6 +71,9 @@ Keyboard or gamepad on computers, touch on phones and tablets. In every game
   to move. Press **Space** or **A** to clap in your last movement direction.
 - **Plate Panic:** **WASD**, **arrows**, the **left stick**, or the **d-pad** to
   move. Press **Space** or **A** to drop a wedge in your last movement direction.
+- **Salvage Line:** **WASD**, **arrows**, the **left stick**, or the **d-pad** to
+  steer. Press **Space** or **A** to hook, cut, or release the highlighted target.
+  Tow cargo into your numbered harbor and tap the action again to deliver it.
 
 #### Several players on one screen
 
@@ -95,9 +101,10 @@ Computers, including touchscreen laptops, keep the keyboard layout unchanged.
 
 - **Spin Cycle:** **tap the right half** of the screen to jump, **hold the
   left half** to duck.
-- **Live Wire, Bumper Cars, Sumo, Orb Racing, Stampede Sheriff, and Plate Panic:**
-  drag your **left thumb** to move. The stick appears under your thumb and
-  follows it past the rim. **Tap the right half** to use your game's action.
+- **Live Wire, Bumper Cars, Sumo, Orb Racing, Stampede Sheriff, Plate Panic, and
+  Salvage Line:** drag your **left thumb** to move. The stick appears under your
+  thumb and follows it past the rim. **Tap the right half** to use your game's
+  action.
 - **MENU** (top right) pauses, with any finger.
 - **Notches:** on a phone with a camera cut-out, the interface stays clear of
   it; the 3D scene still fills the screen.

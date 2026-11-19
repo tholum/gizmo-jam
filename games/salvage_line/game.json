@@ -1,0 +1,15 @@
+{
+  "id": "salvage_line",
+  "version": "1.0.0",
+  "net": 1,
+  "core_min": 8,
+  "actions": ["up", "down", "left", "right", "winch"],
+  "input_budget": 240,
+  "info": {
+    "number": "08",
+    "title": "SALVAGE LINE",
+    "tags": "ACTION  ·  SCORE ATTACK",
+    "blurb": "Tow crates to your harbor.\nCut rival lines to steal a haul.",
+    "voice": ""
+  }
+}

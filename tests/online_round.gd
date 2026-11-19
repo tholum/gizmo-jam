@@ -211,7 +211,12 @@ func guest() -> void:
 	check(float(model.players[me].cool) > 0.0, "My Space dashes my own seat")
 	check(int(model.players[me].tiles) >= 3, "Running paints tiles, got %d" % model.players[me].tiles)
 	for i in 6:
-		if i != me:
+		if i == host:
+			# A guest can skip ahead to a snapshot after the host begins steering right.
+			var motion := moved(i)
+			check(absf(motion.y) < 0.05 and motion.x >= -0.05, "The host moved on my S key: %s" % motion)
+			check(float(model.players[i].cool) == 0.0, "The host dashed on my Space key")
+		elif i != me:
 			check(moved(i).length() < 0.05, "Seat %d moved %s on my keys" % [i, moved(i)])
 	check(main.play.sent.is_empty() or not main.play.sent.get("down", false), "Nothing is left held")
 	check(await until(func(): return model.elapsed >= 2.8), "The round goes on")

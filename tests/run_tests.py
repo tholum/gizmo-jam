@@ -50,6 +50,7 @@ for game_test in (
     "orb_racing/tests/race_test.gd",
     "stampede_sheriff/tests/rules_test.gd",
     "plate_panic/tests/rules_test.gd",
+    "salvage_line/tests/rules_test.gd",
 ):
     verify(subprocess.run(base + ["--script", "res://games/" + game_test], text=True,
                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60))
