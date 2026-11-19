@@ -39,3 +39,7 @@ force_hdmi_mode = "1280x720@60"  # forces HDMI-A-1 (port next to USB-C) on even 
 [extras]
 packages = ["mesa-utils", "htop"]  # apt packages installed at first boot if online
 kiosk = false                    # true = autostart the game fullscreen at login
+
+[pairing]                        # controller pairing page: http://<hostname>.local:<port>/
+enabled = true                   # from a phone or laptop on the same network: pair Bluetooth
+port = 8080                      # pads, see USB ones. LAN clients only; no password.

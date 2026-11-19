@@ -104,6 +104,7 @@ class Config:
     force_hdmi_mode: str
     packages: list[str]
     kiosk: bool
+    pair_port: int = 0
     secret_sources: dict[str, str] = field(default_factory=dict)
 
 
@@ -127,11 +128,12 @@ KEY_LINE_RE = re.compile(
 
 KNOWN_KEYS = {
     "": {"hostname", "username", "ssh_public_keys", "password", "timezone", "locale",
-         "keyboard_layout", "wifi", "tailscale", "display", "extras"},
+         "keyboard_layout", "wifi", "tailscale", "display", "extras", "pairing"},
     "wifi": {"ssid", "password", "country"},
     "tailscale": {"auth_key", "auth_key_file", "hostname", "ssh"},
     "display": {"force_hdmi_mode"},
     "extras": {"packages", "kiosk"},
+    "pairing": {"enabled", "port"},
 }
 
 
@@ -191,6 +193,7 @@ def load_config(path: Path, env: dict[str, str] | None = None) -> Config:
     ts = data.get("tailscale", {})
     disp = data.get("display", {})
     extras = data.get("extras", {})
+    pairing = data.get("pairing", {})
     sources: dict[str, str] = {}
 
     hostname = _get(data, "hostname", str, "gizmojam", "").strip().lower()
@@ -274,13 +277,18 @@ def load_config(path: Path, env: dict[str, str] | None = None) -> Config:
             die(f"config: extras.packages entry {p!r} is not a valid apt package name")
     kiosk = _get(extras, "kiosk", bool, False, "extras.")
 
+    pairing_on = _get(pairing, "enabled", bool, True, "pairing.")
+    pair_port = _get(pairing, "port", int, 8080, "pairing.")
+    if not 1024 <= pair_port <= 65535 or pair_port == 22:
+        die(f"config: pairing.port {pair_port} must be between 1024 and 65535")
+
     return Config(
         hostname=hostname, username=username, ssh_keys=ssh_keys, ssh_key_files=key_files,
         password=password, timezone=timezone, locale=locale, keyboard_layout=keyboard,
         wifi_ssid=ssid, wifi_password=wifi_password, wifi_country=country,
         tailscale_key=ts_key, tailscale_hostname=ts_host, tailscale_ssh=ts_ssh,
         force_hdmi_mode=mode, packages=list(dict.fromkeys(packages)), kiosk=kiosk,
-        secret_sources=sources,
+        pair_port=pair_port if pairing_on else 0, secret_sources=sources,
     )
 
 
@@ -413,6 +421,7 @@ def gen_firstboot_env(cfg: Config, build_id: str, pins: dict) -> str:
         ("GIZMO_TAILSCALE_SSH", "1" if cfg.tailscale_ssh else ""),
         ("GIZMO_EXTRA_PACKAGES", " ".join(cfg.packages)),
         ("GIZMO_KIOSK", "1" if cfg.kiosk else ""),
+        ("GIZMO_PAIR_PORT", str(cfg.pair_port) if cfg.pair_port else ""),
         ("GIZMO_BUILD_ID", build_id),
     ]
     body = "\n".join(f"{k}={sh_quote(v)}" for k, v in values)
@@ -985,6 +994,7 @@ def summary(cfg: Config, img: Path, digest: str, build_id: str, cmdline: str,
                        f"{', Tailscale SSH' if cfg.tailscale_ssh else ''})") if cfg.tailscale_key else "no"),
         ("Forced HDMI", f"HDMI-A-1 {cfg.force_hdmi_mode}" if cfg.force_hdmi_mode else "no (EDID decides)"),
         ("Kiosk", "yes" if cfg.kiosk else "no"),
+        ("Pairing page", f"http://{cfg.hostname}.local:{cfg.pair_port}/ (LAN only)" if cfg.pair_port else "off"),
         ("Extra packages", " ".join(cfg.packages) or "-"),
         ("Schema check", "cloud-init schema passed" if schema_checked else "skipped (no cloud-init)"),
     ]

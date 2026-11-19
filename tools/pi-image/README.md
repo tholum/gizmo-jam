@@ -23,6 +23,9 @@ SSH in and run the game on the Pi's real GPU.
   the desktop renders to HDMI even when the TV is off or switched to another input.
 - **Helper commands** for an agent working over SSH: `gizmo-env`, `gizmo-run`, `gizmo-shot`,
   `gizmo-health`, and `gizmo-kiosk`. See [On the Pi](#on-the-pi).
+- **Controller pairing page:** `http://<hostname>.local:8080/` from a phone or laptop on the
+  same network pairs Bluetooth game pads and lists the USB ones. See
+  [Pairing controllers](#pairing-controllers).
 
 ## Prerequisites (build host)
 
@@ -59,6 +62,7 @@ The first run copies `config.example.toml` to `.pi-image/config.toml` (at the re
 | `[display] force_hdmi_mode` | For example `1920x1080@60` or `1280x720@60`. Empty means no forcing, so the TV's EDID decides. |
 | `[extras] packages` | apt packages installed on first boot when the network is up. Failures there do not stop the boot. |
 | `[extras] kiosk` | `true` starts the game fullscreen at login. |
+| `[pairing] enabled`, `port` | The controller pairing page (default on, port 8080, 1024-65535). LAN clients only, no password. |
 
 You can keep secrets out of the file with environment variables. These override the file:
 
@@ -217,6 +221,7 @@ Then rebuild.
 - installs the extra apt packages and Tailscale, if configured
 - removes the Wi-Fi password from `/boot/firmware/network-config` once it has been applied (the live copy is in `/etc/netplan/`, kept by NetworkManager as `90-NM-<uuid>.yaml`)
 - shreds the Tailscale key
+- unblocks and powers Bluetooth, sets BlueZ up for game pads, and starts the pairing page (`gizmo-pair@<user>.service`)
 
 If the network is down at first boot, `gizmo-firstboot-net.service` retries the package and Tailscale steps every 2 minutes, including on later boots, and then disables itself.
 
@@ -234,7 +239,7 @@ Layout:
 | Path | What |
 |---|---|
 | `/opt/godot/godot` | Godot 4.5.1 editor/runtime (arm64) |
-| `/usr/local/bin/gizmo-*` | helper commands below |
+| `/usr/local/bin/gizmo-*` | helper commands below, and `gizmo-pair` (the pairing page) |
 | `~/gizmo/project/` | rsync a project here |
 | `~/gizmo/game/GizmoJam.arm64` | or an exported arm64 build here |
 | `~/gizmo/logs/` | one log per `gizmo-run`, plus `kiosk.log` |
@@ -300,6 +305,45 @@ gizmo-kiosk off                  # disable autostart and stop a running kiosk ga
 ```
 
 Run `gizmo-kiosk stop` before your own perf runs. With `--restart` on, a game you stop with `gizmo-run --stop` is relaunched.
+
+### Pairing controllers
+
+Open `http://<hostname>.local:8080/` (or `http://<pi-ip>:8080/`) on a phone or laptop on the same
+network. The page shows:
+
+- **Ready to play:** every joystick the kernel exposes (`/proc/bus/input/devices`, `js*`), USB and
+  Bluetooth, which is what the game reads. USB pads need no pairing: plug them in.
+- **Paired Bluetooth controllers:** connect, disconnect, forget (tap twice).
+- **Add a Bluetooth controller:** scan for 20 s, then Pair (pair + trust + connect). Devices that
+  look like game pads (BlueZ icon `input-gaming`, Class of Device joystick/gamepad, BLE appearance,
+  or the name) are listed; tick "show other devices" for the rest. Per-brand pairing-mode tips are
+  at the bottom.
+
+Trusted pads reconnect on their own after a reboot: press a button on the pad.
+
+How it works: `gizmo-pair` (Python 3 standard library only) runs as the desktop user from
+`gizmo-pair@<user>.service`, reads BlueZ with one `busctl` call per refresh and drives it with
+`bluetoothctl` (pairing agent NoInputNoOutput; every call has a timeout; no shell). The unit's
+`ExecStartPre` runs `gizmo-pair unblock` as root (rfkill soft-unblock). First boot runs
+`gizmo-pair setup`, which also sets in `/etc/bluetooth/main.conf`: `FastConnectable = true`,
+`TemporaryTimeout = 120` (found devices stay listed for 2 minutes), `AutoEnable = true`,
+`ReconnectAttempts = 7`. The port comes from `/etc/gizmo/pair.env`.
+
+Safety: only clients with private, link-local or loopback addresses are served; the `Host` header
+must name the Pi (DNS rebinding); changes are POSTs with a JSON body whose `Origin`, when present,
+must be the page itself, so another web page open in a browser on the LAN cannot drive it.
+Addresses are checked against `XX:XX:XX:XX:XX:XX` before reaching `bluetoothctl`. Anyone on the
+LAN can open it: that is the point, there is no password.
+
+```sh
+systemctl status gizmo-pair@gizmo         # the page
+journalctl -u gizmo-pair@gizmo -f         # pair/connect/forget log
+sudo systemctl disable --now gizmo-pair@gizmo   # turn it off (or [pairing] enabled = false)
+```
+
+Controllers that insist on a PIN code (rare, old devices) are refused with a message. A pad that
+used to work but no longer reconnects (it paired with another console since): Forget it, then pair
+it again.
 
 ### Agent workflow (performance test over SSH)
 

@@ -67,10 +67,23 @@ class Config(Base):
             '[display]\nforce_hdmi_mode = "big"\n',
             '[extras]\npackages = ["ok", "rm -rf /"]\n',
             '[tailscale]\nauth_key = "tskey a b"\n',
+            '[pairing]\nport = 80\n',
+            '[pairing]\nport = 70000\n',
+            '[pairing]\nport = "8080"\n',
+            '[pairing]\nenabled = "yes"\n',
         ]
         for body in bad:
             with self.subTest(body=body), self.assertRaises(build.BuildError):
                 self.cfg(body)
+
+    def test_pairing(self):
+        self.assertEqual(self.cfg("").pair_port, 8080)
+        self.assertEqual(self.cfg("[pairing]\nport = 9000\n").pair_port, 9000)
+        self.assertEqual(self.cfg("[pairing]\nenabled = false\nport = 9000\n").pair_port, 0)
+        on = build.gen_firstboot_env(self.cfg(""), "gizmojam-X", PINS)
+        off = build.gen_firstboot_env(self.cfg("[pairing]\nenabled = false\n"), "gizmojam-X", PINS)
+        self.assertIn('\nGIZMO_PAIR_PORT="8080"\n', on)
+        self.assertIn('\nGIZMO_PAIR_PORT=""\n', off)
 
     def test_private_key_rejected(self):
         self.key.write_text("-----BEGIN OPENSSH PRIVATE KEY-----\nxx\n")
@@ -110,7 +123,7 @@ class Generators(Base):
         self.assertEqual(out, "gizmo|aa bb|1||gizmojam-X|")
         for key in ("GIZMO_USER", "GIZMO_HOSTNAME", "GIZMO_GODOT_ZIP", "GIZMO_GODOT_SHA512",
                     "GIZMO_TAILSCALE", "GIZMO_TAILSCALE_HOSTNAME", "GIZMO_TAILSCALE_SSH",
-                    "GIZMO_EXTRA_PACKAGES", "GIZMO_KIOSK", "GIZMO_BUILD_ID"):
+                    "GIZMO_EXTRA_PACKAGES", "GIZMO_KIOSK", "GIZMO_PAIR_PORT", "GIZMO_BUILD_ID"):
             self.assertIn(f"\n{key}=", "\n" + env)
 
     def test_sh_quote_is_inert(self):

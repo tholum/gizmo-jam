@@ -29,6 +29,7 @@ STATE=/var/lib/gizmo
 LOG=/var/log/gizmo-firstboot.log
 LIBDIR=/usr/local/lib/gizmo
 UNIT=gizmo-firstboot-net.service
+PAIR_UNIT_TEMPLATE=gizmo-pair@.service
 TEST_CHROOT=${GIZMO_TEST_CHROOT:-}
 TS_MAX_ATTEMPTS=5
 
@@ -110,6 +111,7 @@ GIZMO_TAILSCALE_HOSTNAME=""
 GIZMO_TAILSCALE_SSH=""
 GIZMO_EXTRA_PACKAGES=""
 GIZMO_KIOSK=""
+GIZMO_PAIR_PORT=""
 GIZMO_BUILD_ID=""
 UHOME=""
 UGROUP=""
@@ -179,6 +181,9 @@ install_payload() {
         install -m 0755 "$0" "$LIBDIR/firstboot.sh" || rc=1
     fi
     install -m 0644 "$PAYLOAD/systemd/$UNIT" "/etc/systemd/system/$UNIT" || rc=1
+    if [ -f "$PAYLOAD/systemd/$PAIR_UNIT_TEMPLATE" ]; then
+        install -m 0644 "$PAYLOAD/systemd/$PAIR_UNIT_TEMPLATE" "/etc/systemd/system/$PAIR_UNIT_TEMPLATE" || rc=1
+    fi
     systemctl daemon-reload 2>/dev/null || true
     return "$rc"
 }
@@ -493,6 +498,41 @@ setup_kiosk() {
     return 0
 }
 
+# The controller pairing page (gizmo-pair, http://<host>.local:<port>/): unblock
+# and configure Bluetooth for game pads, then run the page as the desktop user.
+# An empty GIZMO_PAIR_PORT (pairing disabled, or a firstboot.env from before the
+# page existed) turns it off.
+setup_pairing() {
+    local unit="gizmo-pair@$GIZMO_USER.service" out
+    if [ -z "$GIZMO_PAIR_PORT" ]; then
+        if systemctl is-enabled --quiet "$unit" 2>/dev/null; then
+            systemctl disable --now "$unit" 2>&1 || true
+        fi
+        return 10
+    fi
+    if ! [[ "$GIZMO_PAIR_PORT" =~ ^[0-9]{4,5}$ ]] || [ "$GIZMO_PAIR_PORT" -lt 1024 ] || [ "$GIZMO_PAIR_PORT" -gt 65535 ]; then
+        log "ERROR: bad GIZMO_PAIR_PORT '$GIZMO_PAIR_PORT'"
+        return 1
+    fi
+    mkdir -p /etc/gizmo
+    printf '# written by gizmo firstboot.sh\nGIZMO_PAIR_PORT=%s\n' "$GIZMO_PAIR_PORT" >/etc/gizmo/pair.env || return 1
+    # In the chroot test /sys is the build host's: never touch its radios.
+    if [ -n "$TEST_CHROOT" ]; then
+        out=$(GIZMO_RFKILL_DIR=/nonexistent /usr/local/bin/gizmo-pair setup) || return 1
+    else
+        out=$(/usr/local/bin/gizmo-pair setup) || return 1
+    fi
+    if [ "$out" = changed ] && [ -z "$TEST_CHROOT" ] && systemctl is-active --quiet bluetooth.service; then
+        systemctl restart bluetooth.service 2>&1 || log "WARNING: could not restart bluetooth.service"
+    fi
+    systemctl enable "$unit" 2>&1 || return 1
+    if [ -z "$TEST_CHROOT" ]; then
+        systemctl restart "$unit" 2>&1 || { log "WARNING: $unit did not start"; return 1; }
+    fi
+    log "controller pairing page: http://${GIZMO_HOSTNAME:-$(hostname)}.local:$GIZMO_PAIR_PORT/"
+    return 0
+}
+
 write_summary() {
     local n net=pending
     [ -f "$STATE/net.done" ] && net="done"
@@ -504,6 +544,7 @@ write_summary() {
         printf 'network=%s\n' "$net"
         [ -f "$STATE/packages.done" ] && printf 'packages=%s\n' "$(cat "$STATE/packages.done")"
         [ -f "$STATE/tailscale.done" ] && printf 'tailscale=%s\n' "$(cat "$STATE/tailscale.done")"
+        printf 'pairing=%s\n' "$( [ -n "$GIZMO_PAIR_PORT" ] && echo "port $GIZMO_PAIR_PORT" || echo off)"
         printf 'godot=%s\n' "$(readlink /opt/godot/godot 2>/dev/null || echo missing)"
         printf 'critical_failure=%s\n' "$CRITICAL_FAILED"
         printf 'reboot=%s\n' "$( [ $NEED_REBOOT = 1 ] && echo "yes ($REBOOT_REASON)" || echo no)"
@@ -556,6 +597,7 @@ step desktop setup_desktop
 step wifi_scrub scrub_wifi
 step network network_step
 step kiosk setup_kiosk
+step pairing setup_pairing
 write_summary
 
 if [ $NEED_REBOOT = 1 ]; then

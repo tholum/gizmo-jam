@@ -215,6 +215,7 @@ GIZMO_TAILSCALE_HOSTNAME="gizmojam-test"
 GIZMO_TAILSCALE_SSH="1"
 GIZMO_EXTRA_PACKAGES="mesa-utils gizmo-no-such-package"
 GIZMO_KIOSK="1"
+GIZMO_PAIR_PORT="8080"
 GIZMO_BUILD_ID="$BUILD_ID"
 EOF
 echo "tskey-auth-FAKE-test-only-0000" | $S tee "$B/secrets/tailscale.key" >/dev/null
@@ -235,7 +236,7 @@ check "rootfs key copy is root-only 0600 (kept for the deferred retry)" \
 check "network step deferred" $S grep -qx 'step.network=deferred' "$ROOT/var/lib/gizmo/firstboot.done"
 check "gizmo-firstboot-net.service enabled" \
     $S test -L "$ROOT/etc/systemd/system/multi-user.target.wants/gizmo-firstboot-net.service"
-for b in gizmo-env gizmo-run gizmo-shot gizmo-health gizmo-kiosk; do
+for b in gizmo-env gizmo-run gizmo-shot gizmo-health gizmo-kiosk gizmo-pair; do
     check "/usr/local/bin/$b installed 0755" [ "$($S stat -c %a "$ROOT/usr/local/bin/$b" 2>/dev/null)" = 755 ]
 done
 check "/usr/local/lib/gizmo/firstboot.sh installed" $S test -x "$ROOT/usr/local/lib/gizmo/firstboot.sh"
@@ -252,6 +253,12 @@ check "kiosk autostart entry owned by uid 1000" \
     [ "$($S stat -c %u "$ROOT/home/$TUSER/.config/autostart/gizmo-kiosk.desktop" 2>/dev/null)" = 1000 ]
 check "Wi-Fi left alone while netplan has no Wi-Fi (not rendered)" $S grep -q 'not-a-real-password' "$ROOT/boot/firmware/network-config"
 check "/etc/gizmo/gizmo.conf" $S grep -qx "GIZMO_USER=\"$TUSER\"" "$ROOT/etc/gizmo/gizmo.conf"
+check "pairing step ok" $S grep -qx 'step.pairing=ok' "$ROOT/var/lib/gizmo/firstboot.done"
+check "gizmo-pair@$TUSER.service enabled" \
+    $S test -L "$ROOT/etc/systemd/system/multi-user.target.wants/gizmo-pair@$TUSER.service"
+check "/etc/gizmo/pair.env has the port" $S grep -qx 'GIZMO_PAIR_PORT=8080' "$ROOT/etc/gizmo/pair.env"
+check "BlueZ AutoEnable set in the image's main.conf" $S grep -qx 'AutoEnable = true' "$ROOT/etc/bluetooth/main.conf"
+check "gizmo-pair runs under qemu (python3 in the image)" inroot sh -c "/usr/local/bin/gizmo-pair --help >/dev/null"
 $S cat "$ROOT/var/lib/gizmo/firstboot.done" | sed 's/^/    /'
 
 # --- cloud-init would have rendered netplan; scrub on re-run ---------------------
@@ -261,7 +268,8 @@ $S cp "$ROOT/boot/firmware/network-config" "$ROOT/etc/netplan/50-cloud-init.yaml
 $S chmod 600 "$ROOT/etc/netplan/50-cloud-init.yaml"
 snap() { $S sha256sum "$ROOT/etc/sudoers.d/010_gizmo-nopasswd" "$ROOT/etc/lightdm/lightdm.conf" \
     "$ROOT/home/$TUSER/.config/autostart/gizmo-kiosk.desktop" "$ROOT/opt/godot/godot" \
-    "$ROOT/etc/systemd/system/getty@tty1.service.d/autologin.conf" 2>&1; }
+    "$ROOT/etc/systemd/system/getty@tty1.service.d/autologin.conf" "$ROOT/etc/bluetooth/main.conf" \
+    "$ROOT/etc/gizmo/pair.env" 2>&1; }
 before=$(snap)
 inroot env GIZMO_TEST_CHROOT=1 GIZMO_TEST_NO_NET=1 bash /boot/firmware/gizmo/firstboot.sh >/dev/null 2>&1
 rc=$?

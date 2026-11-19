@@ -1,0 +1,1086 @@
+#!/usr/bin/env python3
+"""gizmo-pair: a small LAN-only web page for pairing Bluetooth game controllers.
+
+    gizmo-pair [serve] [--port N] [--bind ADDR]   the page (default port 8080, all addresses)
+    gizmo-pair unblock                            rfkill-unblock Bluetooth (root)
+    gizmo-pair setup [--main-conf PATH]           unblock + BlueZ settings for pads (root)
+
+Open http://<pi>:8080/ from a phone or laptop on the same network: it lists the
+controllers the game can see (USB and Bluetooth), the paired ones (connect,
+disconnect, forget), and scans for new ones (pair = pair + trust + connect).
+
+Python 3 standard library only. BlueZ is read with `busctl` (one D-Bus call
+for everything, its plain output parsed here) and driven with `bluetoothctl`, every call with a timeout and
+never through a shell; addresses are checked against a strict pattern first.
+Pairing uses a NoInputNoOutput agent, which is what game pads expect; a device
+that insists on a PIN gets a clear error instead of a hang.
+
+Safety: only clients on private, link-local or loopback addresses are served;
+the Host header must name this machine (DNS rebinding); changes are POSTs with
+a JSON body whose Origin, when sent, must be this page (cross-site requests from
+another page in a LAN browser are refused). Runs as the desktop user: BlueZ's
+D-Bus policy lets any local user drive it. The systemd unit runs `unblock` as
+root before starting the page.
+
+Environment: GIZMO_PAIR_PORT (default port), GIZMO_BLUETOOTHCTL, GIZMO_BUSCTL,
+GIZMO_INPUT_DEVICES, GIZMO_RFKILL_DIR (test hooks).
+"""
+
+import argparse
+import http.server
+import ipaddress
+import json
+import os
+import re
+import signal
+import socket
+import socketserver
+import subprocess
+import sys
+import threading
+import time
+
+BTCTL = os.environ.get("GIZMO_BLUETOOTHCTL", "bluetoothctl")
+BUSCTL = os.environ.get("GIZMO_BUSCTL", "busctl")
+INPUT_DEVICES = os.environ.get("GIZMO_INPUT_DEVICES", "/proc/bus/input/devices")
+RFKILL_DIR = os.environ.get("GIZMO_RFKILL_DIR", "/sys/class/rfkill")
+MAIN_CONF = "/etc/bluetooth/main.conf"
+DEFAULT_PORT = 8080
+SCAN_SECONDS = 20
+MAX_BODY = 4096
+
+MAC_RE = re.compile(r"^[0-9A-F]{2}(:[0-9A-F]{2}){5}$")
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|\x01|\x02")
+PAD_NAME_RE = re.compile(
+    r"controller|gamepad|game ?pad|joy-?con|joystick|xbox|dualsense|dualshock|"
+    r"8bitdo|stadia|gamesir|nimbus|shield|steam|ouya|moga|ipega|pxn|retroflag", re.I)
+
+# BlueZ settings that suit a box people pair pads to: power the radio at boot,
+# keep found devices listed for two minutes after a scan (pick one at leisure),
+# answer reconnecting pads quickly, retry a dropped link.
+BLUEZ_SETTINGS = [
+    ("General", "FastConnectable", "true"),
+    ("General", "TemporaryTimeout", "120"),
+    ("Policy", "AutoEnable", "true"),
+    ("Policy", "ReconnectAttempts", "7"),
+]
+
+
+def log(msg: str) -> None:
+    print(f"gizmo-pair: {msg}", file=sys.stderr, flush=True)
+
+
+# ---------------------------------------------------------------- BlueZ access
+
+def run(args: list[str], timeout: float) -> tuple[int, str]:
+    """Run a command (no shell) with stdin closed. Returns (rc, output without colours).
+    On timeout the child (and only it) is killed and rc is 124."""
+    try:
+        p = subprocess.run(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                           stderr=subprocess.STDOUT, timeout=timeout, text=True,
+                           errors="replace")
+        return p.returncode, ANSI_RE.sub("", p.stdout or "")
+    except subprocess.TimeoutExpired as e:
+        out = e.stdout.decode(errors="replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
+        return 124, ANSI_RE.sub("", out)
+    except OSError as e:
+        return 127, str(e)
+
+
+def btctl(*args: str, timeout: float = 15, agent: bool = False) -> tuple[int, str]:
+    cmd = [BTCTL] + (["--agent", "NoInputNoOutput"] if agent else []) + list(args)
+    return run(cmd, timeout)
+
+
+# busctl's --json cannot encode BlueZ's ManufacturerData (a dict with integer
+# keys), so one BLE gadget nearby breaks the whole call. Its plain output is
+# complete: the reply's signature, then every value in order, arrays and dicts
+# prefixed with their length, variants with their signature, strings quoted
+# and C-escaped. Parse that.
+
+def busctl_tokens(text: str) -> list:
+    toks, i, n = [], 0, len(text)
+    escapes = {"a": 7, "b": 8, "f": 12, "n": 10, "r": 13, "t": 9, "v": 11, "\\": 92, '"': 34, "'": 39}
+    while i < n:
+        c = text[i]
+        if c.isspace():
+            i += 1
+        elif c == '"':
+            buf = bytearray()
+            i += 1
+            while i < n and text[i] != '"':
+                if text[i] == "\\" and i + 1 < n:
+                    e = text[i + 1]
+                    if e == "x" and re.match(r"[0-9a-fA-F]{2}", text[i + 2:i + 4]):
+                        buf.append(int(text[i + 2:i + 4], 16))
+                        i += 4
+                    elif re.match(r"[0-7]{3}", text[i + 1:i + 4]):
+                        buf.append(int(text[i + 1:i + 4], 8) & 0xFF)
+                        i += 4
+                    else:
+                        buf.append(escapes.get(e, ord(e) if ord(e) < 128 else 63))
+                        i += 2
+                else:
+                    buf.extend(text[i].encode("utf-8", "replace"))
+                    i += 1
+            toks.append(("s", buf.decode("utf-8", "replace")))
+            i += 1
+        else:
+            j = i
+            while j < n and not text[j].isspace():
+                j += 1
+            toks.append(("w", text[i:j]))
+            i = j
+    return toks
+
+
+def _type_end(sig: str, i: int) -> int:
+    """Index just past the single complete type starting at sig[i]."""
+    c = sig[i]
+    if c == "a":
+        return _type_end(sig, i + 1)
+    if c in "({":
+        close = ")" if c == "(" else "}"
+        i += 1
+        while sig[i] != close:
+            i = _type_end(sig, i)
+        return i + 1
+    return i + 1
+
+
+def _types(sig: str) -> list[str]:
+    out, i = [], 0
+    while i < len(sig):
+        j = _type_end(sig, i)
+        out.append(sig[i:j])
+        i = j
+    return out
+
+
+def busctl_parse(text: str):
+    """The first value of a `busctl call` reply, as Python data (variants unwrapped)."""
+    toks = busctl_tokens(text)
+    pos = 0
+
+    def take():
+        nonlocal pos
+        if pos >= len(toks):
+            raise ValueError("truncated busctl output")
+        pos += 1
+        return toks[pos - 1][1]
+
+    def value(sig: str):
+        c = sig[0]
+        if c in "ynqiuxth":
+            return int(take())
+        if c == "d":
+            return float(take())
+        if c == "b":
+            return take() == "true"
+        if c in "sog":
+            return take()
+        if c == "v":
+            return value(take())
+        if c == "a":
+            count = int(take())
+            inner = sig[1:]
+            if inner.startswith("{"):
+                k_sig, v_sig = _types(inner[1:-1])
+                out = {}
+                for _ in range(count):
+                    k = value(k_sig)
+                    out[k] = value(v_sig)
+                return out
+            return [value(inner) for _ in range(count)]
+        if c == "(":
+            return [value(t) for t in _types(sig[1:-1])]
+        raise ValueError(f"unsupported D-Bus type {sig!r}")
+
+    sig = take()
+    return value(_types(sig)[0])
+
+
+def bluez_objects() -> dict | None:
+    rc, out = run([BUSCTL, "call", "org.bluez", "/",
+                   "org.freedesktop.DBus.ObjectManager", "GetManagedObjects"], 6)
+    if rc != 0:
+        return None
+    try:
+        objs = busctl_parse(out)
+    except (ValueError, IndexError, RecursionError):
+        return None
+    return objs if isinstance(objs, dict) else None
+
+
+def is_gamepad(props: dict) -> bool:
+    if props.get("Icon") == "input-gaming":
+        return True
+    cod = props.get("Class")
+    if isinstance(cod, int) and (cod >> 8) & 0x1F == 0x05 and (cod >> 2) & 0x0F in (1, 2):
+        return True  # peripheral: joystick or gamepad
+    if props.get("Appearance") in (0x03C3, 0x03C4):
+        return True  # BLE joystick / gamepad
+    return bool(PAD_NAME_RE.search(props.get("Name") or ""))
+
+
+def bluetooth_state() -> dict:
+    objs = bluez_objects()
+    if objs is None:
+        return {"available": False, "adapter": None, "devices": []}
+    adapters = sorted(p for p, ifs in objs.items() if "org.bluez.Adapter1" in ifs)
+    if not adapters:
+        return {"available": False, "adapter": None, "devices": []}
+    apath = adapters[0]
+    a = objs[apath]["org.bluez.Adapter1"]
+    adapter = {"address": a.get("Address"), "name": a.get("Alias") or a.get("Name"),
+               "powered": bool(a.get("Powered")), "power_state": a.get("PowerState", ""),
+               "discovering": bool(a.get("Discovering"))}
+    devices = []
+    for path, ifs in objs.items():
+        d = ifs.get("org.bluez.Device1")
+        if not d:
+            continue
+        if d.get("Adapter") != apath or not MAC_RE.match(str(d.get("Address", ""))):
+            continue
+        devices.append({
+            "address": d["Address"],
+            "name": d.get("Name") or "",
+            "icon": d.get("Icon") or "",
+            "gamepad": is_gamepad(d),
+            "paired": bool(d.get("Paired") or d.get("Bonded")),
+            "trusted": bool(d.get("Trusted")),
+            "connected": bool(d.get("Connected")),
+            "blocked": bool(d.get("Blocked")),
+            "rssi": d.get("RSSI") if isinstance(d.get("RSSI"), int) else None,
+        })
+    devices.sort(key=lambda x: (not x["gamepad"], not x["name"], -(x["rssi"] or -999), x["name"]))
+    return {"available": True, "adapter": adapter, "devices": devices}
+
+
+def device_props(mac: str) -> dict:
+    for d in bluetooth_state()["devices"]:
+        if d["address"] == mac:
+            return d
+    return {}
+
+
+BUS_NAMES = {"0003": "USB", "0005": "Bluetooth", "0006": "virtual"}
+
+
+def input_pads() -> list[dict]:
+    """Joysticks the kernel exposes (what the game can read): /proc/bus/input/devices."""
+    try:
+        with open(INPUT_DEVICES, encoding="utf-8", errors="replace") as f:
+            text = f.read()
+    except OSError:
+        return []
+    pads = []
+    for block in text.split("\n\n"):
+        info = {}
+        for line in block.splitlines():
+            if len(line) > 3 and line[1] == ":":
+                info.setdefault(line[0], []).append(line[3:])
+        handlers = " ".join(info.get("H", [])).replace("Handlers=", "").split()
+        js = [h for h in handlers if re.fullmatch(r"js\d+", h)]
+        if not js:
+            continue
+        ids = dict(kv.split("=", 1) for kv in " ".join(info.get("I", [])).split() if "=" in kv)
+        name = " ".join(info.get("N", [])).removeprefix("Name=").strip().strip('"')
+        uniq = " ".join(info.get("U", [])).removeprefix("Uniq=").strip().upper()
+        bus = ids.get("Bus", "").lower()
+        pads.append({"name": name or "Controller", "bus": BUS_NAMES.get(bus, "other"),
+                     "id": f"{ids.get('Vendor', '????')}:{ids.get('Product', '????')}",
+                     "js": js[0], "address": uniq if MAC_RE.match(uniq) else ""})
+    pads.sort(key=lambda p: int(p["js"][2:]))
+    return pads
+
+
+# ---------------------------------------------------------------- actions
+
+class Scanner:
+    """Discovery lives as long as the bluetoothctl that started it (BlueZ stops a
+    client's discovery when it leaves the bus), so a scan is one child process
+    with --timeout; stop() ends exactly that child."""
+
+    def __init__(self):
+        self.proc: subprocess.Popen | None = None
+        self.ends = 0.0
+        self.lock = threading.Lock()
+
+    def active(self) -> bool:
+        with self.lock:
+            return self.proc is not None and self.proc.poll() is None
+
+    def remaining(self) -> int:
+        return max(0, round(self.ends - time.monotonic())) if self.active() else 0
+
+    def start(self, seconds: int) -> None:
+        with self.lock:
+            if self.proc is not None and self.proc.poll() is None:
+                return
+            self.proc = subprocess.Popen([BTCTL, "--timeout", str(seconds), "scan", "on"],
+                                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                         stderr=subprocess.DEVNULL)
+            self.ends = time.monotonic() + seconds
+
+    def stop(self) -> None:
+        with self.lock:
+            p, self.proc = self.proc, None
+        if p is not None and p.poll() is None:
+            p.terminate()
+            try:
+                p.wait(3)
+            except subprocess.TimeoutExpired:
+                p.kill()
+                p.wait(3)
+
+
+FRIENDLY = [
+    ("not available", "It is no longer in range or left pairing mode. Put it in pairing mode and scan again."),
+    ("AuthenticationFailed", "The controller refused. Put it back in pairing mode and try again."),
+    ("AuthenticationRejected", "The controller refused. Put it back in pairing mode and try again."),
+    ("AuthenticationCanceled", "Pairing was cancelled. Put it back in pairing mode and try again."),
+    ("AuthenticationTimeout", "The controller did not answer in time. Try again."),
+    ("ConnectionAttemptFailed", "Could not reach it. Is it still flashing fast (pairing mode)?"),
+    ("Page Timeout", "Could not reach it. Is it still flashing fast (pairing mode)?"),
+    ("PIN", "This device wants a PIN code, which this page does not support (game pads never need one)."),
+    ("Passkey", "This device wants a passkey, which this page does not support (game pads never need one)."),
+    ("InProgress", "Already busy with it; wait a few seconds."),
+    ("NotReady", "Bluetooth is off. Turn it on first."),
+    ("Blocked", "Bluetooth is blocked on this Pi."),
+]
+
+
+def friendly(out: str, fallback: str) -> str:
+    for needle, text in FRIENDLY:
+        if needle.lower() in out.lower():
+            return text
+    m = re.search(r"org\.bluez\.Error\.(\w+)", out)
+    return f"{fallback} ({m.group(1)})" if m else fallback
+
+
+class Actions:
+    def __init__(self):
+        self.scanner = Scanner()
+        self.busy = threading.Lock()  # one bluetoothctl action at a time
+        self.jobs: dict[str, dict] = {}
+        self.jobs_lock = threading.Lock()
+        self.note = ""
+
+    def job(self, mac: str, state: str, message: str) -> None:
+        with self.jobs_lock:
+            self.jobs[mac] = {"state": state, "message": message, "at": time.time()}
+        log(f"{mac}: {state}: {message}")
+
+    def jobs_view(self) -> dict:
+        now = time.time()
+        with self.jobs_lock:
+            for mac in [m for m, j in self.jobs.items()
+                        if j["state"] in ("done", "failed") and now - j["at"] > 120]:
+                del self.jobs[mac]
+            return {m: dict(j) for m, j in self.jobs.items()}
+
+    def power_on(self) -> tuple[bool, str]:
+        rc, out = btctl("power", "on", timeout=10)
+        if rc == 0 and "succeeded" in out:
+            return True, "Bluetooth is on."
+        return False, friendly(out, "Could not turn Bluetooth on")
+
+    def scan(self, seconds: int = SCAN_SECONDS) -> tuple[bool, str]:
+        st = bluetooth_state()
+        if not st["available"]:
+            return False, "No Bluetooth adapter found."
+        if not st["adapter"]["powered"]:
+            ok, msg = self.power_on()
+            if not ok:
+                return False, msg
+        self.scanner.start(seconds)
+        return True, f"Scanning for {seconds} seconds."
+
+    def in_background(self, mac: str, label: str, fn) -> tuple[bool, str]:
+        if not self.busy.acquire(blocking=False):
+            return False, "Busy with another controller; wait a few seconds."
+        self.job(mac, "working", label)
+
+        def work():
+            try:
+                fn(mac)
+            except Exception as e:  # pragma: no cover - a bug must not kill the server
+                self.job(mac, "failed", f"Unexpected error: {e}")
+            finally:
+                self.busy.release()
+        threading.Thread(target=work, daemon=True).start()
+        return True, label
+
+    def _wait_connected(self, mac: str, seconds: float) -> bool:
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            if device_props(mac).get("connected"):
+                return True
+            time.sleep(0.5)
+        return False
+
+    def _pair(self, mac: str) -> None:
+        # Inquiry and paging share the radio: pairing is far more reliable with
+        # the scan stopped. Found devices stay listed (TemporaryTimeout).
+        self.scanner.stop()
+        before = device_props(mac)
+        if not before:
+            self.job(mac, "failed", friendly("not available", ""))
+            return
+        if not before.get("paired"):
+            self.job(mac, "working", "Pairing…")
+            rc, out = btctl("pair", mac, timeout=60, agent=True)
+            if not device_props(mac).get("paired") and "AlreadyExists" not in out:
+                if rc == 124:
+                    self.job(mac, "failed", "No answer in 60 seconds. Put it in pairing mode and try again.")
+                else:
+                    self.job(mac, "failed", friendly(out, "Pairing failed"))
+                return
+        self.job(mac, "working", "Paired. Trusting and connecting…")
+        btctl("trust", mac, timeout=10)
+        if self._wait_connected(mac, 2):
+            self.job(mac, "done", "Connected. Ready to play.")
+            return
+        rc, out = btctl("connect", mac, timeout=25)
+        if self._wait_connected(mac, 6):
+            self.job(mac, "done", "Connected. Ready to play.")
+        else:
+            self.job(mac, "done", "Paired. Press a button on the controller to connect it.")
+
+    def pair(self, mac: str) -> tuple[bool, str]:
+        return self.in_background(mac, "Pairing…", self._pair)
+
+    def _connect(self, mac: str) -> None:
+        rc, out = btctl("connect", mac, timeout=25)
+        if self._wait_connected(mac, 4):
+            self.job(mac, "done", "Connected.")
+        else:
+            self.job(mac, "failed", friendly(out, "Not connected. Press a button on the controller to wake it"))
+
+    def connect(self, mac: str) -> tuple[bool, str]:
+        return self.in_background(mac, "Connecting…", self._connect)
+
+    def _simple(self, mac: str, cmd: str, ok_text: str, fail_text: str) -> None:
+        rc, out = btctl(cmd, mac, timeout=15)
+        if rc == 0 and "not available" not in out:
+            self.job(mac, "done", ok_text)
+        else:
+            self.job(mac, "failed", friendly(out, fail_text))
+
+    def disconnect(self, mac: str) -> tuple[bool, str]:
+        return self.in_background(mac, "Disconnecting…",
+                                  lambda m: self._simple(m, "disconnect", "Disconnected.", "Could not disconnect"))
+
+    def forget(self, mac: str) -> tuple[bool, str]:
+        return self.in_background(mac, "Forgetting…",
+                                  lambda m: self._simple(m, "remove", "Forgotten.", "Could not forget it"))
+
+    def state(self) -> dict:
+        st = bluetooth_state()
+        st["scanning"] = self.scanner.remaining()
+        st["jobs"] = self.jobs_view()
+        st["pads"] = input_pads()
+        st["hostname"] = socket.gethostname()
+        return st
+
+
+ACTIONS: Actions | None = None
+
+
+def keep_powered(stop: threading.Event) -> None:
+    """At start-up the adapter can appear a few seconds after us: power it once it does."""
+    for _ in range(30):
+        if stop.is_set():
+            return
+        st = bluetooth_state()
+        if st["available"]:
+            if not st["adapter"]["powered"]:
+                ok, msg = ACTIONS.power_on()
+                log(msg)
+            return
+        stop.wait(2)
+    log("no Bluetooth adapter after 60 s; the page will say so")
+
+
+# ---------------------------------------------------------------- HTTP
+
+def client_ok(addr: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(addr.split("%", 1)[0])
+    except ValueError:
+        return False
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
+        ip = ip.ipv4_mapped
+    return ip.is_private or ip.is_loopback or ip.is_link_local
+
+
+def split_host(value: str) -> tuple[str, int | None]:
+    value = value.strip().lower()
+    if value.startswith("["):
+        host, _, rest = value[1:].partition("]")
+        port = rest[1:] if rest.startswith(":") else ""
+    else:
+        host, _, port = value.partition(":")
+    try:
+        return host, (int(port) if port else None)
+    except ValueError:
+        return "", -1
+
+
+def unmap(ip: str) -> str:
+    ip = ip.split("%", 1)[0].lower()
+    try:
+        a = ipaddress.ip_address(ip)
+        if isinstance(a, ipaddress.IPv6Address) and a.ipv4_mapped:
+            return str(a.ipv4_mapped)
+        return str(a)
+    except ValueError:
+        return ip
+
+
+def host_ok(host_header: str, local_ip: str, port: int) -> bool:
+    host, hport = split_host(host_header)
+    if hport != port and not (hport is None and port == 80):
+        return False
+    name = socket.gethostname().lower()
+    allowed = {name, f"{name}.local", "localhost", "127.0.0.1", "::1", unmap(local_ip)}
+    return host in allowed or unmap(host) in allowed
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    server_version = "gizmo-pair"
+    sys_version = ""
+
+    def log_message(self, fmt, *args):  # quiet: actions are logged on their own
+        pass
+
+    def _send(self, code: int, body: bytes, ctype: str, extra: dict | None = None) -> None:
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Content-Security-Policy",
+                         "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; "
+                         "connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; "
+                         "base-uri 'none'; form-action 'none'")
+        for k, v in (extra or {}).items():
+            self.send_header(k, v)
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
+
+    def _json(self, code: int, obj) -> None:
+        self._send(code, json.dumps(obj).encode(), "application/json")
+
+    def _gate(self) -> bool:
+        if not client_ok(self.client_address[0]):
+            self._json(403, {"ok": False, "error": "Only devices on the local network may use this page."})
+            return False
+        local = self.connection.getsockname()[0]
+        if not host_ok(self.headers.get("Host", ""), local, self.server.server_address[1]):
+            self._json(421, {"ok": False, "error": "Unknown host name."})
+            return False
+        return True
+
+    def do_HEAD(self):
+        self.do_GET()
+
+    def do_GET(self):
+        if not self._gate():
+            return
+        path = self.path.split("?", 1)[0]
+        if path == "/":
+            self._send(200, PAGE.encode(), "text/html; charset=utf-8")
+        elif path == "/app.js":
+            self._send(200, APP_JS.encode(), "text/javascript; charset=utf-8")
+        elif path == "/api/state":
+            self._json(200, ACTIONS.state())
+        elif path == "/favicon.ico":
+            self._send(204, b"", "image/x-icon")
+        else:
+            self._json(404, {"ok": False, "error": "Not found."})
+
+    def do_POST(self):
+        if not self._gate():
+            return
+        origin = self.headers.get("Origin")
+        if origin is not None and origin != f"http://{self.headers.get('Host', '')}":
+            self._json(403, {"ok": False, "error": "Cross-site request refused."})
+            return
+        if self.headers.get("Sec-Fetch-Site", "same-origin") not in ("same-origin", "none"):
+            self._json(403, {"ok": False, "error": "Cross-site request refused."})
+            return
+        if not self.headers.get("Content-Type", "").lower().startswith("application/json"):
+            self._json(415, {"ok": False, "error": "Send JSON."})
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = -1
+        if length < 0 or length > MAX_BODY:
+            self._json(413, {"ok": False, "error": "Request too large."})
+            return
+        try:
+            body = json.loads(self.rfile.read(length) or b"{}")
+        except ValueError:
+            body = None
+        if not isinstance(body, dict):
+            self._json(400, {"ok": False, "error": "Send a JSON object."})
+            return
+        action = self.path.split("?", 1)[0].removeprefix("/api/")
+        if action == "scan":
+            ok, msg = ACTIONS.scan()
+        elif action == "scan/stop":
+            ACTIONS.scanner.stop()
+            ok, msg = True, "Scan stopped."
+        elif action == "power":
+            ok, msg = ACTIONS.power_on()
+        elif action in ("pair", "connect", "disconnect", "forget"):
+            mac = body.get("address")
+            if not isinstance(mac, str) or not MAC_RE.match(mac):
+                self._json(400, {"ok": False, "error": "Bad address."})
+                return
+            ok, msg = getattr(ACTIONS, action)(mac)
+            if ok:
+                log(f"{action} {mac} (from {self.client_address[0]})")
+        else:
+            self._json(404, {"ok": False, "error": "Unknown action."})
+            return
+        self._json(200 if ok else 409, {"ok": ok, "message" if ok else "error": msg})
+
+
+class Server(http.server.ThreadingHTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+    request_queue_size = 16
+
+    def server_bind(self):
+        # Skip HTTPServer's getfqdn(): a slow DNS lookup must not delay start-up.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name = socket.gethostname()
+        self.server_port = self.server_address[1]
+
+
+class Server6(Server):
+    address_family = socket.AF_INET6
+
+    def server_bind(self):
+        self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+        super().server_bind()
+
+
+def make_server(bind: str, port: int) -> Server:
+    if bind in ("", "::", "*"):
+        try:
+            return Server6(("::", port), Handler)
+        except OSError:
+            return Server(("0.0.0.0", port), Handler)
+    family = socket.AF_INET6 if ":" in bind else socket.AF_INET
+    cls = Server6 if family == socket.AF_INET6 else Server
+    return cls((bind, port), Handler)
+
+
+def serve(port: int, bind: str) -> int:
+    global ACTIONS
+    ACTIONS = Actions()
+    srv = make_server(bind, port)
+    stop = threading.Event()
+    threading.Thread(target=keep_powered, args=(stop,), daemon=True).start()
+
+    def bye(*_):
+        stop.set()
+        threading.Thread(target=srv.shutdown, daemon=True).start()
+    signal.signal(signal.SIGTERM, bye)
+    signal.signal(signal.SIGINT, bye)
+    log(f"serving on port {srv.server_address[1]} (http://{socket.gethostname()}.local:{srv.server_address[1]}/)")
+    try:
+        srv.serve_forever(poll_interval=0.5)
+    finally:
+        ACTIONS.scanner.stop()
+        srv.server_close()
+    return 0
+
+
+# ---------------------------------------------------------------- root setup
+
+def unblock() -> int:
+    """Soft-unblock every Bluetooth rfkill switch (sysfs, no rfkill binary needed)."""
+    found = changed = 0
+    try:
+        names = sorted(os.listdir(RFKILL_DIR))
+    except OSError:
+        names = []
+    for n in names:
+        d = os.path.join(RFKILL_DIR, n)
+        if not os.path.isfile(os.path.join(d, "type")):
+            continue
+        try:
+            with open(os.path.join(d, "type")) as f:
+                if f.read().strip() != "bluetooth":
+                    continue
+            found += 1
+            with open(os.path.join(d, "soft")) as f:
+                if f.read().strip() == "0":
+                    continue
+            with open(os.path.join(d, "soft"), "w") as f:
+                f.write("0")
+            changed += 1
+        except OSError as e:
+            log(f"rfkill {n}: {e}")
+            return 1
+    log(f"rfkill: {found} Bluetooth switch(es), {changed} unblocked")
+    return 0
+
+
+def ini_set(text: str, section: str, key: str, value: str) -> str:
+    """Set key = value in [section] of a GKeyFile-style text, keeping comments.
+    An active line is replaced (duplicates dropped); otherwise the new line goes
+    right after the commented-out default, or at the end of the section."""
+    lines = text.splitlines(keepends=True)
+    if lines and not lines[-1].endswith("\n"):
+        lines[-1] += "\n"
+    want = f"{key} = {value}\n"
+    start = end = None
+    for i, line in enumerate(lines):
+        s = line.strip()
+        if s.startswith("[") and s.endswith("]"):
+            if start is not None:
+                end = i
+                break
+            if s[1:-1].strip() == section:
+                start = i
+    if start is None:
+        sep = "\n" if lines and lines[-1].strip() else ""
+        return "".join(lines) + f"{sep}[{section}]\n{want}"
+    if end is None:
+        end = len(lines)
+    active = re.compile(rf"^\s*{re.escape(key)}\s*=")
+    commented = re.compile(rf"^\s*#\s*{re.escape(key)}\s*=")
+    hits = [i for i in range(start + 1, end) if active.match(lines[i])]
+    if hits:
+        lines[hits[0]] = want
+        for i in reversed(hits[1:]):
+            del lines[i]
+        return "".join(lines)
+    for i in range(start + 1, end):
+        if commented.match(lines[i]):
+            lines.insert(i + 1, want)
+            return "".join(lines)
+    j = end
+    while j > start + 1 and not lines[j - 1].strip():
+        j -= 1
+    lines.insert(j, want)
+    return "".join(lines)
+
+
+def setup(main_conf: str) -> int:
+    """Root: unblock Bluetooth and apply BLUEZ_SETTINGS. Prints `changed` or
+    `unchanged` (main.conf) so the caller knows whether to restart bluetooth."""
+    rc = unblock()
+    try:
+        with open(main_conf, encoding="utf-8") as f:
+            old = f.read()
+    except FileNotFoundError:
+        old = ""
+    except OSError as e:
+        log(f"cannot read {main_conf}: {e}")
+        return 1
+    new = old
+    for section, key, value in BLUEZ_SETTINGS:
+        new = ini_set(new, section, key, value)
+    if new == old:
+        print("unchanged")
+        return rc
+    tmp = main_conf + ".gizmo-tmp"
+    try:
+        os.makedirs(os.path.dirname(main_conf) or ".", exist_ok=True)
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(new)
+        try:
+            os.chmod(tmp, os.stat(main_conf).st_mode & 0o7777)
+        except FileNotFoundError:
+            os.chmod(tmp, 0o644)
+        os.replace(tmp, main_conf)
+    except OSError as e:
+        log(f"cannot write {main_conf}: {e}")
+        return 1
+    log(f"updated {main_conf}: " + ", ".join(f"[{s}] {k}={v}" for s, k, v in BLUEZ_SETTINGS))
+    print("changed")
+    return rc
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(prog="gizmo-pair", description=__doc__.split("\n\n")[0])
+    ap.add_argument("command", nargs="?", default="serve", choices=["serve", "unblock", "setup"])
+    ap.add_argument("--port", type=int, default=None,
+                    help=f"port to serve on (default: $GIZMO_PAIR_PORT or {DEFAULT_PORT})")
+    ap.add_argument("--bind", default="", help="address to listen on (default: all, IPv4 and IPv6)")
+    ap.add_argument("--main-conf", default=MAIN_CONF, help=f"BlueZ config for setup (default {MAIN_CONF})")
+    a = ap.parse_args(argv)
+    if a.command == "unblock":
+        return unblock()
+    if a.command == "setup":
+        return setup(a.main_conf)
+    port = a.port
+    if port is None:
+        try:
+            port = int(os.environ.get("GIZMO_PAIR_PORT") or DEFAULT_PORT)
+        except ValueError:
+            ap.error("GIZMO_PAIR_PORT must be a number")
+    if not 0 <= port <= 65535:
+        ap.error("port out of range")
+    return serve(port, a.bind)
+
+
+# ---------------------------------------------------------------- the page
+
+PAGE = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Gizmo Jam controllers</title>
+<style>
+:root { --bg:#0b1120; --panel:#141d33; --line:#26324f; --ink:#e8eefc; --muted:#8c9abb;
+  --lime:#c3ff4a; --blue:#3d63ff; --danger:#ff5d6c; --gold:#ffc83d; }
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--ink);
+  font:16px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+main { max-width:640px; margin:0 auto; padding:16px 16px 48px; }
+h1 { margin:8px 0 2px; font-size:28px; font-style:italic; font-weight:900; letter-spacing:.5px; }
+h1 span { color:var(--lime); }
+.sub { color:var(--muted); margin:0 0 16px; }
+h2 { font-size:13px; letter-spacing:1.5px; text-transform:uppercase; color:var(--muted);
+  margin:24px 0 8px; display:flex; justify-content:space-between; align-items:center; }
+.card { background:var(--panel); border:1px solid var(--line); border-radius:12px; overflow:hidden; }
+.row { display:flex; gap:12px; align-items:center; padding:12px 14px; border-top:1px solid var(--line);
+  flex-wrap:wrap; }
+.row:first-child { border-top:0; }
+.who { flex:1 1 180px; min-width:0; }
+.name { font-weight:700; overflow-wrap:anywhere; }
+.meta { color:var(--muted); font-size:13px; overflow-wrap:anywhere; }
+.empty { padding:14px; color:var(--muted); }
+.tag { display:inline-block; font-size:11px; font-weight:800; letter-spacing:1px; padding:2px 7px;
+  border-radius:6px; background:var(--line); color:var(--ink); margin-right:6px; vertical-align:1px; }
+.tag.on { background:var(--lime); color:#0b1120; }
+.tag.warn { background:var(--gold); color:#0b1120; }
+.btns { display:flex; gap:8px; flex-wrap:wrap; }
+button { font:inherit; font-weight:800; font-size:14px; letter-spacing:.5px; border:0; border-radius:8px;
+  padding:10px 14px; background:var(--blue); color:#fff; cursor:pointer; min-height:44px; }
+button.primary { background:var(--lime); color:#0b1120; }
+button.ghost { background:transparent; color:var(--ink); border:1px solid var(--line); }
+button.danger { background:var(--danger); }
+button:disabled { opacity:.5; cursor:default; }
+.status { min-height:1.4em; margin:12px 0 0; color:var(--muted); }
+.status.err { color:var(--danger); }
+.job { width:100%; font-size:14px; }
+.job.failed { color:var(--danger); } .job.done { color:var(--lime); } .job.working { color:var(--gold); }
+details { border-top:1px solid var(--line); }
+details:first-child { border-top:0; }
+summary { padding:12px 14px; cursor:pointer; font-weight:700; }
+details p { margin:0; padding:0 14px 12px; color:var(--muted); }
+label.toggle { font-size:13px; letter-spacing:0; text-transform:none; display:flex; gap:6px; align-items:center; }
+.bar { height:4px; background:var(--line); border-radius:2px; overflow:hidden; margin-top:8px; }
+.bar i { display:block; height:100%; background:var(--lime); width:0; transition:width 1s linear; }
+</style>
+</head>
+<body>
+<main>
+  <h1>GIZMO <span>JAM</span></h1>
+  <p class="sub">Controllers for <b id="host">this Pi</b></p>
+
+  <h2>Ready to play</h2>
+  <div class="card" id="pads"><div class="empty">Loading…</div></div>
+
+  <h2>Paired Bluetooth controllers</h2>
+  <div class="card" id="paired"><div class="empty">Loading…</div></div>
+
+  <h2><span>Add a Bluetooth controller</span>
+    <label class="toggle"><input type="checkbox" id="others"> show other devices</label></h2>
+  <div class="card">
+    <div class="row">
+      <div class="who"><div class="name" id="scanText">Put the controller in pairing mode, then scan.</div>
+        <div class="bar" id="bar" hidden><i id="barFill"></i></div></div>
+      <div class="btns"><button class="primary" id="scan">SCAN</button></div>
+    </div>
+  </div>
+  <div class="card" id="found" style="margin-top:8px" hidden></div>
+  <p class="status" id="status" role="status" aria-live="polite"></p>
+
+  <h2>Pairing mode, by controller</h2>
+  <div class="card">
+    <details><summary>Xbox (One S, Series, Elite 2)</summary>
+      <p>Turn it on with the Xbox button, then hold the small pair button on top (next to USB) until the
+      logo flashes fast. Older Xbox One pads without Bluetooth only work over USB.</p></details>
+    <details><summary>PlayStation (DualShock 4, DualSense)</summary>
+      <p>With the controller off, hold SHARE (PS4) or CREATE (PS5) and the PS button together until the
+      light bar double-flashes.</p></details>
+    <details><summary>Nintendo Switch Pro Controller</summary>
+      <p>Hold the small sync button on top, between the USB port and ZR/ZL, until the player lights run
+      back and forth.</p></details>
+    <details><summary>8BitDo</summary>
+      <p>Start it in X-input or D-input mode as the manual says (often START, or START + X), then hold
+      the pair button for 3 seconds until the LED flashes fast.</p></details>
+    <details><summary>Anything else</summary>
+      <p>Look for a "pair", "sync" or "connect" button and hold it until the light flashes fast.
+      USB controllers need no pairing: plug them in and they appear under Ready to play.
+      If a controller that used to work stops reconnecting, Forget it here and pair it again.</p></details>
+  </div>
+</main>
+<script src="/app.js"></script>
+</body>
+</html>
+"""
+
+APP_JS = r"""
+"use strict";
+const $ = (id) => document.getElementById(id);
+let state = null, scanTotal = 20, armedForget = null, timer = null;
+
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+function tag(text, cls) { return el("span", "tag" + (cls ? " " + cls : ""), text); }
+function say(text, err) { const s = $("status"); s.textContent = text || ""; s.className = "status" + (err ? " err" : ""); }
+
+async function post(path, body) {
+  try {
+    const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body || {}) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || !j.ok) { say(j.error || ("Request failed (" + r.status + ")"), true); return false; }
+    say(j.message || "");
+    return true;
+  } catch (e) { say("The Pi did not answer. Is it on the same network?", true); return false; }
+  finally { refresh(); }
+}
+
+function deviceName(d) { return d.name || d.address; }
+
+function jobLine(d) {
+  const j = state && state.jobs ? state.jobs[d.address] : null;
+  return j ? el("div", "job " + j.state, j.message) : null;
+}
+
+function button(text, cls, fn, disabled) {
+  const b = el("button", cls, text);
+  b.disabled = !!disabled;
+  b.addEventListener("click", fn);
+  return b;
+}
+
+function renderPads() {
+  const box = $("pads"); box.replaceChildren();
+  const pads = state.pads || [];
+  if (!pads.length) { box.append(el("div", "empty", "No controllers yet. Plug one into USB or pair one below.")); return; }
+  pads.forEach((p, i) => {
+    const row = el("div", "row"), who = el("div", "who");
+    const n = el("div", "name"); n.append(tag("P" + (i + 1), "on"), document.createTextNode(p.name));
+    who.append(n, el("div", "meta", p.bus + " · " + p.id + (p.address ? " · " + p.address : "")));
+    row.append(who); box.append(row);
+  });
+}
+
+function renderPaired() {
+  const box = $("paired"); box.replaceChildren();
+  const busy = Object.values(state.jobs || {}).some((j) => j.state === "working");
+  const list = (state.devices || []).filter((d) => d.paired);
+  if (!state.available) { box.append(el("div", "empty", "No Bluetooth adapter found on this Pi.")); return; }
+  if (!state.adapter.powered) {
+    const row = el("div", "row"), who = el("div", "who");
+    who.append(el("div", "name", "Bluetooth is off"), el("div", "meta", state.adapter.power_state || ""));
+    row.append(who, button("TURN ON", "primary", () => post("/api/power")));
+    box.append(row); return;
+  }
+  if (!list.length) { box.append(el("div", "empty", "None yet.")); return; }
+  for (const d of list) {
+    const row = el("div", "row"), who = el("div", "who"), btns = el("div", "btns");
+    const n = el("div", "name");
+    n.append(tag(d.connected ? "CONNECTED" : "ASLEEP", d.connected ? "on" : ""), document.createTextNode(deviceName(d)));
+    who.append(n, el("div", "meta", d.address + (d.gamepad ? "" : " · not a game controller")));
+    if (d.connected) btns.append(button("DISCONNECT", "ghost", () => post("/api/disconnect", { address: d.address }), busy));
+    else btns.append(button("CONNECT", "", () => post("/api/connect", { address: d.address }), busy));
+    const armed = armedForget === d.address;
+    btns.append(button(armed ? "TAP AGAIN TO FORGET" : "FORGET", armed ? "danger" : "ghost", () => {
+      if (armedForget === d.address) { armedForget = null; post("/api/forget", { address: d.address }); }
+      else { armedForget = d.address; render(); setTimeout(() => { if (armedForget === d.address) { armedForget = null; render(); } }, 4000); }
+    }, busy));
+    row.append(who, btns);
+    const j = jobLine(d); if (j) row.append(j);
+    box.append(row);
+  }
+}
+
+function renderFound() {
+  const box = $("found"); box.replaceChildren();
+  const others = $("others").checked;
+  const busy = Object.values(state.jobs || {}).some((j) => j.state === "working");
+  const list = (state.devices || []).filter((d) => !d.paired && (others || d.gamepad || (state.jobs || {})[d.address]));
+  const hidden = (state.devices || []).filter((d) => !d.paired && !d.gamepad).length;
+  box.hidden = !list.length && !state.scanning && !hidden;
+  if (!list.length) {
+    const note = hidden && !others ? " " + hidden + " other device(s) nearby don’t look like controllers (tick “show other devices”)." : "";
+    box.append(el("div", "empty", (state.scanning ? "Looking… keep the controller in pairing mode." : "No controllers found yet.") + note));
+    return;
+  }
+  for (const d of list) {
+    const row = el("div", "row"), who = el("div", "who");
+    const n = el("div", "name");
+    if (d.gamepad) n.append(tag("PAD", "warn"));
+    n.append(document.createTextNode(deviceName(d)));
+    who.append(n, el("div", "meta", d.address + (d.rssi !== null ? " · signal " + d.rssi + " dBm" : "")));
+    row.append(who, button("PAIR", "primary", () => post("/api/pair", { address: d.address }), busy));
+    const j = jobLine(d); if (j) row.append(j);
+    box.append(row);
+  }
+}
+
+function renderScan() {
+  const s = state.scanning, b = $("scan");
+  $("bar").hidden = !s;
+  if (s) {
+    $("scanText").textContent = "Scanning… " + s + " s";
+    $("barFill").style.width = Math.round(100 * (1 - s / scanTotal)) + "%";
+    b.textContent = "STOP"; b.className = "ghost";
+  } else {
+    $("scanText").textContent = "Put the controller in pairing mode, then scan.";
+    b.textContent = "SCAN"; b.className = "primary";
+  }
+  b.disabled = !state.available;
+}
+
+function render() {
+  if (!state) return;
+  $("host").textContent = state.hostname || "this Pi";
+  renderPads(); renderPaired(); renderScan(); renderFound();
+}
+
+async function refresh() {
+  clearTimeout(timer);
+  try {
+    const r = await fetch("/api/state", { cache: "no-store" });
+    if (r.ok) state = await r.json();
+    render();
+  } catch (e) { say("Lost contact with the Pi; retrying…", true); }
+  const fast = state && (state.scanning || Object.values(state.jobs || {}).some((j) => j.state === "working"));
+  timer = setTimeout(refresh, fast ? 1000 : 2500);
+}
+
+$("scan").addEventListener("click", () => {
+  if (state && state.scanning) post("/api/scan/stop"); else { scanTotal = 20; post("/api/scan"); }
+});
+$("others").addEventListener("change", render);
+refresh();
+"""
+
+
+if __name__ == "__main__":
+    sys.exit(main())
