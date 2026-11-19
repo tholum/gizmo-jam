@@ -1,8 +1,7 @@
 # Gizmo Jam
 
-A Godot desktop party game for up to six players, in the spirit of early-2000s
-console party minigames, with two playable minigames for six robot runners.
-All models, environments, UI, and sounds are original.
+A Godot party game for up to six players, in the spirit of early-2000s
+console party minigames. Play on desktop, Android, or the web.
 
 - **01 Spin Cycle** — reaction and survival. Six robot runners stand side by
   side on one wide spiral ramp around a reactor tower, jumping over low orange
@@ -16,6 +15,12 @@ All models, environments, UI, and sounds are original.
   their largest patch. A dash on a short cooldown gets you out of trouble and
   shoves whoever is in the way. The last 20 seconds are overdrive: more surges,
   and nothing locks.
+- **03 Bumper Cars** — steer and boost to ram other cars off a floating dock.
+  Five rings sink one at a time. Last car afloat wins.
+- **04 Sumo** — shove rivals out of a fixed ring to score. Fallen robots
+  respawn, and the high score after 90 seconds wins.
+- **05 Orb Racing** — steer a rolling orb through ordered checkpoints.
+  Drive over charge strips to refill your boost and finish three laps first.
 
 ## Play
 
@@ -34,8 +39,9 @@ distribution should use Developer ID signing and notarization on a Mac.
 Choose a game by clicking its card on the main menu; the selected card is
 outlined in lime, the arena behind the menu changes to match, and the choice is
 remembered. Each card has a **How to Play** button. **Play Solo** plays the
-selected game against five bots, and **Host Party** opens a lobby on it. Sumo
-and Orb Racing are shown as coming soon. Menus also work from the keyboard: the
+selected game against five bots, and **Host Party** opens a lobby on it. On desktop,
+install Bumper Cars, Sumo, and Orb Racing through **Game Library**. The public
+browser build and Android app include them. Menus also work from the keyboard: the
 main action is focused, so **Enter** or **Space** confirms it.
 
 Keyboard or gamepad on computers, touch on phones and tablets. In every game
@@ -50,6 +56,9 @@ Keyboard or gamepad on computers, touch on phones and tablets. In every game
   **d-pad** or **left stick** runs and **A** dashes. A direction held during
   the countdown counts from GO. Opening the menu, losing window focus or the
   end of the round lets go of everything.
+- **Bumper Cars, Sumo, and Orb Racing:** **WASD**, **arrows**, the **left stick**,
+  or the **d-pad** to steer. **Space** or **A** boosts in Bumper Cars and Orb
+  Racing and shoves in Sumo. In Sumo, release movement to brace.
 
 #### Several players on one screen
 
@@ -77,9 +86,9 @@ Computers, including touchscreen laptops, keep the keyboard layout unchanged.
 
 - **Spin Cycle:** **tap the right half** of the screen to jump, **hold the
   left half** to duck.
-- **Live Wire:** put your **left thumb** down anywhere on the left half and
-  drag to run; the stick appears under your thumb, holds eight directions, and
-  follows a thumb that slides past its rim. **Tap the right half** to dash.
+- **Live Wire, Bumper Cars, Sumo, and Orb Racing:** drag your **left thumb**
+  to move. The stick appears under your thumb and follows it past the rim.
+  **Tap the right half** to dash, boost, or shove.
 - **MENU** (top right) pauses, with any finger.
 - **Notches:** on a phone with a camera cut-out, the interface stays clear of
   it; the 3D scene still fills the screen.
@@ -691,8 +700,7 @@ File map:
   gauge) and `hud_wire_plate` (Live Wire's, with the hex dash ring).
 - `scripts/audio.gd` — announcer and sound effects.
 
-A third game needs a model with the same interface, an arena, a module with the
-same surface, and an entry in `GAMES` and `ACTIONS` in `scripts/session.gd`.
+New minigames use the game-pack interface in [Making a game](docs/making-a-game.md).
 
 ## Releases
 

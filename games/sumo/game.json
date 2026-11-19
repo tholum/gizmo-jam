@@ -1,0 +1,15 @@
+{
+  "id": "sumo",
+  "version": "1.0.0",
+  "net": 1,
+  "core_min": 6,
+  "actions": ["up", "down", "left", "right", "shove"],
+  "input_budget": 240,
+  "info": {
+    "number": "04",
+    "title": "SUMO",
+    "tags": "BRAWL  ·  RING-OUT",
+    "blurb": "Palm-shove rivals off the dohyo.\nMost ring-outs in 90 seconds wins.",
+    "voice": ""
+  }
+}

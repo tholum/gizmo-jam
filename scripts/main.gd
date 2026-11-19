@@ -719,8 +719,7 @@ func _rules(id: String = "") -> void:
 	_voice(str(games[id].INFO.get("voice", "")))
 	games[id].build_rules()
 
-## The game list. Returns the y below it. Compact screens use shorter cards
-## and drop the "coming soon" tiles.
+## The game list. Returns the y below it. Compact screens use shorter cards.
 func _game_cards(parent: Control, y: float) -> float:
 	_eyebrow(parent, "CHOOSE A GAME", Rect2(LEFT, y, COL, 20))
 	if not on_web and not store_app:
@@ -733,7 +732,7 @@ func _game_cards(parent: Control, y: float) -> float:
 	var card_h := (100.0 if Platform.handheld else 92.0) if tight else 106.0
 	var c := 1.0 if tight else 0.0
 	var ids: Array = _menu_game_ids()
-	# Public desktop browsers have room for all three launch games.
+	# Wide standalone browser layouts have room for a third card.
 	var visible_cards := 3 if on_web and not web_party and not tight else 2
 	var holder: Control = parent
 	var list_top := top
@@ -745,8 +744,8 @@ func _game_cards(parent: Control, y: float) -> float:
 		scroll.size = Vector2(COL + 16, card_h * visible_cards + (visible_cards - 1) * (8.0 if tight else 10.0))
 		scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 		parent.add_child(scroll)
-		if on_web:
-			_eyebrow(parent, "SCROLL FOR MORE  ↓", Rect2(LEFT + COL - 150, y, 150, 20), MUTED)
+		var hint_right := LEFT + COL - (164.0 if not on_web and not store_app else 0.0)
+		_eyebrow(parent, "SCROLL FOR MORE  ↓", Rect2(hint_right - 156.0, y, 156, 20), MUTED, ALIGN_RIGHT)
 		var inner := Control.new()
 		inner.custom_minimum_size = Vector2(COL + 4, ids.size() * (card_h + (8.0 if tight else 10.0)))
 		inner.mouse_filter = Control.MOUSE_FILTER_PASS
@@ -785,17 +784,7 @@ func _game_cards(parent: Control, y: float) -> float:
 		if _chosen_index(ids) >= visible_cards:
 			scroll.set_deferred("scroll_vertical", int(_chosen_index(ids) * (card_h + (8.0 if tight else 10.0))))
 		return list_top + scroll.size.y
-	if tight: return top - 8.0
-	if ids.size() > 2: return top
-	var titles := ["SUMO", "ORB RACING"]
-	var tile_w := (COL - 12) / 2.0
-	for i in 2:
-		var tile := _panel(parent, Rect2(LEFT + i * (tile_w + 12), top, tile_w, 44), Color(0.06, 0.09, 0.18, 0.92), Color("2b3866"), 3, 5)
-		tile.add_theme_stylebox_override("panel", Kit.box(Color(0.06, 0.09, 0.18, 0.92), Color("2b3866"), 3, 0, 0.12, 5, false))
-		tile.tooltip_text = "Planned for a later update. Spin Cycle and Live Wire are playable now."
-		_label(tile, titles[i], Rect2(22, 0, 160, 44), 19, DIM, true)
-		_tab(tile, "SOON", Vector2(tile_w - 14, 10), Color("2b3866"), MUTED, 13, true)
-	return top + 44.0
+	return top - (8.0 if tight else 10.0)
 
 ## The games on the menu: everything installed, in card order.
 func _menu_game_ids() -> Array:
@@ -1351,12 +1340,15 @@ func _game_picker(parent: Control, y: float) -> void:
 	var leader: bool = session.is_leader()
 	var c := 1.0 if tight else 0.0
 	var box := _panel(parent, Rect2(LEFT, y, COL, 86 - 12 * c))
-	_tab(box, "NEXT GAME  ·  YOU CHOOSE" if leader else "NEXT GAME  ·  THE HOST CHOOSES", Vector2(18, -14), LIME, Kit.OUTLINE, 14)
+	var listed: Dictionary = session.party_games()
+	var caption := "NEXT GAME  ·  YOU CHOOSE" if leader else "NEXT GAME  ·  THE HOST CHOOSES"
+	if leader and listed.size() > 2:
+		caption = "NEXT GAME  ·  SCROLL FOR MORE  ↓"
+	_tab(box, caption, Vector2(18, -14), LIME, Kit.OUTLINE, 14)
 	var how := _button(box, "HOW TO PLAY  ›", Rect2(COL - 162, -15, 148, 30), _rules, false, 13)
 	how.name = "How"
 	var width := (COL - 48 - 12) / 2.0
 	var column := 0
-	var listed: Dictionary = session.party_games()
 	var ids: Array = listed.keys()
 	ids.sort_custom(func(a, b): return Registry.order_key({"id": a, "info": listed[a].get("info", {})}) < Registry.order_key({"id": b, "info": listed[b].get("info", {})}))
 	var holder: Control = box
@@ -1365,6 +1357,7 @@ func _game_picker(parent: Control, y: float) -> void:
 		# More than one row: the keys scroll inside the box, one row at a time.
 		var scroll := ScrollContainer.new()
 		scroll.name = "PickList"
+		scroll.follow_focus = true
 		scroll.position = Vector2(16, row_y - 4)
 		scroll.size = Vector2(COL - 32, 54 - 6 * c)
 		scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED

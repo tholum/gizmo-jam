@@ -206,12 +206,14 @@ static func validate_catalog(c: Dictionary, channel: String = Core.CHANNEL, allo
 	return {"ok": true, "error": "", "catalog": {"schema": CATALOG_SCHEMA, "game": Core.GAME_ID, "kind": "catalog",
 		"channel": channel, "serial": int(c.serial), "games": games, "web": web}}
 
-## The catalog entry that matches what a host is playing (same id and file),
-## or {} if this catalog does not vouch for that file.
-static func entry_for(catalog: Dictionary, id: String, sha256: String) -> Dictionary:
+## Match the host's exact file, or match by net for a signed game bundled
+## into a store app with no separate pack file.
+static func entry_for(catalog: Dictionary, id: String, sha256: String, bundled_net: int = 0) -> Dictionary:
 	var g: Dictionary = catalog.get("games", {}).get(id, {})
-	if g.is_empty() or str(g.sha256) != sha256.to_lower(): return {}
-	return g
+	if g.is_empty(): return {}
+	if sha256.is_empty() and bundled_net > 0:
+		return g if int(g.net) == bundled_net else {}
+	return g if str(g.sha256) == sha256.to_lower() else {}
 
 # --- Files ----------------------------------------------------------------------
 

@@ -335,31 +335,34 @@ func acquire(id: String, host_entry: Dictionary, host_files: Dictionary, host_na
 		_acquire_untrusted(id, host_entry, host_files, host_name, generation)
 		return
 	var sha := str(host_entry.get("sha256", ""))
-	var entry := PackCore.entry_for(catalog, id, sha)
-	if entry.is_empty() and not host_files.is_empty():
+	var bundled_net := int(host_entry.get("net", 0)) if host_entry.get("trust") == "signed" and not exact else 0
+	var can_fetch_from_host := not host_files.is_empty() and not sha.is_empty()
+	var entry := PackCore.entry_for(catalog, id, sha, bundled_net)
+	if entry.is_empty() and can_fetch_from_host:
 		# The host's catalog may be newer than ours.
 		_report(id, "verifying")
 		var bytes := await _fetch("http://%s:%d/catalog" % [host_files.ip, int(host_files.port)], PackCore.MAX_CATALOG, CATALOG_TIMEOUT)
 		if generation != _generation: return
 		if not bytes.is_empty(): adopt_catalog(bytes)
-		entry = PackCore.entry_for(catalog, id, sha)
+		entry = PackCore.entry_for(catalog, id, sha, bundled_net)
 	if entry.is_empty():
 		_report(id, "verifying")
 		await refresh_catalog()
 		if generation != _generation: return
-		entry = PackCore.entry_for(catalog, id, sha)
+		entry = PackCore.entry_for(catalog, id, sha, bundled_net)
 	if entry.is_empty():
 		_report(id, "failed", 0, "not in the signed catalog")
 		return
 	if int(entry.core_min) > Core.local_build():
 		_report(id, "needs_update")
 		return
+	sha = str(entry.sha256)
 	var pending: Dictionary = _index.get(id, {}).get("pending", {})
 	if Registry.has(id) and str(pending.get("sha256", "")) == sha:
 		_report(id, "restart")
 		return
 	var sources: Array = []
-	if not host_files.is_empty():
+	if can_fetch_from_host:
 		sources.append("http://%s:%d/packs/%s.pck" % [host_files.ip, int(host_files.port), sha])
 	sources.append(str(entry.url))
 	var part := await _download(id, sources, int(entry.size), generation)

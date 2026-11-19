@@ -1,0 +1,15 @@
+{
+  "id": "orb_racing",
+  "version": "1.0.0",
+  "net": 1,
+  "core_min": 6,
+  "actions": ["left", "right", "up", "down", "dash"],
+  "input_budget": 240,
+  "info": {
+    "number": "05",
+    "title": "ORB RACING",
+    "tags": "DRIVING  ·  RACE",
+    "blurb": "Race three laps. Hit the charge strips and boost past the pack.",
+    "voice": ""
+  }
+}
