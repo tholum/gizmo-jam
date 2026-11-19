@@ -212,8 +212,8 @@ less there. The two-thread rows come from `LP_NUM_THREADS=2`, which stands in
 for an old or heavily loaded machine.
 
 On a Raspberry Pi 4 B (Mesa V3D, OpenGL ES 3.1; fan-cooled, no throttling),
-fullscreen at 1280x720, Low runs Spin Cycle at about 34 fps with its 3D at
-67-71% and Live Wire at about 48 fps at 87%; High manages 7 and 20 fps. Run the
+fullscreen at 1280x720, Low runs Spin Cycle at about 29 fps with its 3D at
+67% and Live Wire at about 39 fps at 87%; High manages 7 and 20 fps. Run the
 Pi's output at 720p and let the TV scale it. A 30-second trace of either game
 has no frame over twice the median once the countdown is over. What it took,
 measured with `tests/perf_diag.gd` and `tests/quality_cost.gd` (A/B costs of
@@ -221,11 +221,11 @@ parts of a running round, and of each of High's features),
 `tests/spike_trace.gd` (slow frames and what appeared in them),
 `tests/low_bake_compare.gd` and `tests/low_vs_high.gd` (the looks):
 
-- With the 3D in a SubViewport (`scripts/scaled_view.gd`), the root viewport
-  draws only 2D, so outside tests it draws straight into the window instead of
-  into a render target that is then copied to the screen: ~8 ms a frame on the
-  Pi. (Tests read the screen back, so they keep it off.) The root viewport's own
-  scaled 3D also cost ~9 ms there even for an empty scene.
+- Low's reduced-resolution 3D goes through a SubViewport
+  (`scripts/scaled_view.gd`): the root viewport's own scaled 3D cost ~9 ms a
+  frame on the Pi even for an empty scene. (Drawing the root straight to the
+  screen looked ~8 ms faster too, but only because on the Pi nothing reached
+  the screen; don't.)
 - On V3D any lit material costs ~4 ms and the engine fog ~4.6 ms, so Low bakes
   High's three lights and its fog into unshaded scenery shaders (`BAKED_LIGHT`
   in `scripts/arena_kit.gd`). The Compatibility renderer treats ALBEDO as sRGB

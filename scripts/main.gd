@@ -1746,7 +1746,6 @@ func _apply_graphics() -> void:
 		scaled_view.name = "ScaledView"
 		add_child(scaled_view)
 		scaled_view.shade_source = arena.wants_picture_shade
-		scaled_view.direct_source = func(): return not test_mode
 	scaled_view.set_scale(Arena.LOW_RENDER_SCALE if graphics_level == "low" else 1.0, true)
 
 func _set_graphics(level: String) -> void:

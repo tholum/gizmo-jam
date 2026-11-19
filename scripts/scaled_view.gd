@@ -10,8 +10,11 @@ extends Node
 ## root viewport's 3D off, renders the same World3D into a SubViewport from a
 ## camera that copies whichever camera is current, and shows the result on a
 ## CanvasLayer below every other layer. The root's scaling_3d_scale is left as
-## the arenas set it (it does nothing while the root draws no 3D). Outside
-## tests the root then also draws straight to the screen (_set_direct()).
+## the arenas set it (it does nothing while the root draws no 3D).
+##
+## Do not try viewport_set_render_direct_to_screen on the root to skip its copy
+## to the window: on the Pi (labwc, GLES 3.1) it times ~8 ms faster only because
+## nothing reaches the screen at all; the splash stays up.
 
 const LAYER := -128
 ## The stretch pass. With `shade` on it also darkens the bands behind the HUD
@@ -53,11 +56,6 @@ var _window_ms: Array[float] = []
 ## Spin Cycle arena says; see arena.wants_picture_shade()).
 var shade_source: Callable
 var _shade := -1.0
-## Whether the root viewport may draw straight to the screen (main says: not in
-## tests, which read the screen back). force_direct overrides it for probes.
-var direct_source: Callable
-var force_direct := false
-var _direct := false
 var view: SubViewport
 var eye: Camera3D
 var layer: CanvasLayer
@@ -84,7 +82,6 @@ func set_scale(value: float, auto: bool = false) -> void:
 	var root := get_tree().root
 	if value >= 1.0:
 		if view:
-			_set_direct(false)
 			root.disable_3d = false
 			layer.queue_free()
 			view.queue_free()
@@ -130,17 +127,6 @@ func set_scale(value: float, auto: bool = false) -> void:
 	set_process(true)
 	_process(0.0)
 
-## With the 3D in the SubViewport the root viewport draws only 2D, so it can
-## draw straight into the window instead of into its own render target that is
-## then copied to the screen: ~8 ms a frame less on a Raspberry Pi 4. The cost:
-## nothing can read the root viewport's texture back (screenshots), so tests,
-## which capture, keep it off.
-func _set_direct(on: bool) -> void:
-	on = on and view != null
-	if on != _direct:
-		_direct = on
-		RenderingServer.viewport_set_render_direct_to_screen(get_tree().root.get_viewport_rid(), on)
-
 func _fit() -> void:
 	if view:
 		var size := Vector2(get_tree().root.size) * scale
@@ -177,7 +163,6 @@ func _govern(delta: float) -> void:
 func _process(delta: float) -> void:
 	if dynamic:
 		_govern(delta)
-	_set_direct(force_direct or (direct_source.is_valid() and direct_source.call()))
 	var want := 1.0 if shade_source.is_valid() and shade_source.call() else 0.0
 	if want != _shade:
 		_shade = want

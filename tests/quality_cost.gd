@@ -98,7 +98,6 @@ func run() -> void:
 	keep_alive()
 	var sview: Node = main.scaled_view
 	sview.dynamic = false
-	sview.force_direct = true
 	var low_scale: float = sview.ceiling
 	sview.set_scale(low_scale)
 	await create_timer(1.5).timeout
@@ -109,7 +108,6 @@ func run() -> void:
 	await variant("rt_sv_rgba8", func(): sview.view.transparent_bg = true, func(): sview.view.transparent_bg = false)
 	await variant("rt_root_rgba8", func(): root.transparent_bg = true, func(): root.transparent_bg = false)
 	await variant("rt_both_rgba8", func(): sview.view.transparent_bg = true; root.transparent_bg = true, func(): sview.view.transparent_bg = false; root.transparent_bg = false)
-	await variant("root_not_direct", func(): sview.force_direct = false, func(): sview.force_direct = true)
 	await variant("tonemap_linear", func(): arena.environment.tonemap_mode = Environment.TONE_MAPPER_LINEAR if "environment" in arena and arena.environment else 0, func(): if "environment" in arena and arena.environment: arena.environment.tonemap_mode = Environment.TONE_MAPPER_FILMIC)
 	for s in [1.0, 0.8, 0.55]:
 		await variant("scale_%s" % str(s), func(): sview.set_scale(s), func(): sview.set_scale(low_scale))

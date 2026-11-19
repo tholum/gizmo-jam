@@ -60,18 +60,14 @@ func run() -> void:
 	for p in main.model.players: p.bot = true
 	await create_timer(1.0).timeout
 	await capture("game")
-	# Time the round as it runs for a player: the root draws straight to the
-	# screen when it can (scripts/scaled_view.gd), which only captures forbid.
-	main.scaled_view.force_direct = true
-	# The captures above ran without it, slower, and may have lowered the
-	# dynamic scale; start from the round's starting scale, as a round does.
+	# The capture above is slow and may have lowered the dynamic scale; start
+	# from the round's starting scale, as a round does.
 	main.scaled_view.restore()
 	var deadline := Time.get_ticks_msec() + 8000
 	while Time.get_ticks_msec() < deadline:
 		var before := Time.get_ticks_usec()
 		await process_frame
 		frames.append((Time.get_ticks_usec() - before) / 1000.0)
-	main.scaled_view.force_direct = false
 	frames.sort()
 	var mean := 0.0
 	for value in frames: mean += value
