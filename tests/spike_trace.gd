@@ -43,6 +43,27 @@ func state(main: Node) -> Dictionary:
 	if "speed" in m: d["speed"] = snappedf(float(m.speed), 0.01)
 	return d
 
+## Visible 3D instances under the active arena, by instance id.
+func visible_set(main: Node) -> Dictionary:
+	var arena: Node = main.live_arena if game == "livewire" else main.arena
+	var out := {}
+	for g in arena.find_children("*", "VisualInstance3D", true, false):
+		if g.is_visible_in_tree():
+			out[g.get_instance_id()] = g
+	return out
+
+func describe(g: Node) -> String:
+	var what := "%s/%s" % [g.get_parent().name, g.name]
+	if g is GeometryInstance3D:
+		var mat: Material = g.material_override
+		if mat == null and g is MeshInstance3D and g.mesh and g.mesh.get_surface_count() > 0:
+			mat = g.get_active_material(0)
+		if mat is ShaderMaterial and mat.shader:
+			what += "[" + mat.shader.code.get_slice("//", 1).get_slice("\n", 0).strip_edges().left(30) + "]"
+		elif mat:
+			what += "[" + mat.get_class() + "]"
+	return what
+
 func run() -> void:
 	root.size = resolution
 	var main: Node = load("res://scenes/main.tscn").instantiate()
@@ -65,6 +86,7 @@ func run() -> void:
 	var frames: Array = []
 	var deadline := Time.get_ticks_msec() + int(secs * 1000.0)
 	var prev := state(main)
+	var prev_vis := visible_set(main)
 	while Time.get_ticks_msec() < deadline:
 		if game == "twisted":
 			for p in main.model.players: p.hp = 1000
@@ -74,8 +96,13 @@ func run() -> void:
 		await process_frame
 		var ms := (Time.get_ticks_usec() - before) / 1000.0
 		var now := state(main)
-		frames.append({"ms": ms, "now": now, "prev": prev})
+		var vis := visible_set(main)
+		var appeared: Array = []
+		for id in vis:
+			if not prev_vis.has(id): appeared.append(describe(vis[id]))
+		frames.append({"ms": ms, "now": now, "prev": prev, "appeared": appeared})
 		prev = now
+		prev_vis = vis
 	var sorted: Array = frames.map(func(f): return f.ms)
 	sorted.sort()
 	var median: float = sorted[sorted.size() / 2]
@@ -88,6 +115,8 @@ func run() -> void:
 		for k in f.now:
 			if f.now[k] != f.prev[k]: changed[k] = "%s->%s" % [f.prev[k], f.now[k]]
 		print("SPIKE %.1fms (median %.1f) frame %d: %s" % [f.ms, median, i, JSON.stringify(changed)])
+		if not f.appeared.is_empty():
+			print("  appeared: ", ", ".join(PackedStringArray(f.appeared.slice(0, 12))), " (%d)" % f.appeared.size())
 	print("SPIKES ", JSON.stringify({"frames": frames.size(), "median_ms": snappedf(median, 0.1), "spikes": spikes,
 		"p99_ms": snappedf(sorted[int(sorted.size() * 0.99)], 0.1), "max_ms": snappedf(sorted[-1], 0.1)}))
 	quit()

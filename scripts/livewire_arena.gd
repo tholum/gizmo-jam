@@ -306,6 +306,8 @@ var _mood_drawn := -1.0
 var _charged_drawn := -1.0
 var _warm_frames := 0
 var _warm_view: Dictionary = {}
+## Extra warm-up pieces: a dash trail, a stun spark and the 3D call-outs.
+var _warm_extra: Node3D
 var _winner := -1
 
 # Timing constants, read from the state instance when a round is adopted.
@@ -513,13 +515,22 @@ func set_level(value: String) -> void:
 		viewport.scaling_3d_mode = Viewport.SCALING_3D_MODE_BILINEAR
 		viewport.scaling_3d_scale = Arena.LOW_RENDER_SCALE if level == "low" else 1.0
 	for r in runners:
-		r.visual.set_quality(level, 0.0, false)
+		r.visual.set_quality(_robot_level(), 0.0, false)
 	if is_instance_valid(_hero):
 		_hero.set_quality(_hero_level(), 0.0, false)
 
-## The winner fills the screen, so on Low it keeps Balanced's mesh.
+## The runners' mesh. Low on a GPU (a Raspberry Pi) uses High's full-detail
+## robot, measured no dearer there than Balanced's; a software rasteriser
+## keeps Low's lightest one.
+func _robot_level() -> String:
+	if level == "low":
+		return "low" if Arena.software_renderer(RenderingServer.get_video_adapter_name()) else "high"
+	return level
+
+## The winner fills the screen, so on Low it keeps at least Balanced's mesh.
 func _hero_level() -> String:
-	return "balanced" if level == "low" else level
+	var robot := _robot_level()
+	return "balanced" if robot == "low" else robot
 
 func update_visuals(state: RefCounted, delta: float, own_slot: int = 0) -> void:
 	local_slot = own_slot
@@ -527,6 +538,8 @@ func update_visuals(state: RefCounted, delta: float, own_slot: int = 0) -> void:
 		return
 	_clock += delta
 	if _warm_frames > 0:
+		if _rings_live == 0:
+			_warm_rings()
 		_warm_frames -= 1
 		if _warm_frames == 0:
 			_finish_warm_up()
@@ -1210,7 +1223,7 @@ func _build_runner(index: int) -> void:
 	visual.body.rotation.y = 0.0
 	# The floor marker below replaces the robot's own lane ring and shadow.
 	visual.set_markers(false)
-	visual.set_quality(level, 0.0, false)
+	visual.set_quality(_robot_level(), 0.0, false)
 	var top: float = RunnerVisual.HEIGHT
 	var tag := Label3D.new()
 	tag.name = "Identity"
@@ -1418,10 +1431,44 @@ func _prepare_warm_up() -> void:
 	_warm_view.was_live = false
 	_warm_view.root.position.y = -2.4
 	_warm_view.root.scale = Vector3.ONE * 0.3
-	_ring(Vector2.ZERO, -6.0, Color.WHITE, 1.0, 1.0, 1000.0, 0.5)
+	_warm_rings()
+	# The first dash trail, stun spark and 3D call-out hitched ~85-100 ms on a
+	# Raspberry Pi 4: their materials compile, and the call-outs' glyphs are
+	# rasterised, the first time they are drawn. The trail and spark sit under
+	# the floor with the surge pieces; the call-outs ignore depth, so they are
+	# drawn all but fully faded instead.
+	_warm_extra = Node3D.new()
+	_warm_extra.position = Vector3(0.0, -2.4, 0.0)
+	_surge_root.add_child(_warm_extra)
+	if not runners.is_empty():
+		_node(_warm_extra, (runners[0].trail as MeshInstance3D).mesh, Vector3.ZERO, _trail_mat)
+	_node(_warm_extra, _unit_box, Vector3(0.6, 0.0, 0.0), _spark_mat)
+	var texts := {"ZAP!": _popups[0].node, "BAM!": _popups[0].node, "LOOP!": _popups[0].node}
+	if not runners.is_empty():
+		# The identity tag (own runner, Tab names): its own size and outline.
+		texts["▼ YOU 0123456789 / ABCDEFGHIJKLMNOPQRSTUVWXYZ"] = runners[0].tag
+	for text in texts:
+		var template: Label3D = texts[text]
+		var label := template.duplicate() as Label3D
+		label.text = text
+		label.visible = true
+		# Faded the way _update_effects() fades a real one (modulate, not
+		# GeometryInstance3D.transparency, which picks another shader variant).
+		label.modulate = Color(1, 1, 1, 0.004)
+		_warm_extra.add_child(label)
 	_warm_frames = 4
 
+## A burst of effect rings under the floor. The first rings drawn cost ~75 ms
+## on a Raspberry Pi 4 (a loop closing). Re-armed every warm-up frame, because
+## a round starting clears every ring (_clear_transients()).
+func _warm_rings() -> void:
+	for n in MAX_RINGS:
+		_ring(Vector2.ZERO, -6.0, Color.WHITE, 1.0, 1.0, 1000.0, 0.5)
+
 func _finish_warm_up() -> void:
+	if is_instance_valid(_warm_extra):
+		_warm_extra.queue_free()
+	_warm_extra = null
 	_warm_view.root.position.y = 0.0
 	_warm_view.root.scale = Vector3.ONE
 	_release_view(_warm_view, false)

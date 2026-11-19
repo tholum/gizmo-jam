@@ -88,8 +88,13 @@ func run() -> void:
 	for node in main.arena.backdrop + main.arena.structure: assert(node.visible, "Low (GPU) shows the full scenery")
 	for node in main.arena.backdrop_lite + main.arena.structure_lite: assert(not node.visible, "Low (GPU) hides the sparse scenery")
 	for r in main.arena.runners:
-		assert(r.visual.lite.visible and not r.visual.mesh.visible and r.visual.shadow.visible, "Low skins the light mesh over a blob shadow")
+		assert(r.visual.mesh.visible and not r.visual.lite.visible and r.visual.shadow.visible and (r.visual.planar == null or not r.visual.planar.visible), "Low (GPU) skins High's robot over a blob shadow, no silhouette")
+	main.arena.software = true
+	main.arena.set_level("low")
+	for r in main.arena.runners:
+		assert(r.visual.lite.visible and not r.visual.mesh.visible and r.visual.shadow.visible, "Low (software) skins the light mesh over a blob shadow")
 		assert(r.visual.lite.mesh.surface_get_array_index_len(0) / 3 < balanced_tris, "Low's robot mesh is lighter than Balanced's")
+	main.arena.software = false
 	main.arena.set_level("balanced")
 	assert(is_equal_approx(root.scaling_3d_scale, 1.0) and main.arena.environment.fog_enabled, "Balanced restores full resolution and fog")
 	for node in main.arena.backdrop + main.arena.structure: assert(node.visible)

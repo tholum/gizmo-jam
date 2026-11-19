@@ -27,15 +27,18 @@ void fragment() {
 	COLOR = vec4(mix(c.rgb, vec3(0.02, 0.07, 0.13), (top + bottom) * shade), 1.0);
 }
 """
-## Dynamic resolution (set_scale(value, true)): every WINDOW seconds, if frames
-## averaged slower than SLOW_MS (a little margin under 30 fps) the scale drops by STEP, never
+## Dynamic resolution (set_scale(value, true)): every WINDOW seconds, if the
+## median frame was slower than SLOW_MS (missing 30 fps) the scale drops by STEP, never
 ## below MIN_SCALE; under FAST_MS it climbs, up to full resolution (MAX_SCALE).
-## It starts at the requested scale. A one-off hitch barely moves a 1.5 s average, so a machine that
+## It starts at the requested scale. A one-off hitch does not move a median, so a machine that
 ## holds 30 fps keeps the full picture; a Raspberry Pi 4 trades a little
-## sharpness for a steady frame rate.
+## sharpness for a steady frame rate. SLOW_MS sits between 33.3 ms and 50 ms
+## on purpose: with vsync on a 60 Hz screen a frame that holds 30 fps is shown
+## for exactly 33.3 ms and one that misses for 50, so the scale only drops when
+## 30 fps is really lost (and only climbs when 60 is within reach).
 const WINDOW := 1.5
-const SLOW_MS := 32.0
-const FAST_MS := 26.0
+const SLOW_MS := 36.0
+const FAST_MS := 30.0
 const STEP := 0.04
 const MIN_SCALE := 0.5
 const MAX_SCALE := 1.0
@@ -45,7 +48,7 @@ var scale := 1.0
 var ceiling := 1.0
 var dynamic := false
 var _window_time := 0.0
-var _window_frames := 0
+var _window_ms: Array[float] = []
 ## Whether to darken the bands behind the HUD in the stretch pass (the
 ## Spin Cycle arena says; see arena.wants_picture_shade()).
 var shade_source: Callable
@@ -77,7 +80,7 @@ func set_scale(value: float, auto: bool = false) -> void:
 	ceiling = value
 	dynamic = auto and value < 1.0
 	_window_time = 0.0
-	_window_frames = 0
+	_window_ms.clear()
 	var root := get_tree().root
 	if value >= 1.0:
 		if view:
@@ -149,20 +152,23 @@ func restore() -> void:
 		scale = ceiling
 		_fit()
 	_window_time = 0.0
-	_window_frames = 0
+	_window_ms.clear()
 
 func _govern(delta: float) -> void:
 	_window_time += delta
-	_window_frames += 1
+	_window_ms.append(delta * 1000.0)
 	if _window_time < WINDOW:
 		return
-	var average_ms := _window_time * 1000.0 / _window_frames
+	# The median, not the mean: a hitch (a round starting, a shader compiling)
+	# must not cost the rest of the round its resolution.
+	_window_ms.sort()
+	var typical: float = _window_ms[_window_ms.size() / 2]
 	_window_time = 0.0
-	_window_frames = 0
+	_window_ms.clear()
 	var wanted := scale
-	if average_ms > SLOW_MS:
+	if typical > SLOW_MS:
 		wanted = maxf(MIN_SCALE, scale - STEP)
-	elif average_ms < FAST_MS:
+	elif typical < FAST_MS:
 		wanted = minf(MAX_SCALE, scale + STEP)
 	if not is_equal_approx(wanted, scale):
 		scale = wanted

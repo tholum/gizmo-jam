@@ -64,13 +64,16 @@ func stage(on: bool, menu: bool) -> void:
 func backdrop(_delta: float) -> RefCounted:
 	return null
 
-## Every feedback call-out this game can show, with digits: main warms the
-## font up with them during the countdown (Slam.warm()).
-const CALLOUTS := ["CLEAR  +1", "3 IN A ROW!", "10 IN A ROW!", "23 IN A ROW!", "45 IN A ROW!", "67 IN A ROW!", "89 IN A ROW!",
-	"HIT!  1 LEFT", "HIT!  2 LEFT", "HIT!  3 LEFT", "HIT!  4 LEFT", "HIT!  5 LEFT", "HIT!  6 LEFT", "YOU’RE OUT!"]
-
+## Every feedback call-out this game can show: main warms the font up with
+## them during the countdown (Slam.warm()). Every digit appears in a one- and a
+## two-digit count (a glyph the font has not drawn at that size hitches).
 func callouts() -> Array:
-	return CALLOUTS
+	var texts := ["CLEAR  +1", "YOU’RE OUT!"]
+	for n in [10, 21, 32, 43, 54, 65, 76, 87, 98, 19, 3, 4, 5, 6, 7, 8, 9]:
+		texts.append("%d IN A ROW!" % n)
+	for n in range(1, 7):
+		texts.append("HIT!  %d LEFT" % n)
+	return texts
 
 func round_started() -> void:
 	was_ducking = false

@@ -114,14 +114,19 @@ func backdrop(delta: float) -> RefCounted:
 		demo.step(delta)
 	return demo
 
-## Every feedback call-out this game can show, with digits: main warms the
-## font up with them during the countdown (Slam.warm()).
-const CALLOUTS := ["CHARGED!  DOUBLE SURGES", "OVERDRIVE!  LOCKS ARE OFF", "SHOVED!", "DIRECT HIT!", "ZAPPED!",
-	"ZAPPED!  −7 TILES", "ZAPPED!  −12 TILES", "ZAPPED!  −34 TILES", "ZAPPED!  −56 TILES", "ZAPPED!  −89 TILES",
-	"LOOP!  +7 LOCKED", "LOOP!  +12 LOCKED", "LOOP!  +34 TILES", "LOOP!  +56 LOCKED", "LOOP!  +89 TILES", "LOOP!  +90 TILES"]
+## Numbers that put every digit in a one- and a two-digit count, for the
+## call-out warm-up (a glyph the font has not drawn at that size hitches).
+const WARM_NUMBERS := [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 21, 32, 43, 54, 65, 76, 87, 98, 19]
 
+## Every feedback call-out this game can show: main warms the font up with
+## them during the countdown (Slam.warm()).
 func callouts() -> Array:
-	return CALLOUTS
+	var texts := ["CHARGED!  DOUBLE SURGES", "OVERDRIVE!  LOCKS ARE OFF", "SHOVED!", "DIRECT HIT!", "ZAPPED!"]
+	for n in WARM_NUMBERS:
+		texts.append("ZAPPED!  −%d TILES" % n)
+		texts.append("LOOP!  +%d LOCKED" % n)
+		texts.append("LOOP!  +%d TILES" % n)
+	return texts
 
 func round_started() -> void:
 	# The new model holds nothing: whatever is still down is sent again, and a

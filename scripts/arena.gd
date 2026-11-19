@@ -1032,8 +1032,11 @@ func set_level(value: String) -> void:
 	# folds them into the pass that stretches the 3D up (wants_picture_shade()).
 	if hud_shade: hud_shade.visible = not menu_mode and not low
 	for runner in runners:
-		# With silhouette shadows the blob only grounds the feet.
-		runner.visual.set_quality(level, 0.16 if detailed else 0.72)
+		# With silhouette shadows the blob only grounds the feet. Low on a GPU
+		# (a Raspberry Pi) uses High's full-detail robot, measured no dearer
+		# there than Balanced's, over the blob shadow: the silhouette shadows
+		# are what cost.
+		runner.visual.set_quality("high" if low and not software else level, 0.16 if detailed else 0.72, detailed)
 
 ## Renders Kit.DECK_PATTERN_SHADER once into a 4096x512 texture with mipmaps
 ## for Low's deck (Kit.DECK_LOW_SHADER), then switches the deck to it if Low is
@@ -1118,7 +1121,7 @@ func celebrate(slot: int) -> void:
 	hero.name = "Hero"
 	victory.add_child(hero)
 	hero.setup(team_color(slot))
-	hero.set_quality("balanced" if level == "low" else level, 0.0, false)
+	hero.set_quality(("balanced" if software else "high") if level == "low" else level, 0.0, false)
 	hero.set_markers(false)
 	hero.position.y = 0.62
 	hero.scale = Vector3.ONE * 2.2

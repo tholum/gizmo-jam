@@ -13,6 +13,7 @@ var tilt := -0.05
 var _tween: Tween
 ## Pop-up text to rasterise ahead of time (see warm()): [text, size, outline, drop].
 var _warm: Array = []
+const WARM_PER_FRAME := 4
 
 var grow := 0.0:
 	set(value):
@@ -76,17 +77,18 @@ func rattle(text_value: String, color: Color) -> void:
 ## a font rasterises each new size (and outline) the first time it draws it,
 ## ~75 ms for a big call-out on a Raspberry Pi 4. Glyph caches belong to the
 ## font, so any visible Slam can do this for another one (the countdown does it
-## for the feedback call-out). One text per frame, off-screen, nearly clear.
+## for the feedback call-out). A few texts per frame, off-screen, nearly clear;
+## most share glyphs, so after the first few each costs little.
 func warm(texts: Array, size_px: int, outline: int, width: float) -> void:
 	for t in texts:
 		_warm.append([t, Kit.fit(t, size_px, width - 40.0, 12), outline, size_px * 0.06])
 	queue_redraw()
 
 func _draw() -> void:
-	if not _warm.is_empty():
+	for i in mini(WARM_PER_FRAME, _warm.size()):
 		var w: Array = _warm.pop_front()
 		Kit.text(self, w[0], Vector2(-100000.0, -100000.0), w[1], Color(1, 1, 1, 0.004), w[2], 0.0, w[3])
-		if not _warm.is_empty(): queue_redraw.call_deferred()
+	if not _warm.is_empty(): queue_redraw.call_deferred()
 	if message.is_empty() or alpha <= 0.0: return
 	var center := size * 0.5
 	var b := Kit.begin(self)
