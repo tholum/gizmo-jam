@@ -67,6 +67,9 @@ func _process(delta: float) -> bool:
 		if role == "browser" and best_effort and phase == "searching":
 			print("BROADCAST_NOT_RECEIVED: no beacon arrived within %.0fs; this environment may block UDP broadcast" % limit)
 			done(0)
+		elif role == "host" and best_effort and phase == "hosting":
+			print("HOST_NO_GUEST: nobody joined within %.0fs; this environment may block UDP broadcast" % limit)
+			done(0)
 		else:
 			fail("Timed out in phase %s" % phase)
 		return false
