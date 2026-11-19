@@ -14,6 +14,8 @@ const Registry = preload("res://scripts/game_registry.gd")
 const Updater = preload("res://scripts/updater.gd")
 const PackManager = preload("res://scripts/pack_manager.gd")
 const FileServer = preload("res://scripts/file_server.gd")
+const Platform = preload("res://scripts/platform.gd")
+const TouchControls = preload("res://scripts/touch_controls.gd")
 const INK := Kit.INK
 const MUTED := Kit.MUTED
 const DIM := Kit.DIM
@@ -35,6 +37,11 @@ const UI_SCALE_MIN := 0.85
 const UI_SCALE_MAX := 1.5
 ## Smallest and default window sizes, in screen pixels.
 const MIN_WINDOW := Vector2i(1024, 576)
+## Phones and tablets (Platform.handheld) draw the UI as large as the smallest
+## layout every screen supports: the area a MIN_WINDOW window shows at
+## UI_SCALE_MIN, about 1205x678 design units. Small screens and fingers need
+## the size; desktop and web with a mouse never use this.
+const HANDHELD_AREA := Vector2(MIN_WINDOW) / UI_SCALE_MIN
 const DEFAULT_WINDOW := Vector2i(1280, 800)
 ## Visible canvas in design units, and the column grid derived from it.
 var area := DESIGN
@@ -140,6 +147,10 @@ var on_web := OS.has_feature("web")
 ## else, such as the website over https, it is solo play only: an https page
 ## cannot open a plain WebSocket to a computer on the LAN.
 var web_party := on_web and str(JavaScriptBridge.eval("location.protocol", true)) == "http:"
+## Running as the Android or iOS store app: every game is built in, and there
+## is no self-updater, no pack download, no developer mode and no browser
+## guests (docs/specs/mobile-apps-and-touch.md, section 4).
+var store_app: bool = PackManager.store_app
 const WEB_TYPES := {"html": "text/html; charset=utf-8", "js": "application/javascript", "wasm": "application/wasm",
 	"pck": "application/octet-stream", "png": "image/png", "ico": "image/x-icon", "json": "application/json", "svg": "image/svg+xml"}
 
@@ -186,7 +197,9 @@ func _ready() -> void:
 	# Test runners use the games in the source tree only, unless a test gives
 	# its own packs folder.
 	var scripted: bool = Engine.get_main_loop().get_script() != null
-	if not scripted or Array(OS.get_cmdline_user_args()).any(func(a): return a.begins_with("--packs-dir=")):
+	if store_app:
+		packs.load_bundled()
+	elif not scripted or Array(OS.get_cmdline_user_args()).any(func(a): return a.begins_with("--packs-dir=")):
 		packs.load_all()
 	for id in Registry.ids():
 		_add_game(id)
@@ -204,6 +217,13 @@ func _ready() -> void:
 	overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	overlay.theme = theme
 	canvas.add_child(overlay)
+	# Phones and tablets: touch controls above the round HUD. Nothing else
+	# ever creates this layer.
+	if Platform.handheld:
+		var touch_layer := CanvasLayer.new()
+		touch_layer.layer = canvas.layer + 1
+		add_child(touch_layer)
+		touch_layer.add_child(TouchControls.new(self))
 	_fit_canvas()
 	tone_player = AudioStreamPlayer.new()
 	tone_player.volume_db = -18
@@ -215,12 +235,13 @@ func _ready() -> void:
 		audio.enabled = sound_enabled
 	updater = Updater.new()
 	# The browser build is always the host's own version; nothing to update.
-	updater.setup(check_updates and not on_web, _set_check_updates, func(): return not session.is_online() and view != "game")
+	# Store apps are updated by the store.
+	updater.setup(check_updates and not on_web and not store_app, _set_check_updates, func(): return not session.is_online() and view != "game")
 	add_child(updater)
 	_show_menu()
 	_voice("welcome")
 	# The published catalog says which games exist; fetched like the update check.
-	if check_updates and not scripted and not on_web and not "--no-update-check" in OS.get_cmdline_user_args():
+	if check_updates and not scripted and not on_web and not store_app and not "--no-update-check" in OS.get_cmdline_user_args():
 		packs.refresh_catalog()
 	if on_web: _page_options()
 	if "--smoke-menu" in OS.get_cmdline_user_args():
@@ -239,7 +260,7 @@ func _ready() -> void:
 ## test runs are left alone.
 func _fit_window() -> void:
 	# The browser sizes the canvas itself; moving a "window" there offsets it.
-	if DisplayServer.get_name() == "headless" or on_web: return
+	if DisplayServer.get_name() == "headless" or on_web or store_app: return
 	var window := get_window()
 	window.min_size = MIN_WINDOW
 	for arg in OS.get_cmdline_args():
@@ -262,6 +283,8 @@ func _fit_window() -> void:
 ## [UI_SCALE_MIN, UI_SCALE_MAX] through the window's content scale factor.
 static func ui_scale_for(window_size: Vector2) -> float:
 	var natural := minf(window_size.x / DESIGN.x, window_size.y / DESIGN.y)
+	if Platform.handheld:
+		return maxf(natural, minf(window_size.x / HANDHELD_AREA.x, window_size.y / HANDHELD_AREA.y))
 	return clampf(natural, UI_SCALE_MIN, UI_SCALE_MAX)
 
 func _fit_canvas() -> void:
@@ -278,12 +301,32 @@ func _fit_canvas() -> void:
 ## original grid: a 528-wide column at x 64, and a 592-wide right column.
 func _layout_grid() -> void:
 	area = get_viewport().get_visible_rect().size
+	if Platform.handheld and is_instance_valid(canvas):
+		var inset := _safe_inset()
+		canvas.offset.x = inset
+		area.x -= inset * 2.0
 	var narrow := area.x < 1400.0
 	LEFT = 44.0 if narrow else 64.0
 	COL = clampf(area.x * 0.42, 470.0, 528.0) if narrow else 528.0
 	RIGHT_W = clampf(area.x - LEFT - COL - LEFT * 2.0, 500.0, 592.0)
 	RIGHT_X = area.x - LEFT - RIGHT_W
 	tight = area.y < 880.0
+
+## Phones: design units kept clear at each side for a camera cut-out or round
+## corners, since Android apps draw edge to edge. In landscape the cut-out sits
+## on a short edge, so both sides get the larger inset and the UI stays
+## centred; the 3D scene still fills the screen. `--safe-inset=<px>` fakes one
+## for tests.
+func _safe_inset() -> float:
+	var screen_px := Vector2(DisplayServer.screen_get_size())
+	var safe := Rect2(DisplayServer.get_display_safe_area())
+	var px := 0.0
+	if safe.size.x > 0.0 and safe.size.x < screen_px.x:
+		px = maxf(safe.position.x, screen_px.x - safe.end.x)
+	for arg in OS.get_cmdline_user_args():
+		if arg.begins_with("--safe-inset="): px = float(arg.trim_prefix("--safe-inset="))
+	var units_per_px := get_viewport().get_visible_rect().size.x / maxf(1.0, float(get_window().size.x))
+	return roundf(px * units_per_px)
 
 func _window_resized() -> void:
 	if layout_queued: return
@@ -654,12 +697,14 @@ func _rules(id: String = "") -> void:
 ## and drop the "coming soon" tiles.
 func _game_cards(parent: Control, y: float) -> float:
 	_eyebrow(parent, "CHOOSE A GAME", Rect2(LEFT, y, COL, 20))
-	if not on_web:
+	if not on_web and not store_app:
 		var library := _button(parent, "GAME LIBRARY  ›", Rect2(LEFT + COL - 150, y - 6, 150, 28), _show_library, false, 12)
 		library.name = "Library"
 		library.tooltip_text = "Install or remove games"
 	var top := y + 26
-	var card_h := 92.0 if tight else 106.0
+	# Phones always use the compact rhythm; their cards get room for the
+	# blurb's second line.
+	var card_h := (100.0 if Platform.handheld else 92.0) if tight else 106.0
 	var c := 1.0 if tight else 0.0
 	var ids: Array = _menu_game_ids()
 	# Two cards fit as they are; more scroll in a box two cards tall.
@@ -785,8 +830,8 @@ func _show_menu(message: String = "") -> void:
 ## Developer mode, beside the version tag in the corner of the menu.
 func _dev_toggle() -> void:
 	var row: Control = screen.find_child("VersionTag", true, false)
-	# The browser build has no developer packs folder.
-	if row == null or on_web: return
+	# The browser build has no developer packs folder; store apps never load one.
+	if row == null or on_web or store_app: return
 	var key := _button(row, "DEVELOPER MODE: ON" if dev_mode else "DEVELOPER MODE: OFF", Rect2(0, 0, 0, 32), _toggle_dev_mode, false, 12)
 	key.name = "DevModeToggle"
 	key.custom_minimum_size = Vector2(Kit.text_width(key.text, 12) + 44, 32)
@@ -885,12 +930,14 @@ func _open_host() -> void:
 	port_field.text_submitted.connect(func(_t): _host())
 	var hint := _label(panel, "Allow the game through your firewall. For internet play, forward this UDP port.", Rect2(200, 158, 328, 54), 14, MUTED)
 	_wrap(hint)
-	var web_key := _button(panel, "BROWSER GUESTS: ON" if browser_guests else "BROWSER GUESTS: OFF", Rect2(32, 226, 496, 44), func():
-		browser_guests = not browser_guests
-		_save_settings()
-		_open_host(), browser_guests, 16)
-	web_key.name = "BrowserGuests"
-	web_key.tooltip_text = "Players on your network can also join from a web browser, without installing the game. It runs smoother installed."
+	# Store apps host installed players only: no file server, no browser build.
+	if not store_app:
+		var web_key := _button(panel, "BROWSER GUESTS: ON" if browser_guests else "BROWSER GUESTS: OFF", Rect2(32, 226, 496, 44), func():
+			browser_guests = not browser_guests
+			_save_settings()
+			_open_host(), browser_guests, 16)
+		web_key.name = "BrowserGuests"
+		web_key.tooltip_text = "Players on your network can also join from a web browser, without installing the game. It runs smoother installed."
 	status_label = _label(panel, "", Rect2(32, 278, 496, 26), 15, WARN)
 	_button(panel, "OPEN LOBBY  →", Rect2(32, 314, 300, 56), _host, true, 22).grab_focus()
 	_button(panel, "CANCEL", Rect2(350, 314, 170, 56), _clear_overlay)
@@ -906,7 +953,7 @@ func _host() -> void:
 	if err != OK:
 		_set_status("Could not open UDP port %d. Try a different port." % server_port)
 	else:
-		_start_file_server()
+		if not store_app: _start_file_server()
 		if browser_guests:
 			packs.ensure_web()
 			_serve_web()
@@ -1778,9 +1825,14 @@ func _hud_feedback(rect: Rect2, font_size: int, outline_px: int) -> Control:
 ## Menu button and the names hint, top-right. The button never takes keyboard
 ## focus, so Space always reaches the game.
 func _hud_corner() -> void:
-	hud_menu = _button(hud_root, "ESC  ·  MENU", Rect2(area.x - 194, 22, 162, 46), _toggle_pause, false, 16)
+	hud_menu = _button(hud_root, "MENU" if Platform.handheld else "ESC  ·  MENU", Rect2(area.x - 194, 22, 162, 46), _toggle_pause, false, 16)
 	hud_menu.focus_mode = Control.FOCUS_NONE
 	hud_names = _outlined(_label(hud_root, "HOLD TAB  ·  NAMES", Rect2(area.x - 260, 76, 232, 22), 14, INK, true, ALIGN_RIGHT), 6)
+	if Platform.handheld:
+		# The touch layer presses it (any finger, not only the first), and
+		# there is no Tab key to hint at.
+		hud_menu.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		hud_names.visible = false
 
 ## A hard hazard-striped frame that snaps in on a hit and shrinks away.
 func _hud_shade() -> ColorRect:
@@ -2236,6 +2288,9 @@ func _load_settings() -> void:
 	# The browser build starts light; old computers run it slower than installed.
 	if on_web and not cfg.has_section_key("graphics", "level"): graphics_level = "low"
 	if OS.is_debug_build() and "--dev-mode" in OS.get_cmdline_user_args(): dev_mode = true
+	if store_app:
+		dev_mode = false
+		browser_guests = false
 
 func _save_settings() -> void:
 	if test_mode: return

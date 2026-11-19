@@ -57,8 +57,9 @@ func _build_tag() -> void:
 	label.add_theme_color_override("font_outline_color", Kit.OUTLINE)
 	label.add_theme_constant_override("outline_size", 6)
 	row.add_child(label)
-	# The browser build never updates itself: the page always serves the current one.
-	if where == "menu" and not OS.has_feature("web"):
+	# The browser build never updates itself: the page always serves the current
+	# one. Store apps (Android, iOS) are updated by the store.
+	if where == "menu" and not OS.has_feature("web") and not OS.has_feature("android") and not OS.has_feature("ios"):
 		var toggle := _key(row, "CHECK FOR UPDATES: ON" if updater.enabled else "CHECK FOR UPDATES: OFF", Vector2(0, 32), func(): updater.set_enabled(not updater.enabled), false, 12)
 		toggle.name = "UpdateToggle"
 		toggle.tooltip_text = "Look for a new version of Gizmo Jam each time it starts."

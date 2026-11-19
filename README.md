@@ -38,8 +38,8 @@ selected game against five bots, and **Host Party** opens a lobby on it. Sumo
 and Orb Racing are shown as coming soon. Menus also work from the keyboard: the
 main action is focused, so **Enter** or **Space** confirms it.
 
-Keyboard only. In every game **Esc** opens the menu, **Tab** (held) shows
-names, and **F11** toggles fullscreen.
+Keyboard on computers, touch on phones and tablets. In every game **Esc**
+opens the menu, **Tab** (held) shows names, and **F11** toggles fullscreen.
 
 - **Spin Cycle:** **Space / Up** to jump; **hold S / Down** to duck. Jump
   temporarily overrides a held duck; holding duck resumes it after landing.
@@ -47,6 +47,24 @@ names, and **F11** toggles fullscreen.
   diagonal); **Space** to dash in the direction you are running. A direction
   held during the countdown counts from GO. Opening the menu, losing window
   focus or the end of the round lets go of everything.
+
+**Phones and tablets** (the Android app, and the browser version on a device
+whose main pointer is a finger) get touch controls and a larger interface.
+Computers, including touchscreen laptops, keep the keyboard layout unchanged.
+
+- **Spin Cycle:** **tap the right half** of the screen to jump, **hold the
+  left half** to duck.
+- **Live Wire:** put your **left thumb** down anywhere on the left half and
+  drag to run; the stick appears under your thumb, holds eight directions, and
+  follows a thumb that slides past its rim. **Tap the right half** to dash.
+- **MENU** (top right) pauses, with any finger.
+- **Notches:** on a phone with a camera cut-out, the interface stays clear of
+  it; the 3D scene still fills the screen.
+- Touch sends exactly the inputs the keys send, so phones play in the same
+  parties as computers, including 0.2.0 builds.
+- **Testing:** `tests/test_touch.gd` runs in `run_tests.py`. To force the
+  phone layout on desktop, pass `-- --handheld`; to simulate a camera
+  cut-out, add `--safe-inset=<px>`.
 
 ### Spin Cycle HUD
 
@@ -611,7 +629,9 @@ To cut a release:
 1. Bump `config/version` and `config/build` in `project.godot`, and commit.
 2. Publish the browser build first (see **Game packs** below):
    `python3 tools/release_games.py --web --publish`. New hosts look for it in
-   the catalog as soon as they update, and the website plays it.
+   the catalog as soon as they update, and the website plays it. The same
+   command then builds the Android app and releases it on Google Play (see
+   **Android** below).
 3. Dry run: `python3 tools/release.py --godot <godot> --notes "What's new"`.
    It builds all three platforms with `tools/build.py`, writes and signs the
    manifest under `builds/release/<version>/`, checks the live manifest and the
@@ -730,6 +750,53 @@ computer on the LAN.
 `builds/GizmoJam-web-<version>.zip`. `tests/run_browser.py` (also run by
 `run_tests.py` when Node and Google Chrome are installed) has headless Chrome
 load it from a host on this machine's LAN address, join, play and press keys.
+
+### Android (Google Play)
+
+There is no separate step. After every catalog it publishes, `release_games.py
+--publish` builds the Android app and releases it on Google Play. That covers
+the core release's `--web` step as well as each new game, so phones get both
+with no extra command (`--no-android` skips it). If the Android part fails, the
+catalog stays live, and the script prints the command to retry:
+`python3 tools/play_publish.py --serial <n>`.
+
+- **The app carries every game.** `tools/build.py --android` bundles exactly
+  the games in the live signed catalog and refuses one whose `game.json`
+  differs from the published version. The app has no updater, pack downloads,
+  developer mode or browser guests; those are switched off by
+  `PackManager.store_app`. Desktop and web builds are unchanged.
+- **Version code:** `config/build × 10000 + catalog serial × 10 + revision`, so
+  it rises with every core release and every game release. The revision is 0
+  unless an Android-only rebuild of the same version needs a new code
+  (`--android-revision 1`, up to 9); Play never accepts a version code twice. The version name is
+  `config/version`.
+- **Output:** `builds/android/GizmoJam-<version>.aab` for Play (with a `.json`
+  beside it recording the version code, bundled games and SHA-256), and a
+  `.apk` signed the same way for sideloading.
+- **Track:** `TRACK` in `tools/play_publish.py`, currently `internal`. Set it
+  to `production` once the phone controls are done.
+  `python3 tools/play_publish.py --check` shows every track without changing
+  anything.
+- **Hardware:** `build.py` marks landscape and Wi-Fi optional in the Gradle
+  template's manifest on every build, and fails if the app requires either:
+  Play will not send such a release for review.
+- **Toolchain:**
+  - Android SDK in `~/Android/Sdk`: platform-tools, build-tools 35.0.1,
+    platforms 35 and 36, NDK 28.1.13356709 and CMake 3.10.2.
+  - JDK 17, set as `export/android/java_sdk_path` in the Godot editor settings.
+  - Godot 4.5.1's Android export templates.
+  - Godot's Gradle template goes into `android/`, which is gitignored, on the
+    first build.
+  - The app targets API 36, as Google Play has required for new apps and
+    updates since 2026-08-31.
+- **Secrets**, all in `~/.config/gizmo-jam/` (mode 600, never in the repo):
+  - `android-upload.jks`, the upload keystore, and `android-upload.env`, which
+    names it and holds its password. Google Play re-signs every release with
+    the app signing key it keeps. Back up both files: a lost upload key can be
+    reset through Play support, but that takes days.
+  - `play-service-account.json`, the publishing key: a Google Cloud service
+    account in project `gizmo-jam-publisher`, invited in Play Console with
+    release rights on Gizmo Jam.
 
 ## Credits and licenses
 

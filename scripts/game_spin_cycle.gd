@@ -25,6 +25,13 @@ const Model = preload("res://scripts/round_model.gd")
 const Plate = preload("res://scripts/hud_plate.gd")
 const Cue = preload("res://scripts/hud_cue.gd")
 const Status = preload("res://scripts/hud_status.gd")
+const Platform = preload("res://scripts/platform.gd")
+
+## What each control is called on screen: keys, or touch on phones.
+const JUMP_HINT := "SPACE / ↑"
+const DUCK_HINT := "HOLD S / ↓"
+const JUMP_TOUCH := "TAP RIGHT"
+const DUCK_TOUCH := "HOLD LEFT"
 
 ## The game's id on the wire and in saved settings. Builds since 0.2.0 send it,
 ## so it must never change.
@@ -40,6 +47,8 @@ var status: Control
 var cue: Control
 var was_ducking := false
 var held_duck_keys: Dictionary = {}
+## A finger is holding the duck side of the screen (scripts/touch_controls.gd).
+var touch_duck := false
 var last_hp := 7
 var last_score := 0
 var last_stage := 0
@@ -109,7 +118,7 @@ func build_hud() -> void:
 	# Countdown and a one-time controls reminder, drawn in the same shapes as the cue.
 	main._hud_count()
 	var intro: Control = main._hud_intro()
-	var samples := [["jump", "SPACE"], ["duck", "HOLD S"]]
+	var samples := [["jump", JUMP_TOUCH], ["duck", DUCK_TOUCH]] if Platform.handheld else [["jump", "SPACE"], ["duck", "HOLD S"]]
 	for i in 2:
 		var sample := Cue.new()
 		sample.pivot_offset = Vector2.ZERO
@@ -154,7 +163,7 @@ func update_hud() -> void:
 		var jump: bool = wave.kind == "jump"
 		var eta := maxf(0.0, (float(wave.at) - model.progress) / model.speed)
 		var now: bool = eta <= 0.35 and model.phase == "running"
-		var caption := "SPECTATING" if own.hp <= 0 else ("SPACE / ↑" if jump else "HOLD S / ↓")
+		var caption := "SPECTATING" if own.hp <= 0 else _hint(jump)
 		cue.sync(str(wave.kind), int(wave.id), "%.1fs" % eta, clampf(1.0 - (float(wave.at) - model.progress) / 1.35, 0, 1), now, caption)
 		if now and int(wave.id) != warned_wave and own.hp > 0:
 			warned_wave = int(wave.id)
@@ -183,9 +192,26 @@ func frame(_delta: float) -> void:
 		shade.visible = flash > 0
 		if shade.visible: shade.material.set_shader_parameter("strength", clampf(flash / 0.42, 0.0, 1.0))
 	if not main.paused:
-		sync_duck(not held_duck_keys.is_empty() or Input.is_physical_key_pressed(KEY_S) or Input.is_physical_key_pressed(KEY_DOWN))
+		sync_duck(touch_duck or not held_duck_keys.is_empty() or Input.is_physical_key_pressed(KEY_S) or Input.is_physical_key_pressed(KEY_DOWN))
+
+## The cue's caption for the next rod: its key, or its touch on phones.
+func _hint(jump: bool) -> String:
+	if Platform.handheld:
+		return JUMP_TOUCH if jump else DUCK_TOUCH
+	return JUMP_HINT if jump else DUCK_HINT
 
 # --------------------------------------------------------------------- keys
+
+## Touch controls (scripts/touch_controls.gd) send the same actions as the keys.
+func touch(action: String, pressed: bool) -> void:
+	if action == "duck":
+		touch_duck = pressed
+	elif action == "jump" and pressed and not main.paused:
+		send_control("jump", true)
+
+## Which touch zones this game uses, for touch_controls.gd: left and right halves.
+func touch_layout() -> Dictionary:
+	return {"left": "duck", "right": "jump", "left_label": DUCK_TOUCH, "right_label": JUMP_TOUCH}
 
 func key(event: InputEventKey) -> bool:
 	if event.physical_keycode in [KEY_S, KEY_DOWN]:
@@ -218,13 +244,14 @@ func release() -> void:
 
 func forget_keys() -> void:
 	held_duck_keys.clear()
+	touch_duck = false
 
 # -------------------------------------------------------------------- rules
 
 func build_rules() -> void:
 	var panel: Panel = main._modal(INFO.title, "Six runners share one accelerating spiral track. The last one standing wins.", 520)
-	main._rule_row(panel, 142, "jump", "SPACE / ↑", "Jump over the\norange rods")
-	main._rule_row(panel, 236, "duck", "HOLD S / ↓", "Duck under the\nviolet rods")
+	main._rule_row(panel, 142, "jump", _hint(true), "Jump over the\norange rods")
+	main._rule_row(panel, 236, "duck", _hint(false), "Duck under the\nviolet rods")
 	var notes: Label = main._label(panel, "Every rod you clear scores a point. Your seventh hit knocks you out. Jumping briefly overrides a held duck.", Rect2(32, 336, 496, 72), 16, Kit.MUTED)
 	main._wrap(notes)
 	main._button(panel, "GOT IT", Rect2(36, 426, 480, 58), main._clear_overlay, true, 24).grab_focus()

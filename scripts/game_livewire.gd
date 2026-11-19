@@ -21,6 +21,11 @@ const Model = preload("res://scripts/livewire_model.gd")
 const Plate = preload("res://scripts/hud_wire_plate.gd")
 const Cue = preload("res://scripts/hud_cue.gd")
 const Status = preload("res://scripts/hud_status.gd")
+const Platform = preload("res://scripts/platform.gd")
+
+## What each control is called on screen on phones.
+const MOVE_TOUCH := "LEFT THUMB"
+const DASH_TOUCH := "TAP RIGHT"
 
 const ID := "livewire"
 const INFO := {
@@ -59,6 +64,8 @@ var demo_count := 0
 # Keys. `held` is what the keyboard is doing, `sent` what the server believes.
 var held: Dictionary = {}
 var sent: Dictionary = {}
+## Directions the touch stick is holding (scripts/touch_controls.gd).
+var touch_held: Dictionary = {}
 var dash_guard := 0.0
 
 # What the HUD last saw, to turn state into events.
@@ -182,7 +189,7 @@ func build_hud() -> void:
 	# Controls reminder: it borrows the call-out slot until GO, so the board
 	# and the six starting tiles stay in view during the countdown.
 	var intro: Control = main._hud_intro()
-	var samples := [["move", "W A S D"], ["dash", "SPACE"]]
+	var samples := [["move", MOVE_TOUCH], ["dash", DASH_TOUCH]] if Platform.handheld else [["move", "W A S D"], ["dash", "SPACE"]]
 	for i in 2:
 		var sample := Cue.new()
 		sample.pivot_offset = Vector2.ZERO
@@ -393,7 +400,24 @@ func sync_keys() -> void:
 		if not main.paused and main.model != null and main.model.phase != "finished":
 			for code in MOVES[action]:
 				down = down or held.has(code)
+			down = down or bool(touch_held.get(action, false))
 		_hold(action, down)
+
+## Touch controls (scripts/touch_controls.gd) send the same actions as the keys:
+## the stick holds directions, the right side dashes.
+func touch(action: String, pressed: bool) -> void:
+	if action == "dash":
+		if pressed and not main.paused:
+			sync_keys()
+			dash()
+		return
+	if action in MOVES:
+		touch_held[action] = pressed
+		sync_keys()
+
+## Which touch zones this game uses, for touch_controls.gd.
+func touch_layout() -> Dictionary:
+	return {"left": "stick", "right": "dash", "left_label": MOVE_TOUCH, "right_label": DASH_TOUCH}
 
 func _hold(action: String, down: bool) -> void:
 	if bool(sent.get(action, false)) == down:
@@ -424,13 +448,18 @@ func release() -> void:
 ## The window lost focus, so the key-up events are lost with it.
 func forget_keys() -> void:
 	held.clear()
+	touch_held.clear()
 
 # -------------------------------------------------------------------- rules
 
 func build_rules() -> void:
 	var panel: Panel = main._modal(INFO.title, "Six runners paint a hex reactor floor. Whoever owns the most tiles when the 90 seconds run out wins.", 648)
-	main._rule_row(panel, 136, "move", "W A S D", "Run over tiles to\npaint them (or ↑ ↓ ← →)", 0.66)
-	main._rule_row(panel, 220, "dash", "SPACE", "Dash, and shove\nanyone in the way", 0.66)
+	if Platform.handheld:
+		main._rule_row(panel, 136, "move", MOVE_TOUCH, "Drag anywhere on the\nleft to run and paint", 0.66)
+		main._rule_row(panel, 220, "dash", DASH_TOUCH, "Dash, and shove\nanyone in the way", 0.66)
+	else:
+		main._rule_row(panel, 136, "move", "W A S D", "Run over tiles to\npaint them (or ↑ ↓ ← →)", 0.66)
+		main._rule_row(panel, 220, "dash", "SPACE", "Dash, and shove\nanyone in the way", 0.66)
 	main._rule_row(panel, 304, "loop", "LOCKS 10s", "Close a loop to take\nand lock the inside", 0.66)
 	main._rule_row(panel, 388, "surge", "DODGE", "Get off a red line\nbefore it fires", 0.66)
 	var notes: Label = main._label(panel, "A surge stuns you and wipes your biggest patch. The last 20 seconds are overdrive: more surges and nothing locks.", Rect2(32, 478, 496, 72), 16, Kit.MUTED)

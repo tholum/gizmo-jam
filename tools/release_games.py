@@ -28,6 +28,12 @@ higher version in its game.json, and games marked "publish": false (the
 example game) are refused.
 
 Signing reuses tools/release.py: the same key, envelope and trusted keys.
+
+After the catalog is live, --publish also builds the Android app with every
+published game built in and releases it on Google Play (tools/play_publish.py),
+so both a core release and a new game reach phones with no extra step.
+--no-android skips that. An Android failure never undoes the catalog: the
+script says so and how to retry.
 """
 import argparse
 import gzip
@@ -140,6 +146,8 @@ def main(argv=None):
     parser.add_argument("--key", default=str(release.DEFAULT_KEY), help="private signing key (default %(default)s)")
     parser.add_argument("--godot", help="Godot binary passed to tools/build.py")
     parser.add_argument("--skip-build", action="store_true", help="reuse packs already in builds/packs/")
+    parser.add_argument("--no-android", action="store_true", help="do not build and publish the Android app afterwards")
+    parser.add_argument("--notes", default="", help="release notes for Google Play (max 500 characters)")
     args = parser.parse_args(argv)
     if not args.game and not args.remove and not args.web:
         raise SystemExit("nothing to do: give --game ID, --remove ID or --web")
@@ -211,6 +219,9 @@ def main(argv=None):
     plan.append((out / f"catalog-{args.channel}.json", catalog_key(args.channel), "application/json", "no-cache", ""))
     for local, key_name, content_type, cache, encoding in plan:
         print(f"{'UPLOAD' if args.publish else 'would upload'}  {local.relative_to(ROOT)}  ->  s3://{release.BUCKET}/{key_name}  ({content_type}; {cache}{'; ' + encoding if encoding else ''})")
+    if not args.no_android:
+        import play_publish
+        print(f"{'THEN' if args.publish else 'would then'}  build the Android app with serial {catalog['serial']} and release it to Google Play ({play_publish.TRACK})")
     if not args.publish:
         print("Dry run: nothing uploaded. Re-run with --publish to upload.")
         return
@@ -236,6 +247,23 @@ def main(argv=None):
     print(f"uploaded {key_name} (last). Catalog serial {catalog['serial']} is live.")
     if web:
         print(f"Play on the web: {play_url(version)}")
+    if not args.no_android:
+        publish_android(catalog["serial"], args.godot, args.notes)
+
+
+def publish_android(serial, godot=None, notes=""):
+    """Phones get the new catalog's games: build the app and release it."""
+    import play_publish
+    retry = f"python3 tools/play_publish.py --serial {serial}"
+    try:
+        command = [sys.executable, str(ROOT / "tools/build.py"), "--android", "--serial", str(serial)]
+        if godot:
+            command += ["--godot", godot]
+        subprocess.run(command, check=True)
+        aab, meta = play_publish.built_bundle()
+        play_publish.publish(aab, int(meta["version_code"]), meta["version"], notes=notes)
+    except (subprocess.CalledProcessError, play_publish.PlayError) as error:
+        raise SystemExit(f"Catalog serial {serial} is live, but the Android app was NOT published: {error}\nRetry with: {retry}")
 
 
 if __name__ == "__main__":

@@ -45,6 +45,15 @@ verify(subprocess.run(base + ["--script", "res://tests/screen_sizes.gd"], text=T
                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120))
 verify(subprocess.run(base + ["--script", "res://tests/test_discovery.gd"], text=True,
                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30))
+# Touch controls: real touch events on a phone (with and without a camera
+# cut-out), and no touch layer on desktop.
+for touch_args in (["--handheld"], ["--handheld", "--safe-inset=120"], []):
+    touch = subprocess.run(base + ["--audio-driver", "Dummy", "--script", "res://tests/test_touch.gd", "--",
+                                   "--no-update-check"] + touch_args, text=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120)
+    verify(touch)
+    if "TOUCH_TESTS_PASS" not in touch.stdout:
+        raise SystemExit("Touch tests failed")
 
 # Game packs: build the example pack, then the logic without a network.
 subprocess.run([sys.executable, str(ROOT / "tools/build.py"), "--godot", args.godot, "--pack", "example"],

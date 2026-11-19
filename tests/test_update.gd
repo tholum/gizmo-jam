@@ -54,7 +54,7 @@ func versions() -> void:
 	check(Core.compare_versions("v1.2.3", "1.2.3") == 0, "leading v")
 	check(Core.compare_versions("garbage", "0.0.1") == -1, "invalid sorts lowest")
 	check(Core.parse_version("1.2").is_empty() and Core.parse_version("01.2.3").is_empty() and Core.parse_version(12).is_empty(), "invalid versions")
-	check(Core.local_version() == "0.3.0" and Core.local_build() == 3, "project version is 0.3.0 build 3")
+	check(Core.local_version() == "0.3.1" and Core.local_build() == 4, "project version is 0.3.1 build 4")
 	check(Core.platform_key("Linux") == "linux" and Core.platform_key("Windows") == "windows" and Core.platform_key("macOS") == "macos" and Core.platform_key("Android") == "", "platform keys")
 
 func validation() -> void:

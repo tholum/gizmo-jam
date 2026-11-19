@@ -38,6 +38,11 @@ const Core = preload("res://scripts/update_core.gd")
 const PackCore = preload("res://scripts/pack_core.gd")
 const Registry = preload("res://scripts/game_registry.gd")
 const Keys = preload("res://scripts/update_keys.gd")
+
+## The Android and iOS store apps carry every published game inside the app
+## and never download one: new games and versions arrive as store updates.
+## See docs/specs/mobile-apps-and-touch.md, section 4.
+static var store_app := OS.has_feature("android") or OS.has_feature("ios")
 const Updater = preload("res://scripts/updater.gd")
 
 const ROOT := "user://packs"
@@ -134,6 +139,20 @@ func load_all() -> void:
 	_write_index()
 	for p in problems: print("[packs] ", p)
 
+## Store apps: registers the games built into the app (tools/build.py
+## --android puts the published ones under res://games/). They count as signed
+## with no file hash, so they match a host's signed pack on id and net alone.
+func load_bundled() -> void:
+	var ids := Array(DirAccess.get_directories_at("res://games"))
+	ids.sort()
+	for id in ids:
+		if Registry.has(id): continue
+		var entry := PackCore.read_game_json(id, "signed", "", 0)
+		var problem: String = str(entry.error) if entry.has("error") else Registry.register(entry)
+		if not problem.is_empty():
+			problems.append("%s: %s" % [id, problem])
+	for p in problems: print("[packs] ", p)
+
 func load_dev_packs() -> void:
 	DirAccess.make_dir_recursive_absolute(dev_dir)
 	var files := DirAccess.get_files_at(dev_dir)
@@ -220,6 +239,7 @@ func catalog_file() -> String:
 
 ## Fetches the published catalog. Quietly does nothing when offline.
 func refresh_catalog() -> void:
+	if store_app: return
 	var bytes := await _fetch(catalog_url, PackCore.MAX_CATALOG, CATALOG_TIMEOUT)
 	if not bytes.is_empty():
 		var problem := adopt_catalog(bytes)
@@ -303,6 +323,10 @@ func acquire(id: String, host_entry: Dictionary, host_files: Dictionary, host_na
 	var same_file: bool = str(Registry.entry(id).get("sha256", "")) == str(host_entry.get("sha256", ""))
 	if Registry.compatible(Registry.capabilities(), id, host_entry) and (not exact or same_file):
 		_report(id, "ready")
+		return
+	if store_app:
+		# A game this app lacks, or has at another net, comes with a store update.
+		_report(id, "needs_update")
 		return
 	if int(host_entry.get("core_min", 0)) > Core.local_build():
 		_report(id, "needs_update")
