@@ -83,6 +83,10 @@ var display_progress := 0.0
 var last_progress := -1.0
 var impact_line: Node3D
 var local_slot := 0
+## Several players on this screen (one bit per slot), set by main.gd; 0 when
+## there is only own_slot. Every one of them gets the ring and a name tag, and
+## the single YOU marker stays hidden.
+var local_mask := 0
 var key_light: DirectionalLight3D
 var environment: Environment
 ## "low", "balanced" or "high". `detailed` is true only on High.
@@ -830,7 +834,8 @@ func update_visuals(model: RefCounted, delta: float, own_slot: int = 0) -> void:
 			_burst("dust", visual.position + Vector3(0.05, 0.08, 0), Color(0.93, 0.98, 1.0))
 		r.airborne = airborne
 		var jump := Model.jump_height({"jump": jump_clock})
-		visual.set_ring(i == own_slot and model != null, 0.5 + 0.5 * sin(decor_time * 5.0))
+		var local := i == own_slot or (local_mask >> i) & 1 == 1
+		visual.set_ring(local and model != null, 0.5 + 0.5 * sin(decor_time * 5.0))
 		r.tag.position.y = 1.62 + jump + (0.3 * (i % 2) if show_identities else 0.0)
 		if model and not model.players.is_empty():
 			var score: int = model.players[i].score
@@ -844,11 +849,13 @@ func update_visuals(model: RefCounted, delta: float, own_slot: int = 0) -> void:
 		else:
 			r.hp = 7
 			r.score = 0
-		r.tag.visible = model != null and show_identities and model.phase != "finished" and hp > 0
-		if r.tag.visible: r.tag.text = "%02d / %s" % [i + 1, model.players[i].name]
+		r.tag.visible = model != null and (show_identities or (local_mask >> i) & 1 == 1) and model.phase != "finished" and hp > 0
+		if r.tag.visible:
+			var tag_text := "%02d / %s" % [i + 1, model.players[i].name]
+			if r.tag.text != tag_text: r.tag.text = tag_text
 		if i == own_slot:
 			# Hidden near the top of a jump, where it would leave the screen.
-			you_marker.visible = model != null and model.phase != "finished" and hp > 0 and not show_identities and not is_instance_valid(victory) and jump < 0.45
+			you_marker.visible = model != null and model.phase != "finished" and hp > 0 and not show_identities and local_mask == 0 and not is_instance_valid(victory) and jump < 0.45
 			you_marker.position = visual.position + Vector3(0, 1.72 + jump * 0.85 + sin(decor_time * 5.0) * 0.045 - (0.55 if duck else 0.0), 0)
 			you_marker.get_node("Pointer").material_override.set_shader_parameter("fill", team_color(i))
 			you_marker.get_node("Text").modulate = team_color(i)

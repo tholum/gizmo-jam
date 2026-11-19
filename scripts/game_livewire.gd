@@ -21,6 +21,7 @@ const Model = preload("res://scripts/livewire_model.gd")
 const Plate = preload("res://scripts/hud_wire_plate.gd")
 const Cue = preload("res://scripts/hud_cue.gd")
 const Status = preload("res://scripts/hud_status.gd")
+const Pads = preload("res://scripts/gamepads.gd")
 
 const ID := "livewire"
 const INFO := {
@@ -32,6 +33,8 @@ const MOVES := {
 	"up": [KEY_W, KEY_UP], "down": [KEY_S, KEY_DOWN],
 	"left": [KEY_A, KEY_LEFT], "right": [KEY_D, KEY_RIGHT],
 }
+## Pad bits per held direction (d-pad or left stick). A is the dash.
+const PAD_MOVES := {"up": Pads.UP, "down": Pads.DOWN, "left": Pads.LEFT, "right": Pads.RIGHT}
 const STAGE_NAMES := ["WARM-UP", "CHARGED", "OVERDRIVE  ·  NO LOCKS"]
 ## Seconds before the same cue may sound again. Painting claims a few tiles a
 ## second and overdrive fires up to three lines at once: one sound per burst.
@@ -60,6 +63,19 @@ var demo_count := 0
 var held: Dictionary = {}
 var sent: Dictionary = {}
 var dash_guard := 0.0
+## Player one's pad: this frame and last frame.
+var pad_now := 0
+var pad_before := 0
+## Per slot, for this machine's extra seats: pad last frame, and the
+## direction bits the server believes are held.
+var seat_before := PackedInt32Array([0, 0, 0, 0, 0, 0])
+var seat_sent := PackedInt32Array([0, 0, 0, 0, 0, 0])
+## Per slot on a shared screen: what the HUD last saw, for the plate call-outs.
+var seat_tiles := PackedInt32Array([1, 1, 1, 1, 1, 1])
+var seat_zaps := PackedInt32Array([0, 0, 0, 0, 0, 0])
+var seat_loops := PackedInt32Array([0, 0, 0, 0, 0, 0])
+var seat_shoves := PackedInt32Array([0, 0, 0, 0, 0, 0])
+var seat_shoved := PackedInt32Array([0, 0, 0, 0, 0, 0])
 
 # What the HUD last saw, to turn state into events.
 var clock := 0.0
@@ -138,6 +154,15 @@ func round_started() -> void:
 			if Input.is_physical_key_pressed(code):
 				held[code] = true
 	dash_guard = 0.0
+	pad_now = main.pads.player_one()
+	pad_before = pad_now
+	seat_before.fill(0)
+	seat_sent.fill(0)
+	seat_tiles.fill(1)
+	seat_zaps.fill(0)
+	seat_loops.fill(0)
+	seat_shoves.fill(0)
+	seat_shoved.fill(0)
 	last_stage = 0
 	last_tiles = 1
 	last_zaps = 0
@@ -188,15 +213,16 @@ func build_hud() -> void:
 	for i in 6:
 		var p: Dictionary = main.model.players[i]
 		var plate := Plate.new()
-		plate.setup(Kit.colors[i], p, main._role(i, p, my_slot), i == my_slot)
+		plate.setup(Kit.colors[i], p, main._role(i, p, my_slot), main.is_local(i))
 		root.add_child(plate)
 		plates.append(plate)
+	main._plate_callouts()
 	main._hud_shade()
 	main._hud_count()
 	# Controls reminder: it borrows the call-out slot until GO, so the board
 	# and the six starting tiles stay in view during the countdown.
 	var intro: Control = main._hud_intro()
-	var samples := [["move", "W A S D"], ["dash", "SPACE"]]
+	var samples := [["move", "STICK"], ["dash", "A"]] if main.pad_captions() else [["move", "W A S D"], ["dash", "SPACE"]]
 	for i in 2:
 		var sample := Cue.new()
 		sample.pivot_offset = Vector2.ZERO
@@ -216,7 +242,9 @@ func layout_hud() -> void:
 	var area: Vector2 = main.area
 	status.position = Vector2(28, 16)
 	cue.position = Vector2(roundf(area.x * 0.5 - Cue.SIZE.x * 0.5), 12)
-	main.place_plates(plates, main.plate_rects(area, main.session.my_slot(), Plate.SIZE, 8.0), Plate.SIZE)
+	var rects: Array = main.plate_rects(area, main.plate_focus(), Plate.SIZE, 8.0)
+	main.place_plates(plates, rects, Plate.SIZE)
+	main.place_plate_calls(rects)
 
 func update_hud() -> void:
 	var model: RefCounted = main.model
@@ -264,11 +292,15 @@ func update_hud() -> void:
 			main._sfx("countdown_tick", 360 + whole * 100)
 		last_whole = whole
 	_update_surges(model, own, running)
-	_update_events(model, own, running)
+	if main.shared_screen:
+		_update_seats(model, running)
+	else:
+		_update_events(model, own, running)
 
 ## The call-out and the surge sounds.
 func _update_surges(model: RefCounted, own: Dictionary, running: bool) -> void:
-	var cell: int = model.grid.cell_at(Vector2(own.x, own.z))
+	# A shared screen has no one runner to warn, so it gets the plain call-out.
+	var cell: int = -1 if main.shared_screen else model.grid.cell_at(Vector2(own.x, own.z))
 	var soonest: Dictionary = {}
 	var mine: Dictionary = {}
 	var fresh := false
@@ -291,7 +323,7 @@ func _update_surges(model: RefCounted, own: Dictionary, running: bool) -> void:
 			mine = s
 	surges_seen = seen
 	# A stunned runner cannot act on a warning, so they only get the plain one.
-	var can_move := float(own.stun) <= 0.0
+	var can_move: bool = float(own.stun) <= 0.0 and not main.shared_screen
 	on_the_line = running and can_move and not mine.is_empty() and float(mine.warn) > 0.0
 	var warn_time := float(model.SURGE_WARN)
 	if not running or soonest.is_empty():
@@ -352,12 +384,54 @@ func _update_events(model: RefCounted, own: Dictionary, running: bool) -> void:
 	last_shoves = int(own.shoves)
 	was_shoved = shoved
 
+## Shared screen: each local runner's zaps, loops and shoves, called out over
+## its own plate. The hazard frame and the HUD shake belong to one player, so
+## they stay off.
+func _update_seats(model: RefCounted, running: bool) -> void:
+	var locking: bool = model.stage() < 2
+	for i in 6:
+		if not main.is_local(i): continue
+		var p: Dictionary = model.players[i]
+		var tiles := int(p.tiles)
+		var shoved := 1 if float(p.shove) > 0.0 else 0
+		if not running:
+			pass
+		elif int(p.zaps) > seat_zaps[i]:
+			var lost := maxi(0, seat_tiles[i] - tiles)
+			main.plate_say(i, "ZAPPED!  −%d TILES" % lost if lost > 0 else "ZAPPED!", Kit.DANGER, true, 1.2)
+			main._sfx("zap", 120)
+		elif int(p.loops) > seat_loops[i]:
+			var gained := maxi(0, tiles - seat_tiles[i])
+			main.plate_say(i, ("LOOP!  +%d LOCKED" if locking else "LOOP!  +%d TILES") % gained, Kit.GOLD if gained >= 10 else Kit.LIME, false, 1.0)
+			main._sfx("loop_lock", 760)
+			if locking and _due("voice_locked", LOCK_VOICE_GAP):
+				main._voice("locked")
+		elif shoved == 1 and seat_shoved[i] == 0:
+			main.plate_say(i, "SHOVED!", Kit.JUMP, true, 0.7)
+			main._sfx("shove", 120)
+		elif int(p.shoves) > seat_shoves[i]:
+			main.plate_say(i, "DIRECT HIT!", Kit.CYAN, false, 0.7)
+			main._sfx("shove", 120)
+		elif tiles > seat_tiles[i] and _due("claim", CLAIM_GAP):
+			main._sfx("claim", 0.0, 0.94 + 0.12 * randf())
+		seat_tiles[i] = tiles
+		seat_zaps[i] = int(p.zaps)
+		seat_loops[i] = int(p.loops)
+		seat_shoves[i] = int(p.shoves)
+		seat_shoved[i] = shoved
+
 func frame(delta: float) -> void:
 	clock += delta
 	dash_guard = maxf(0.0, dash_guard - delta)
+	pad_now = main.pads.player_one()
 	sync_keys()
+	# Directions first, so a direction and A pressed together dash that way.
+	if pad_now & ~pad_before & Pads.A and not main.paused:
+		dash()
+	pad_before = pad_now
+	_seat_pads()
 	var shade: ColorRect = main.damage_shade
-	if not is_instance_valid(shade):
+	if not is_instance_valid(shade) or main.shared_screen:
 		return
 	# The hazard frame snaps in on a zap, exactly like a Spin Cycle hit.
 	# While the runner stands on a charging line a thin edge of it pulses.
@@ -407,6 +481,7 @@ func sync_keys() -> void:
 		if not main.paused and main.model != null and main.model.phase != "finished":
 			for code in MOVES[action]:
 				down = down or held.has(code)
+			down = down or pad_now & int(PAD_MOVES[action]) != 0
 		_hold(action, down)
 
 func _hold(action: String, down: bool) -> void:
@@ -428,12 +503,39 @@ func dash() -> void:
 		dash_guard = DASH_GUARD
 		main._sfx("dash")
 
+## This machine's extra seats, one pad each, straight to the server's model.
+func _seat_pads() -> void:
+	var seats: PackedInt32Array = main.seat_pads
+	var live: bool = not main.paused and main.model.phase != "finished"
+	for k in range(0, seats.size(), 2):
+		var slot := seats[k]
+		var pad: int = main.pads.mask(seats[k + 1])
+		var want: int = pad & Pads.DIRS if live else 0
+		var change: int = want ^ seat_sent[slot]
+		if change != 0:
+			for action in PAD_MOVES:
+				var bit: int = PAD_MOVES[action]
+				if change & bit: main.session.send_local_input(slot, action, want & bit != 0)
+			seat_sent[slot] = want
+		if live and main.model.phase == "running" and pad & ~seat_before[slot] & Pads.A:
+			var p: Dictionary = main.model.players[slot]
+			if float(p.cool) <= 0.0 and float(p.dash) <= 0.0 and float(p.stun) <= 0.0 and float(p.shove) <= 0.0:
+				main._sfx("dash")
+			main.session.send_local_input(slot, "dash", true)
+		seat_before[slot] = pad
+
 ## Lets go of every direction: pause menu, focus loss, round over, leaving.
 func release() -> void:
 	for action in sent:
 		if sent[action]:
 			main.session.send_input(action, false)
 	sent.clear()
+	for slot in 6:
+		if seat_sent[slot] != 0:
+			for action in PAD_MOVES:
+				if seat_sent[slot] & int(PAD_MOVES[action]):
+					main.session.send_local_input(slot, action, false)
+			seat_sent[slot] = 0
 
 ## The window lost focus, so the key-up events are lost with it.
 func forget_keys() -> void:

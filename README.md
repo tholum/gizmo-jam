@@ -38,15 +38,37 @@ selected game against five bots, and **Host Party** opens a lobby on it. Sumo
 and Orb Racing are shown as coming soon. Menus also work from the keyboard: the
 main action is focused, so **Enter** or **Space** confirms it.
 
-Keyboard only. In every game **Esc** opens the menu, **Tab** (held) shows
-names, and **F11** toggles fullscreen.
+Keyboard or gamepad. In every game **Esc** or **Start** opens the menu, **Tab**
+or **Y** (held) shows names, and **F11** toggles fullscreen.
 
-- **Spin Cycle:** **Space / Up** to jump; **hold S / Down** to duck. Jump
-  temporarily overrides a held duck; holding duck resumes it after landing.
+- **Spin Cycle:** **Space / Up** to jump; **hold S / Down** to duck. On a pad,
+  **A** or **up** jumps; **B**, **down**, a trigger or a shoulder (held) ducks.
+  Jump temporarily overrides a held duck; holding duck resumes it after landing.
 - **Live Wire:** **W A S D** or the **arrow keys** to run (hold two for a
-  diagonal); **Space** to dash in the direction you are running. A direction
-  held during the countdown counts from GO. Opening the menu, losing window
-  focus or the end of the round lets go of everything.
+  diagonal); **Space** to dash in the direction you are running. On a pad, the
+  **d-pad** or **left stick** runs and **A** dashes. A direction held during
+  the countdown counts from GO. Opening the menu, losing window focus or the
+  end of the round lets go of everything.
+
+#### Several players on one screen
+
+Plug in (or pair) a gamepad per player. Player one is the keyboard plus one
+pad: on a machine nobody has typed on yet, such as a TV box, the first pad to
+press a button is player one's, and it also drives the menus (**d-pad** or
+stick to move, **A** to confirm, **B** to go back). Every other pad joins as a
+player of its own by pressing **A** or **Start** on the menu, or in the lobby
+of a party this machine hosts, and leaves again with **B** or **Back**. The
+menu lists who is playing on this screen, and **Play** starts a round with all
+of them against bots for the empty seats. Hosting works the same way: the extra
+players take seats in the party and remote players fill the rest, up to six.
+
+A round with more than one player on the screen marks every one of their
+runners and plates, calls each player's hits, clears, zaps and loops out over
+their own plate, and leaves out the whole-screen hit effects. Unplugging a pad
+mid-round hands its runner to a bot, exactly like a dropped connection. A
+computer that joins somebody else's party has one player; there every pad
+drives it. The extra seats are ordinary party seats owned by the host
+computer, so older builds that join see them as more players.
 
 ### Spin Cycle HUD
 
@@ -359,7 +381,8 @@ to the lobby. This role is separate from the computer running the network server
   the person who should take over. The proposer automatically votes yes.
 - A strict majority of the **other players**, excluding the incumbent host,
   transfers control. With six humans this takes three votes; with two humans,
-  the other person can take over. Bots do not vote. Each person gets one vote.
+  the other person can take over. Bots do not vote. Each computer gets one
+  vote: players sharing a screen share their computer's.
 - The current host can hand over voluntarily using **Pass Host**.
 - Votes expire after 25 seconds. If a remote party host disconnects, leadership
   passes to a remaining player automatically.
@@ -399,9 +422,14 @@ online Live Wire round between **three copies of the real game**, driven
 through its buttons and key events: the host switches games in the lobby, a
 client's keys move its own runner and nobody else's in both the server's model
 and its own snapshot copy, a player who leaves is replaced by a bot, and
-everyone reaches the results and the lobby. `run_tests.py` runs it as its
-last stage; on its own, and with screenshots of what the joining player sees
-(`test-output/online-*.png`):
+everyone reaches the results and the lobby. Gamepads are driven the same way,
+as real pad events with their own device ids: `tests/test_gamepads.gd` joins
+and leaves pads on the menu, plays both games from several pads at once, pauses
+and unplugs one mid-round; `tests/run_gamepad_online.py` has a host with a
+second pad player and a remote guest play a Live Wire round, each seat moving
+only for its own pad or keys on the server and in the guest's copy.
+`run_tests.py` runs the online rounds as its last stages; on its own, and with
+screenshots of what the joining player sees (`test-output/online-*.png`):
 
 ```sh
 python3 tests/run_online.py --godot /path/to/godot

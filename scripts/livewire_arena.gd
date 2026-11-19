@@ -290,6 +290,9 @@ var inset := REFERENCE_INSET
 ## Half the board's width in world units, emitters included; 0 until measured.
 var _half_width := 0.0
 var local_slot := 0
+## Several players on this screen (one bit per slot), set by main.gd; 0 when
+## there is only own_slot. Each gets the own-runner ring and a "▼ P2" tag.
+var local_mask := 0
 var active := false
 var menu_mode := false
 
@@ -1882,7 +1885,7 @@ func _update_runners(state: RefCounted, delta: float, own_slot: int, fresh: bool
 		if trail.visible:
 			trail.scale = Vector3(1.0, 1.0, 0.25 + 0.75 * r.trail_power)
 		# --- identity.
-		var own := i == own_slot
+		var own := i == own_slot or (local_mask >> i) & 1 == 1
 		var marked := own and not finished
 		if marked != r.mark_own or strobe != r.mark_stun:
 			r.mark_own = marked
@@ -1895,10 +1898,11 @@ func _update_runners(state: RefCounted, delta: float, own_slot: int, fresh: bool
 		var tag: Label3D = r.tag
 		tag.visible = (own or show_identities) and not finished
 		if tag.visible:
-			var mode := 1 if show_identities else 0
+			# 0: "▼ YOU", 1: everyone's names (Tab), 2: "▼ P2" on a shared screen.
+			var mode := 1 if show_identities else (2 if local_mask != 0 else 0)
 			var label_name: String = p.name
 			if mode != r.tag_mode or (mode == 1 and label_name != r.tag_name):
-				tag.text = ("%02d / %s" % [i + 1, label_name]) if mode == 1 else "▼ YOU"
+				tag.text = ("%02d / %s" % [i + 1, label_name]) if mode == 1 else ("▼ P%d" % (i + 1) if mode == 2 else "▼ YOU")
 				r.tag_mode = mode
 				r.tag_name = label_name
 			tag.position.y = r.top + 0.59 + (0.3 * (i % 2) if show_identities else 0.0)
