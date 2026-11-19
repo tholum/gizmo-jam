@@ -1,0 +1,15 @@
+{
+  "id": "plate_panic",
+  "version": "1.0.0",
+  "net": 1,
+  "core_min": 7,
+  "actions": ["up", "down", "left", "right", "wedge"],
+  "input_budget": 240,
+  "info": {
+    "number": "07",
+    "title": "PLATE PANIC",
+    "tags": "PHYSICS  ·  SCORE ATTACK",
+    "blurb": "Tilt the table. Sink marbles.\nDrop a wedge to redirect a roll.",
+    "voice": ""
+  }
+}

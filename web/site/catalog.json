@@ -125,6 +125,25 @@
         },
         "alt": "Robots herd wind-up critters toward colored pens as a gold critter emerges from a hatch."
       }
+    },
+    {
+      "id": "plate-panic",
+      "name": "Plate Panic",
+      "caption": "Tilt the table and redirect rolling marbles.",
+      "description": "Every robot’s weight tilts the same tabletop. Roll marbles into your pocket or drop a wedge to redirect a roll. The player who pockets the most marbles in 90 seconds wins.",
+      "controls": "`W``A``S``D` or the arrow keys to move and tilt the table. Press `Space` to place a wedge in the last direction you moved.",
+      "touchControls": "drag your left thumb to move and tap the right side to place a wedge.",
+      "desktopLibrary": true,
+      "screenshot": {
+        "file": "img/plate-panic.webp",
+        "width": 1280,
+        "height": 800,
+        "sources": {
+          "320": "img/plate-panic-320.webp",
+          "640": "img/plate-panic-640.webp"
+        },
+        "alt": "Robots tilt a tabletop with rolling marbles, wedges, and six colored scoring pockets."
+      }
     }
   ],
   "extraScreenshots": [

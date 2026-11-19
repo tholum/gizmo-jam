@@ -105,6 +105,7 @@ var ducks_seen := false
 var bot_seat := -1
 var bot_from := Vector2.ZERO
 var bot_verified := false
+var bot_reported := false
 
 func _initialize() -> void:
 	for arg in OS.get_cmdline_user_args():
@@ -490,20 +491,28 @@ func leave_or_watch() -> void:
 	watch_bot()
 	if not bot_verified:
 		return
-	finishing = true
 	if role == "host":
 		expect(live_verified and ducks_seen and lobby_count == 2, "All three rounds must have been refereed")
 		expect(session.members.size() == 5 and seats_settled(), "Five peers remain and nobody sent anything in round 3")
 		expect(reports.get("lobby2", {}).size() == 5, "Everyone followed the pick back to Live Wire")
+		# Every client must verify the sole bot before any other client leaves.
+		var confirmed: Dictionary = reports.get("bot_ok", {})
+		for member in session.members:
+			if int(member.peer) != 1 and not confirmed.has(member.peer):
+				return
+		finishing = true
+		probe.notice.rpc("bot_ok")
 		print("SERVER_PASS six-seats game-sync late-join leader-only-pick per-game-inputs own-seat-steering majority-transfer new-leader-pick-and-start disconnect-becomes-bot")
 	else:
+		if not bot_reported:
+			bot_reported = true
+			probe.report.rpc_id(1, "bot_ok", "")
+		if not notices.has("bot_ok"):
+			return
+		finishing = true
 		print("CLIENT_%d_PASS game-sync leader-only-pick no-pick-mid-round per-game-inputs own-seat-steering vote relaunch disconnect-becomes-bot" % index)
-		quit_later()
-
-func quit_later() -> void:
-	await create_timer(1.0).timeout
-	session.close()
-	quit(0)
+		session.close()
+		quit(0)
 
 func expect(condition: bool, message: String) -> void:
 	if not condition: fail(message)
