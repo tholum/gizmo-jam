@@ -30,8 +30,9 @@ example game) are refused.
 
 Signing reuses tools/release.py: the same key, envelope and trusted keys.
 
-After the catalog is live, --publish also builds the Android app with every
-published game built in and releases it on Google Play (tools/play_publish.py),
+After the catalog is live, --publish refreshes the website catalog on stable.
+It also builds the Android app with every published game built in and releases
+it on Google Play (tools/play_publish.py),
 so both a core release and a new game reach phones with no extra step.
 --no-android skips that. An Android failure never undoes the catalog: the
 script says so and how to retry.
@@ -182,6 +183,12 @@ def main(argv=None):
     live = live_catalog(f"{base_url}/{catalog_key(args.channel)}", trusted)
     print("No live catalog yet: this will be the first." if live is None else f"Live catalog: serial {live['serial']}, {len(live['games'])} games")
     catalog = next_catalog(live, added, args.remove, args.channel)
+    if args.channel == "stable":
+        import release_site
+        try:
+            release_site.game_content(catalog)
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            raise SystemExit(f"Website catalog: {error}") from None
 
     web = None
     web_upload = []
@@ -233,6 +240,8 @@ def main(argv=None):
     plan.append((out / f"catalog-{args.channel}.json", catalog_key(args.channel), "application/json", "no-cache", ""))
     for local, key_name, content_type, cache, encoding in plan:
         print(f"{'UPLOAD' if args.publish else 'would upload'}  {local.relative_to(ROOT)}  ->  s3://{release.BUCKET}/{key_name}  ({content_type}; {cache}{'; ' + encoding if encoding else ''})")
+    if args.channel == "stable":
+        print(f"{'THEN' if args.publish else 'would then'}  refresh the public website catalog")
     if not args.no_android:
         import play_publish
         print(f"{'THEN' if args.publish else 'would then'}  build the Android app with serial {catalog['serial']} and release it to Google Play ({play_publish.TRACK})")
@@ -258,11 +267,20 @@ def main(argv=None):
                 raise SystemExit(f"{play_url(version)} is not readable; catalog NOT published")
     local, key_name, content_type, cache, _encoding = plan[-1]
     release.upload(env, bucket, local, key_name, content_type, cache)
-    print(f"uploaded {key_name} (last). Catalog serial {catalog['serial']} is live.")
+    print(f"uploaded {key_name}. Catalog serial {catalog['serial']} is live.")
     if web:
         print(f"Play on the web: {play_url(version)}")
+    website_error = None
+    if args.channel == "stable":
+        try:
+            release_site.sync_after_release(env, bucket)
+        except SystemExit as error:
+            website_error = error
+            print(error, file=sys.stderr)
     if not args.no_android:
         publish_android(catalog["serial"], args.godot, args.notes)
+    if website_error:
+        raise SystemExit(1)
 
 
 def publish_android(serial, godot=None, notes=""):

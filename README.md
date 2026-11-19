@@ -728,10 +728,9 @@ To cut a release:
    credentials from `~/.config/wasabi-timholum/publisher.env` (never from
    `~/.aws`), refuses to run if `releases/<version>/` already exists or the
    version and build are not newer than the live manifest, uploads the three
-   builds, checks them over public HTTPS, and uploads the manifest **last**.
-5. In the separate site repo (`Timholumcom`, `games/gizmo-jam/index.html`),
-   point the three download links at `releases/<version>/` and the **Play on
-   the web** button at `web/<version>/play/index.html`.
+   builds, checks them over public HTTPS, and uploads the signed manifest.
+   On stable it also publishes the website catalog, updating the download
+   links and version shown on timholum.com.
 
 Wasabi layout, bucket `timholum.com`, region `us-central-1`, public base
 `https://s3.us-central-1.wasabisys.com/timholum.com/`:
@@ -744,6 +743,9 @@ Wasabi layout, bucket `timholum.com`, region `us-central-1`, public base
 - `games/gizmo-jam/updates/catalog-stable.json`: the signed game catalog.
 - `games/gizmo-jam/updates/stable.json`: the signed manifest, `Cache-Control:
   no-cache`. Its URL is a constant in `scripts/update_core.gd`.
+- `games/gizmo-jam/site/catalog.json`: the public website catalog, also served
+  with `Cache-Control: no-cache`. It references screenshots under `site/img/`
+  with content hashes in their URLs so browsers can cache them long-term.
 
 The manifest is JSON inside a signed envelope, so the signature and the
 manifest are always uploaded together:
@@ -835,8 +837,8 @@ catalog at export time bundled into the build. Its party button opens the
 download page because an HTTPS page cannot open a plain WebSocket to a
 computer on the LAN. To ship a new pack with the next web version, include
 it in the same release command, for example
-`python3 tools/release_games.py --game bumper_cars --web --publish`. The
-website button then needs the new versioned URL.
+`python3 tools/release_games.py --game bumper_cars --web --publish`. The stable
+publish also refreshes the website catalog, including its browser link.
 
 `tools/build.py --web` builds it alone into `builds/web/` and
 `builds/GizmoJam-web-<version>.zip`. Pass `--bundle <id>` for each extra game
@@ -844,6 +846,22 @@ to include in the standalone export at `builds/web-play/<version>/`.
 `tests/run_browser.py` (also run by
 `run_tests.py` when Node and Google Chrome are installed) has headless Chrome
 load it from a host on this machine's LAN address, join, play and press keys.
+
+### Website catalog
+
+Edit [web/site/catalog.json](web/site/catalog.json) for carousel order,
+descriptions, and controls. For a new pack, add a `minigames` entry with
+`desktopLibrary: true` and use its pack ID with hyphens in place of underscores.
+Put WebP screenshots in `web/site/img/` and include the full image dimensions
+and alt text. Smaller images can go in `sources`, keyed by width in pixels.
+Use backticks around key names in `controls` to render keycaps.
+
+Stable pack publishes add or remove games from the site according to the signed
+pack catalog. The browser link follows the latest signed web build while the
+desktop links, size, and release date follow the signed desktop manifest.
+To preview a content edit, run `python3 tools/release_site.py`. It writes
+`builds/release/site/catalog.json`. Run the same command with `--publish` to
+publish a content-only edit or retry a failed website update.
 
 ### Android (Google Play)
 

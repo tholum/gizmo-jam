@@ -1,0 +1,135 @@
+{
+  "release": {
+    "androidBetaUrl": "https://play.google.com/apps/testing/com.timholum.gizmojam",
+    "downloads": {
+      "windows": {
+        "label": "Windows"
+      },
+      "macos": {
+        "label": "macOS"
+      },
+      "linux": {
+        "label": "Linux"
+      }
+    }
+  },
+  "minigames": [
+    {
+      "id": "spin-cycle",
+      "name": "Spin Cycle",
+      "caption": "Jump and duck as the ramp speeds up.",
+      "description": "Six robots stand on a spiral ramp around a reactor. Jump the orange rods and duck under the violet ones as the ramp speeds up. Seven hits and you’re out. Last robot standing wins.",
+      "controls": "`Space` or `Up` to jump over orange rods. Hold `S` or `Down` to duck under violet rods.",
+      "touchControls": "tap the right side to jump and hold the left side to duck.",
+      "screenshot": {
+        "file": "img/round.webp",
+        "width": 1280,
+        "height": 800,
+        "sources": {
+          "320": "img/round-320.webp",
+          "760": "img/round-760.webp"
+        },
+        "alt": "Colorful robots jump a sweeping bar on a circular arena."
+      }
+    },
+    {
+      "id": "live-wire",
+      "name": "Live Wire",
+      "caption": "Paint the floor and dodge the surges.",
+      "description": "Race to paint a hex floor in your color. Close a loop to lock in your tiles, dodge the reactor’s surges, and dash into rivals to knock them off course. Most tiles after 90 seconds wins.",
+      "controls": "`W``A``S``D` or the arrow keys to run. Press `Space` to dash and shove.",
+      "touchControls": "drag your left thumb to move and tap the right side to dash.",
+      "screenshot": {
+        "file": "img/live-wire.webp",
+        "width": 1280,
+        "height": 800,
+        "sources": {
+          "320": "img/live-wire-320.webp",
+          "640": "img/live-wire-640.webp"
+        },
+        "alt": "Six robots on a hex floor painted in their colors while red surge lines cross the board."
+      }
+    },
+    {
+      "id": "bumper-cars",
+      "name": "Bumper Cars",
+      "caption": "Stay afloat as the dock shrinks.",
+      "description": "Boost into rivals on a floating dock with no railings. Five rings sink one at a time, shrinking the arena. Stay out of the water and be the last car afloat.",
+      "controls": "`W``A``S``D` or the arrow keys to steer. Press `Space` to boost and move inward when the outer ring flashes.",
+      "touchControls": "drag your left thumb to steer and tap the right side to boost.",
+      "desktopLibrary": true,
+      "screenshot": {
+        "file": "img/bumper-cars.webp",
+        "width": 1280,
+        "height": 800,
+        "sources": {
+          "320": "img/bumper-cars-320.webp",
+          "640": "img/bumper-cars-640.webp"
+        },
+        "alt": "Colorful bumper cars on a floating dock with its outer ring glowing before it sinks."
+      }
+    },
+    {
+      "id": "sumo",
+      "name": "Sumo",
+      "caption": "Shove rivals out of the ring to score.",
+      "description": "Shove rivals out of a fixed ring to score. If you fall, you respawn quickly and can get back in the fight. The highest score after 90 seconds wins.",
+      "controls": "`W``A``S``D` or the arrow keys to move. Let go to brace. Press `Space` to shove.",
+      "touchControls": "drag your left thumb to move, let go to brace, and tap the right side to shove.",
+      "desktopLibrary": true,
+      "screenshot": {
+        "file": "img/sumo.webp",
+        "width": 1280,
+        "height": 800,
+        "sources": {
+          "320": "img/sumo-320.webp",
+          "640": "img/sumo-640.webp"
+        },
+        "alt": "Robots competing inside the Sumo ring and a scoreboard tracking knockouts."
+      }
+    },
+    {
+      "id": "orb-racing",
+      "name": "Orb Racing",
+      "caption": "Clear the checkpoints and finish three laps.",
+      "description": "Race for three laps and drive through the checkpoints in order. Cross the recharge strips to refill your boost.",
+      "controls": "`W``A``S``D` or the arrow keys to steer. Press `Space` to boost.",
+      "touchControls": "drag your left thumb to steer and tap the right side to boost.",
+      "desktopLibrary": true,
+      "screenshot": {
+        "file": "img/orb-racing.webp",
+        "width": 1280,
+        "height": 800,
+        "sources": {
+          "320": "img/orb-racing-320.webp",
+          "640": "img/orb-racing-640.webp"
+        },
+        "alt": "Racers on the Orb Racing track with lap and position indicators."
+      }
+    }
+  ],
+  "extraScreenshots": [
+    {
+      "file": "img/menu.webp",
+      "width": 1280,
+      "height": 800,
+      "sources": {
+        "320": "img/menu-320.webp",
+        "640": "img/menu-640.webp"
+      },
+      "alt": "The Gizmo Jam menu showing Spin Cycle, Live Wire, and Bumper Cars beside the Spin Cycle arena.",
+      "caption": "Pick a game and play solo or with friends"
+    },
+    {
+      "file": "img/late-round.webp",
+      "width": 1280,
+      "height": 800,
+      "sources": {
+        "320": "img/late-round-320.webp",
+        "640": "img/late-round-640.webp"
+      },
+      "alt": "A late Spin Cycle round with some robots knocked out and the ramp at high speed.",
+      "caption": "Spin Cycle speeds up as the round goes on"
+    }
+  ]
+}

@@ -4,7 +4,8 @@
 Dry run by default: builds, writes and signs the manifest under
 builds/release/<version>/, and prints what it would upload. Add --publish to
 upload. Uploads go to games/gizmo-jam/releases/<version>/ (never overwritten),
-then the signed manifest games/gizmo-jam/updates/<channel>.json goes up last.
+then the signed manifest games/gizmo-jam/updates/<channel>.json. On stable,
+the website catalog is refreshed from the published releases.
 
     python3 tools/release.py --notes "New minigame: Sumo."            # dry run
     python3 tools/release.py --notes "New minigame: Sumo." --publish
@@ -315,6 +316,8 @@ def main(argv=None):
     plan.append((out / f"{args.channel}.json", manifest_key, "application/json", "no-cache"))
     for local, key_name, content_type, cache in plan:
         print(f"{'UPLOAD' if args.publish else 'would upload'}  {local.relative_to(ROOT)}  ->  s3://{BUCKET}/{key_name}  ({content_type}; {cache})")
+    if args.channel == "stable":
+        print(f"{'THEN' if args.publish else 'would then'}  refresh the public website catalog")
     if not args.publish:
         print("Dry run: nothing uploaded. Re-run with --publish to upload.")
         return
@@ -334,8 +337,10 @@ def main(argv=None):
                 raise SystemExit(f"{url} has the wrong size; manifest NOT published")
     local, key_name, content_type, cache = plan[-1]
     upload(env, bucket, local, key_name, content_type, cache)
-    print(f"uploaded {key_name} (last)")
-    print(f"Published v{version} build {build}. Update the website's download links to {base_url}/")
+    print(f"uploaded {key_name}. Published v{version} build {build}.")
+    if args.channel == "stable":
+        import release_site
+        release_site.sync_after_release(env, bucket)
 
 
 if __name__ == "__main__":
