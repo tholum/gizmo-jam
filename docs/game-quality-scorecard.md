@@ -1,6 +1,6 @@
 # Gizmo Jam game quality scorecard
 
-Use this for all eight games, with Spin Cycle as the comparison round. Score the build people play at its normal settings and viewing size.
+Use this for Gizmo Jam party play, with Spin Cycle as the comparison round. Score multiplayer rounds at normal settings and viewing sizes. Use one-player sessions to isolate controls, scoring, and balance issues.
 
 | Category | Weight | What to record |
 | --- | ---: | --- |
@@ -28,7 +28,7 @@ Use **—** for missing evidence and report **points earned / weight tested**. F
 
 1. Recruit children, teens, adults, and older adults with varied gaming experience. Give each person two rounds per assigned game and rotate game order. Use Spin Cycle on the same device and settings. Let players use the game's own instructions in the first round, then note any coaching they need.
 2. Record time to explain the goal, time to first deliberate action, visible mistakes, and what each person says caused their score or loss. Offer an optional third round and record the choice privately. Report replay choices as counts by age group and input method, including which issues recur within a group.
-3. Check **1 human**, **2 humans**, **3 humans**, **4 humans**, **2 humans + 2 bots**, **4 humans + 1 bot**, and **6 humans**. Also check the default **1 human + 5 bots** Solo lineup. Prioritize hands-on sessions with three humans and zero bots, and two humans and two bots. Record the lineup for every result.
+3. Check **2 humans**, **3 humans**, **4 humans**, and **6 humans** with no bots, plus **2 humans + 2 bots** and **4 humans + 1 bot**. Prioritize hands-on sessions with three humans and zero bots, and two humans and two bots. Check whether each player has a fair chance to score and stays involved as the group size changes. Record the lineup for every result.
 4. Compare a full round and the busiest 10 seconds on desktop, a physical phone, and a supported low-end device. Record device, settings, render scale, p95/p99 frame time, and the count of frames over twice the device's frame budget. Use about 16.7 ms for a 60 Hz desktop target and 33.3 ms for a 30 Hz Low target. Review the same seeded event and lineup before and after each fix.
 5. Save one line per issue or measured outcome. Fix repeatable blockers and mixed-age control or clarity problems first. Repeat the same scenario after the change.
 

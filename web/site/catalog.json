@@ -163,6 +163,25 @@
         },
         "alt": "Numbered tugboats tow floating crates across the harbor with their tow lines visible."
       }
+    },
+    {
+      "id": "popcorn-catch",
+      "name": "Popcorn Catch",
+      "caption": "Catch popcorn and bank your bowl before it spills.",
+      "description": "Chase the landing marks to catch falling popcorn. Bank at any rim shelf and earn a bonus for bringing at least four kernels. A wobbling bowl spills half its load on the next catch. Most points banked in 90 seconds wins.",
+      "controls": "`W``A``S``D` or the arrow keys to steer. On a controller, use the left stick or D-pad. Catch popcorn and bank automatically.",
+      "touchControls": "drag on either half of the screen to steer the bowl.",
+      "desktopLibrary": true,
+      "screenshot": {
+        "file": "img/popcorn-catch.webp",
+        "width": 1280,
+        "height": 800,
+        "sources": {
+          "320": "img/popcorn-catch-320.webp",
+          "640": "img/popcorn-catch-640.webp"
+        },
+        "alt": "Six numbered bowls chase falling popcorn and glowing landing marks inside a brass-rimmed cabinet."
+      }
     }
   ],
   "extraScreenshots": [

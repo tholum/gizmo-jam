@@ -29,6 +29,9 @@ console party minigames. Play on desktop, Android, or the web.
 - **08 Salvage Line** — hook drifting cargo and tow it back to your harbor.
   Cut exposed rival ropes to steal a haul. Heavy crates move slower and score
   double. Most cargo weight delivered in 90 seconds wins.
+- **09 Popcorn Catch** — steer your bowl under growing shadows to catch falling
+  popcorn. Bank at any rim shelf or stay for a bigger deposit and risk a spill.
+  Most points banked in 90 seconds wins.
 
 ## Play
 
@@ -74,6 +77,8 @@ Keyboard or gamepad on computers, touch on phones and tablets. In every game
 - **Salvage Line:** **WASD**, **arrows**, the **left stick**, or the **d-pad** to
   steer. Press **Space** or **A** to hook, cut, or release the highlighted target.
   Tow cargo into your numbered harbor and tap the action again to deliver it.
+- **Popcorn Catch:** **WASD**, **arrows**, the **left stick**, or the **d-pad**
+  to steer. Catch popcorn automatically and cross a shelf to bank it.
 
 #### Several players on one screen
 
@@ -107,6 +112,7 @@ Computers, including touchscreen laptops, keep the keyboard layout unchanged.
   Salvage Line:** drag your **left thumb** to move. The stick appears under your
   thumb and follows it past the rim. **Tap the right half** to use your game's
   action.
+- **Popcorn Catch:** drag on either half of the screen to steer the bowl.
 - **MENU** (top right) pauses, with any finger.
 - **Notches:** on a phone with a camera cut-out, the interface stays clear of
   it; the 3D scene still fills the screen.

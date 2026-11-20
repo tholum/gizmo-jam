@@ -1,0 +1,16 @@
+{
+  "id": "popcorn_catch",
+  "version": "1.0.0",
+  "optional_seats": true,
+  "net": 1,
+  "core_min": 10,
+  "actions": ["up", "down", "left", "right"],
+  "input_budget": 240,
+  "info": {
+    "number": "09",
+    "title": "POPCORN CATCH",
+    "tags": "ARCADE  ·  SCORE ATTACK",
+    "blurb": "Chase popping kernels. Bank a bowlful.\nOne catch too many spills your haul.",
+    "voice": ""
+  }
+}
