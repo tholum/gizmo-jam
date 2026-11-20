@@ -41,7 +41,7 @@ Use **—** for missing evidence and report **points earned / weight tested**. F
 Run the probe with a display and the device's normal graphics driver. Point `--packs-dir` at an isolated test profile with candidate PCKs in `dev-games`. The probe advances a fixed-seed six-seat bot round and writes screenshots and frame timing to `test-output/iterations/<iteration>/`.
 
 ```sh
-godot --path . --disable-vsync --resolution 1280x720 --script tests/graphics_probe.gd -- \
+godot --path . --audio-driver Dummy --disable-vsync --resolution 1280x720 --script tests/graphics_probe.gd -- \
   --game=orb_racing --iteration=orb-before --size=1280x720 --level=low \
   --start-at=12 --packs-dir=/path/to/test-profile --dev-mode --no-update-check
 ```

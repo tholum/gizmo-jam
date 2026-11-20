@@ -14,7 +14,7 @@ const note = (s) => appendFileSync(log, s + "\n");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const chrome = spawn(process.env.CHROME || "/usr/bin/google-chrome", [
-  "--headless=new", `--remote-debugging-port=${port}`, `--user-data-dir=${outdir}/profile`,
+  "--headless=new", "--mute-audio", `--remote-debugging-port=${port}`, `--user-data-dir=${outdir}/profile`,
   "--no-first-run", "--no-default-browser-check", "--disable-extensions",
   "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist",
   "--window-size=1280,800", "about:blank"], { stdio: ["ignore", "ignore", "ignore"] });

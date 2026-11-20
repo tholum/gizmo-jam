@@ -593,7 +593,8 @@ ports chosen by the test, with junk packets sprayed at the listener throughout,
 so it is deterministic. A second run uses real broadcast and reports, rather
 than fails, if the environment blocks it.
 
-To verify the UI and render screenshots on Linux:
+Automated browser tests mute their Chrome process. For local Godot playtests
+and captures, use the silent `Dummy` audio driver:
 
 ```sh
 xvfb-run -a godot --path . --audio-driver Dummy --script tests/smoke_ui.gd
@@ -605,7 +606,7 @@ what each quality level switches on (Low, Balanced and High), how old settings
 files map to a level, the scale rule, and celebration cleanup:
 
 ```sh
-.tools/Godot_v4.5.1-stable_linux.x86_64 --headless --path . --script tests/test_presentation.gd
+.tools/Godot_v4.5.1-stable_linux.x86_64 --headless --audio-driver Dummy --path . --script tests/test_presentation.gd
 xvfb-run -a .tools/Godot_v4.5.1-stable_linux.x86_64 --path . --audio-driver Dummy --disable-vsync --script tests/graphics_probe.gd -- --iteration=current
 ```
 
@@ -636,8 +637,8 @@ a max-speed drill, and a 90-second solo Live Wire round in which an autopilot
 runs, paints and dashes with W A S D and Space until the buzzer:
 
 ```sh
-.tools/Godot_v4.5.1-stable_linux.x86_64 --path . --fixed-fps 60 --script tests/playthrough.gd
-.tools/Godot_v4.5.1-stable_linux.x86_64 --path . --fixed-fps 60 --script tests/playthrough.gd -- --only=livewire
+.tools/Godot_v4.5.1-stable_linux.x86_64 --path . --audio-driver Dummy --fixed-fps 60 --script tests/playthrough.gd
+.tools/Godot_v4.5.1-stable_linux.x86_64 --path . --audio-driver Dummy --fixed-fps 60 --script tests/playthrough.gd -- --only=livewire
 python3 tests/run_latency.py
 ```
 

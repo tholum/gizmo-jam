@@ -34,7 +34,7 @@ os.environ.setdefault("SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT", "0x0001/0x0001
 parser = argparse.ArgumentParser()
 parser.add_argument("--godot", default=os.environ.get("GODOT", str(ROOT / ".tools/Godot_v4.5.1-stable_linux.x86_64")))
 args = parser.parse_args()
-base = [args.godot, "--headless", "--path", str(ROOT)]
+base = [args.godot, "--headless", "--audio-driver", "Dummy", "--path", str(ROOT)]
 
 subprocess.run([sys.executable, str(ROOT / "tests/test_play_publish.py")], check=True)
 
@@ -79,7 +79,7 @@ verify(subprocess.run(base + ["--script", "res://tests/test_discovery.gd"], text
 # Touch controls: real touch events on a phone (with and without a camera
 # cut-out), and no touch layer on desktop.
 for touch_args in (["--handheld"], ["--handheld", "--safe-inset=120"], []):
-    touch = subprocess.run(base + ["--audio-driver", "Dummy", "--script", "res://tests/test_touch.gd", "--",
+    touch = subprocess.run(base + ["--script", "res://tests/test_touch.gd", "--",
                                    "--no-update-check"] + touch_args, text=True,
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120)
     verify(touch)
