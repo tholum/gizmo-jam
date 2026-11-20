@@ -221,12 +221,12 @@ func update_visuals(state: RefCounted, delta: float, own_slot: int = 0) -> void:
 	var render_tick: int = state.tick + roundi(_finish_age * Model.HZ)
 	for i in _fighters.size():
 		var fighter := _fighters[i]
+		var p: Dictionary = state.players[i]
 		var victory := i == _champion
-		fighter.visible = _champion < 0 or victory
+		fighter.visible = p.active and (_champion < 0 or victory)
 		if not fighter.visible:
 			continue
-		var p: Dictionary = state.players[i]
-		var own := i == own_slot or (local_mask & (1 << i)) != 0
+		var own := not _menu and not victory and (i == own_slot or (local_mask & (1 << i)) != 0)
 		var tag := ""
 		if victory:
 			p = {"alive": true, "pos": Vector2.ZERO, "velocity": Vector2.ZERO,

@@ -5,6 +5,7 @@ const ScaledView = preload("res://scripts/scaled_view.gd")
 const LiveArena = preload("res://scripts/livewire_arena.gd")
 const Network = preload("res://scripts/session.gd")
 const Kit = preload("res://scripts/ui_kit.gd")
+const Palette = preload("res://scripts/palette.gd")
 const Cue = preload("res://scripts/hud_cue.gd")
 const Slam = preload("res://scripts/hud_slam.gd")
 ## One module per installed game (Registry.ids()). Everything a game shows,
@@ -90,6 +91,7 @@ var hud_feedback: Control
 var damage_shade: ColorRect
 var hud_menu: Button
 var hud_names: Label
+var touch_controls: TouchControls
 var name_field: LineEdit
 var address_field: LineEdit
 var port_field: LineEdit
@@ -116,6 +118,9 @@ var feedback_time := 0.0
 var graphics_level := "balanced"
 var audio: Node
 var last_member_count := 0
+var color_picker_slot := -1
+var color_pick_status: Label
+var active_slots: Array = [0, 1, 2, 3, 4, 5]
 ## The game this player last picked themselves; kept in the settings file.
 ## session.game can differ while they are a guest in somebody else's party.
 var preferred_game := "twisted"
@@ -173,6 +178,8 @@ func _ready() -> void:
 	session.name = "Session"
 	add_child(session)
 	session.roster_changed.connect(_roster_changed)
+	session.color_pick_rejected.connect(func(message: String):
+		if is_instance_valid(color_pick_status): color_pick_status.text = message)
 	session.round_started.connect(_round_started)
 	session.snapshot_received.connect(_snapshot_received)
 	session.input_received.connect(func(slot, action, pressed):
@@ -245,7 +252,8 @@ func _ready() -> void:
 		var touch_layer := CanvasLayer.new()
 		touch_layer.layer = canvas.layer + 1
 		add_child(touch_layer)
-		touch_layer.add_child(TouchControls.new(self))
+		touch_controls = TouchControls.new(self)
+		touch_layer.add_child(touch_controls)
 	_fit_canvas()
 	tone_player = AudioStreamPlayer.new()
 	tone_player.volume_db = -18
@@ -580,6 +588,8 @@ func _clear_screen() -> void:
 
 func _clear_overlay() -> void:
 	library_open = false
+	color_picker_slot = -1
+	color_pick_status = null
 	for child in overlay.get_children():
 		overlay.remove_child(child)
 		child.queue_free()
@@ -631,7 +641,8 @@ func _brand(parent: Control) -> Control:
 	if tight: logo.scale = Vector2(0.82, 0.82)
 	logo.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	var fills: Array = []
-	fills.append_array(Kit.colors)
+	for tint in Palette.COLORS:
+		fills.append(Kit.vivid(tint))
 	fills.append(INK)
 	logo.draw.connect(func():
 		logo.draw_set_transform(Vector2.ZERO, -0.035)
@@ -807,6 +818,9 @@ func _trust_badge(parent: Control, id: String, pos: Vector2) -> void:
 func _show_menu(message: String = "") -> void:
 	entering = view != "menu" or screen.get_child_count() == 0
 	view = "menu"
+	if session.mode == "offline" and session.members.is_empty():
+		session.solo(player_name)
+		_sync_local_seats()
 	_clear_screen()
 	if not relayout:
 		_clear_overlay()
@@ -822,11 +836,14 @@ func _show_menu(message: String = "") -> void:
 	y += 24 + field_h + (8.0 if tight else 16.0)
 	var solo_h := 56.0 if tight else 68.0
 	# Extra gamepads that joined on this screen play in the same round.
-	var here := 1 + pads.extras.size()
-	var solo_text := "PLAY SOLO  ·  VS 5 BOTS" if here == 1 else ("PLAY  ·  %d PLAYERS VS %d BOTS" % [here, 6 - here] if here < 6 else "PLAY  ·  6 PLAYERS")
+	var here := maxi(1, session.members.size())
+	var bots: int = session.slots().filter(func(seat): return seat.bot and seat.get("active", true)).size()
+	var solo_text := "PLAY SOLO" if here == 1 else "PLAY  ·  %d PLAYERS" % here
+	if bots > 0:
+		solo_text += ("  ·  VS " if here == 1 else " + ") + "%d %s" % [bots, "BOT" if bots == 1 else "BOTS"]
 	var solo := _button(actions, solo_text, Rect2(LEFT, y, COL, solo_h), _solo, true, 28 if here == 1 else 24)
 	solo.name = "Solo"
-	solo.tooltip_text = "Play %s against five bots" % _game_title().capitalize() if here == 1 else "Play %s on this screen" % _game_title().capitalize()
+	solo.tooltip_text = "Play %s on this screen" % _game_title().capitalize()
 	y += solo_h + (8.0 if tight else 14.0)
 	var half := (COL - 14) / 2.0
 	var party_h := 46.0 if tight else 56.0
@@ -850,7 +867,7 @@ func _show_menu(message: String = "") -> void:
 	_dev_toggle()
 	if dev_mode and message.is_empty() and not packs.problems.is_empty():
 		menu_status.text = "Developer packs: " + str(packs.problems[0])
-	if not pads.devices.is_empty():
+	if session.mode == "offline":
 		_local_players(screen)
 	_focus(solo)
 
@@ -951,7 +968,7 @@ func _set_status(text_value: String) -> void:
 func _open_host() -> void:
 	if not _read_fields(): return
 	_clear_overlay()
-	var panel := _modal("HOST A PARTY", "Friends join with your IP address. Open seats are filled by bots.", 400)
+	var panel := _modal("HOST A PARTY", "Friends join with your IP address. You can add bots in the lobby.", 400)
 	_eyebrow(panel, "UDP PORT", Rect2(32, 132, 160, 20))
 	port_field = _field(panel, str(server_port), "7777", Rect2(32, 158, 148, 54), 5)
 	port_field.text_submitted.connect(func(_t): _host())
@@ -971,6 +988,10 @@ func _open_host() -> void:
 
 func _host() -> void:
 	if not _read_fields(): return
+	var pad_colors := {}
+	for member in session.members:
+		if member.has("pad") and member.has("color"):
+			pad_colors[int(member.pad)] = int(member.color)
 	var web_port := 0
 	if browser_guests:
 		web_port = FileServer.DEFAULT_PORT + 1
@@ -985,6 +1006,8 @@ func _host() -> void:
 			packs.ensure_web()
 			_serve_web()
 		_sync_local_seats()
+		for device in pad_colors:
+			session.pick_color(session.pad_slot(device), pad_colors[device])
 		_advertise_party()
 		last_member_count = session.members.size()
 		_show_lobby()
@@ -1021,11 +1044,13 @@ func _join() -> void:
 
 func _cancel_join() -> void:
 	session.close()
-	_clear_overlay()
+	_show_menu()
 
 func _solo() -> void:
 	if not _read_fields(): return
-	session.solo(player_name)
+	if session.members.is_empty(): session.solo(player_name)
+	session.local_name = player_name
+	session.members[0].name = player_name
 	_sync_local_seats()
 	session.start_round()
 
@@ -1247,24 +1272,29 @@ func _join_discovered(p: Dictionary) -> void:
 func _show_lobby() -> void:
 	entering = view != "lobby"
 	view = "lobby"
+	var focused := get_viewport().gui_get_focus_owner()
+	var bot_focus := str(focused.name) if focused is Button and str(focused.name).begins_with("SetBot") else ""
 	_clear_screen()
 	if not relayout:
-		_clear_overlay()
+		if color_picker_slot < 0: _clear_overlay()
 		_set_stage(true)
 	_backdrop()
 	_land(_brand(screen), 1.35)
 	var host_name := _member_name(session.leader_id)
 	var host_tint := INK
 	for m in session.members:
-		if int(m.peer) == session.leader_id:
-			host_tint = Kit.colors[clampi(int(m.slot), 0, 5)]
+		if int(m.peer) == session.leader_id and not m.has("pad"):
+			host_tint = _member_tint(m)
+			break
 	# Vertical rhythm: the design grid, or a compact one on short screens.
 	var top := _below_brand()
 	var c := 1.0 if tight else 0.0
 	var info := _section(1)
 	_tab(info, "%s  ·  ONLINE PARTY" % _game_title(), Vector2(LEFT, top), Kit.CYAN, Kit.OUTLINE, 14)
 	_outlined(_label(info, "PARTY LOBBY", Rect2(LEFT, top + 22 - 2 * c, COL + 40, 70 - 18 * c), 62 - int(14 * c), INK, true), 12)
-	_label(info, "Everyone starts together. Open seats are filled by bots.", Rect2(LEFT, top + 104 - 30 * c, COL, 28 - 4 * c), 17, MUTED)
+	var lobby_hint := "Choose a color. The party host can add bots to open seats."
+	if not session.color_picking_supported(): lobby_hint = "Everyone starts when the party host starts the round."
+	_label(info, lobby_hint, Rect2(LEFT, top + 104 - 30 * c, COL, 28 - 4 * c), 17, MUTED)
 	var host_card := _panel(info, Rect2(LEFT, top + 156 - 42 * c, COL, 80 - 12 * c))
 	_tab(host_card, "PARTY HOST", Vector2(18, -14), host_tint, Kit.OUTLINE, 14)
 	_label(host_card, host_name.to_upper(), Rect2(24, 20 - 6 * c, 290, 48), 28, host_tint, true).text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
@@ -1327,13 +1357,17 @@ func _show_lobby() -> void:
 	_eyebrow(seats, "%d OF 6 CONNECTED" % session.members.size(), Rect2(RIGHT_X, top - 2, RIGHT_W, 24), INK, ALIGN_RIGHT)
 	var below := _roster_panel(seats, Vector2(RIGHT_X, top + 34), RIGHT_W, tight)
 	if not pads.devices.is_empty():
-		var hint := "PRESS A ON ANOTHER CONTROLLER TO JOIN  ·  B TO LEAVE" if session.local_seats_allowed() else "EXTRA CONTROLLERS CAN PLAY WHEN THIS MACHINE HOSTS"
+		var hint := "CONTROLLERS: A TO JOIN  ·  X FOR COLOR  ·  B TO LEAVE" if session.local_seats_allowed() else "EXTRA CONTROLLERS CAN PLAY WHEN THIS MACHINE HOSTS"
 		var pad_hint := _eyebrow(seats, hint, Rect2(RIGHT_X + 16, below + 4, RIGHT_W - 16, 22), MUTED)
 		pad_hint.name = "PadHint"
 	updater.decorate(screen, "lobby")
 	# A rebuild clears dialogs; an unanswered question about an unsigned game
 	# must not vanish with it.
 	if not relayout and not pending_consent.is_empty(): _show_consent()
+	_refresh_color_picker()
+	if not bot_focus.is_empty():
+		var replacement := screen.find_child(bot_focus, true, false) as Button
+		if replacement: _focus(replacement)
 	if start.disabled: _ensure_focus()
 
 ## Lobby: the game the next round will be. Everyone sees the choice; only the
@@ -1397,6 +1431,15 @@ func _member_name(peer: int) -> String:
 			return m.name
 	return "Host"
 
+func _member_tint(member: Dictionary) -> Color:
+	var slot: int = member.slot
+	if session.playing and model != null:
+		return Kit.colors[slot]
+	var color_id := int(member.get("color", -1))
+	if color_id >= 0 and color_id < Palette.SELECTABLE.size():
+		return Kit.vivid(Palette.SELECTABLE[color_id])
+	return Kit.MUTED if session.color_picking_supported() else Kit.vivid(Palette.COLORS[slot])
+
 ## Draws the six seats and any open host vote. Returns the y below the last element.
 ## A taken seat is a solid plate in that player's colour; an open one is a dark socket.
 func _roster_panel(parent: Control, origin: Vector2, width: float, compact: bool) -> float:
@@ -1416,7 +1459,9 @@ func _roster_panel(parent: Control, origin: Vector2, width: float, compact: bool
 		var extra: bool = filled and member.has("pad")
 		var here: bool = filled and int(member.peer) == own
 		var mine: bool = here and not extra
-		var tint: Color = Kit.colors[i]
+		var is_bot: bool = not filled and session.bot_at(i)
+		var tint := _member_tint(member) if filled else Kit.vivid(Palette.COLORS[i])
+		if is_bot: tint = Kit.MUTED
 		var number_size := 24 if compact else 34
 		var tile := Control.new()
 		tile.position = Vector2(origin.x, origin.y + i * pitch)
@@ -1424,13 +1469,13 @@ func _roster_panel(parent: Control, origin: Vector2, width: float, compact: bool
 		tile.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		tile.draw.connect(func():
 			var shape := Kit.slab(Rect2(0, 0, body_w, row_h))
-			if filled:
+			if filled or is_bot:
 				if here: Kit.stroke(tile, shape, INK, 11.0)
 				Kit.plate(tile, shape, tint, 4.0, 5.0)
 				tile.draw_colored_polygon(Kit.slab(Rect2(8, 6, row_h * 0.95, row_h - 12)), Kit.OUTLINE)
 			else:
 				Kit.plate(tile, shape, Color(0.045, 0.07, 0.15, 0.9), 3.0, 0.0, tint.darkened(0.45))
-			Kit.text(tile, str(i + 1), Vector2(8 + row_h * 0.475 + (row_h - 12) * Kit.SLANT * 0.5, Kit.baseline(row_h * 0.5, number_size)), number_size, tint if filled else tint.darkened(0.35), 0, 0.5))
+			Kit.text(tile, str(i + 1), Vector2(8 + row_h * 0.475 + (row_h - 12) * Kit.SLANT * 0.5, Kit.baseline(row_h * 0.5, number_size)), number_size, tint if filled or is_bot else tint.darkened(0.35), 0, 0.5))
 		parent.add_child(tile)
 		_enter(tile, i + 4, Vector2(70, 0))
 		var font_size := 19 if compact else 26
@@ -1440,15 +1485,27 @@ func _roster_panel(parent: Control, origin: Vector2, width: float, compact: bool
 		var state_text := _state_text(session.status_of(int(member.get("peer", 0)))) if filled and session.is_online() else ""
 		if not state_text.is_empty():
 			name_w -= Kit.text_width(state_text, 12) + 30.0
-		var name_label := _label(tile, name_text if filled else "OPEN SEAT  ·  CPU", Rect2(name_x, 0, name_w if filled else body_w - name_x - 20, row_h), font_size if filled else font_size - 4, Kit.OUTLINE if filled else DIM, true)
+		var pickable: bool = filled and session.can_pick_color(i)
+		var color_end := body_w - 160.0
+		if pickable:
+			if extra and state_text.is_empty(): color_end = body_w - 20.0
+			if not state_text.is_empty(): color_end -= Kit.text_width(state_text, 12) + 32.0
+			name_w = maxf(36.0, color_end - 108.0 - name_x)
+		var seat_text: String = name_text if filled else ("%s  ·  BOT" % Network.BOT_NAMES[i] if is_bot else "OPEN SEAT")
+		var name_label := _label(tile, seat_text, Rect2(name_x, 0, name_w if filled else body_w - name_x - 138, row_h), font_size if filled else font_size - 4, Kit.OUTLINE if filled or is_bot else DIM, true)
 		name_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-		if not filled: continue
+		if not filled:
+			if session.can_set_bot(i):
+				_bot_button(tile, i, is_bot, Rect2(body_w - 136, (row_h - 32.0) / 2.0, 120, 32))
+			continue
 		var chip_y := (row_h - 25.0) / 2.0
 		if not state_text.is_empty():
 			var waiting: bool = str(session.status_of(int(member.peer)).get("state", "")) in Network.WAITING_STATES
 			var chip := _tab(tile, state_text, Vector2(body_w - 160, chip_y + 1), Kit.OUTLINE if waiting else WARN, INK if waiting else Kit.OUTLINE, 12, true)
 			chip.name = "State"
-		if mine or extra:
+		if pickable:
+			_color_button(tile, i, member, Rect2(color_end - 96.0, (row_h - 32.0) / 2.0, 96, 32))
+		elif mine or extra:
 			var name_px := minf(Kit.text_width(name_text, font_size), name_w)
 			_tab(tile, "YOU" if mine else "CONTROLLER", Vector2(name_x + name_px + 12, chip_y), INK if here else Kit.OUTLINE, Kit.OUTLINE if here else INK, 13)
 		if extra:
@@ -1760,6 +1817,17 @@ func _answer_consent(yes: bool) -> void:
 func _round_started(seed_value: int, slots: Array, number: int) -> void:
 	# session.game is already the game of this launch, on every peer.
 	play = games[session.game]
+	active_slots = range(slots.size()).filter(func(i): return slots[i].get("active", true))
+	plate_calls.clear()
+	if Palette.set_round(slots):
+		Kit.update_player_colors()
+		arena.update_player_colors()
+		live_arena.update_player_colors()
+		# Downloaded arenas bake their player colors when they build meshes.
+		for id in games:
+			if not Registry.is_builtin(id):
+				games[id].stage(false, false)
+		play.stage(true, false)
 	model = play.make_model()
 	model.begin(seed_value, slots, number)
 	_seat_round()
@@ -1787,6 +1855,7 @@ func _round_started(seed_value: int, slots: Array, number: int) -> void:
 func _end_round() -> void:
 	if play: play.release()
 	model = null
+	plate_calls.clear()
 	paused = false
 	finish_clock = -1.0
 	_clear_overlay()
@@ -1837,23 +1906,26 @@ func _layout_hud() -> void:
 	if play and play.has_method("layout_hud"):
 		play.layout_hud()
 
-## Where six bottom plates of `plate_size` go on a canvas of `size`, as drawn
+## Where the active bottom plates of `plate_size` go on a canvas of `size`, as drawn
 ## rectangles, `bottom` units above the foot. The local player's plate is
 ## drawn 10% larger. On a narrow (4:3) canvas the row scales down so no plate
 ## overlaps another; on a wide one it stays centred instead of spreading out.
-static func plate_rects(size: Vector2, own_slot: int, plate_size: Vector2, bottom: float = 16.0) -> Array:
+func plate_rects(size: Vector2, own_slot: int, plate_size: Vector2, bottom: float = 16.0) -> Array:
 	var margin := 20.0
 	var gap := 9.6
-	var units := 6.0 + 0.1
-	var k := clampf((size.x - margin * 2.0 - gap * 5.0) / (plate_size.x * units), 0.3, 1.0)
-	var row := plate_size.x * k * units + gap * 5.0
+	var units := float(active_slots.size()) + (0.1 if own_slot in active_slots else 0.0)
+	var gaps := gap * maxf(0.0, active_slots.size() - 1)
+	var k := clampf((size.x - margin * 2.0 - gaps) / (plate_size.x * maxf(1.0, units)), 0.3, 1.0)
+	var row := plate_size.x * k * units + gaps
 	var x := roundf((size.x - row) * 0.5)
 	var rects: Array = []
-	for i in 6:
+	rects.resize(Network.MAX_PLAYERS)
+	rects.fill(Rect2())
+	for i in active_slots:
 		var grow := 1.1 if i == own_slot else 1.0
 		var w := plate_size.x * k * grow
 		var h := plate_size.y * k * grow
-		rects.append(Rect2(x, size.y - bottom - h, w, h))
+		rects[i] = Rect2(x, size.y - bottom - h, w, h)
 		x += w + gap
 	return rects
 
@@ -1861,7 +1933,10 @@ static func plate_rects(size: Vector2, own_slot: int, plate_size: Vector2, botto
 static func place_plates(plates: Array, rects: Array, plate_size: Vector2) -> void:
 	for i in mini(plates.size(), rects.size()):
 		var plate: Control = plates[i]
+		if plate == null: continue
 		var r: Rect2 = rects[i]
+		plate.visible = r.has_area()
+		if not plate.visible: continue
 		var k: float = r.size.x / plate_size.x
 		plate.scale = Vector2(k, k)
 		plate.position = Vector2(r.position.x - plate.pivot_offset.x * (1.0 - k), r.end.y - plate_size.y)
@@ -1929,6 +2004,9 @@ func _role(slot: int, p: Dictionary, my_slot: int) -> String:
 ## Whether `slot` is played on this machine in the current round.
 func is_local(slot: int) -> bool:
 	return (local_mask >> slot) & 1 == 1
+
+func seat_is_active(slot: int) -> bool:
+	return slot in active_slots
 
 ## The plate drawn larger in the row: the local player's, or none on a shared screen.
 func plate_focus() -> int:
@@ -2042,6 +2120,12 @@ func _pad_event(event: InputEvent) -> bool:
 		# A guest in somebody else's party plays alone: every pad is player one.
 		return _menu_pad(event, button, press, in_round)
 	if pads.is_extra(device):
+		var slot: int = session.pad_slot(device)
+		if color_picker_slot >= 0 and color_picker_slot == slot:
+			return _menu_pad(event, button, press, in_round)
+		if press and button == JOY_BUTTON_X and _can_seat() and session.can_pick_color(slot):
+			_show_color_picker(slot)
+			return false
 		if press and button in [JOY_BUTTON_B, JOY_BUTTON_BACK] and _can_seat():
 			pads.leave(device)
 			_ui_sound("ui_click")
@@ -2081,6 +2165,11 @@ func _menu_pad(event: InputEvent, button: int, press: bool, in_round: bool) -> b
 		return false
 	if not press:
 		return true
+	if button == JOY_BUTTON_X and overlay.get_child_count() == 0 and (view == "menu" or view == "lobby"):
+		var slot: int = session.my_slot()
+		if session.can_pick_color(slot):
+			_show_color_picker(slot)
+			return false
 	if in_round and (button == JOY_BUTTON_START or button == JOY_BUTTON_B):
 		_toggle_pause()
 		return false
@@ -2274,14 +2363,91 @@ func _ensure_focus() -> void:
 	if fallback:
 		fallback.grab_focus()
 
-## Menu: who plays on this screen, once a gamepad has shown up. Seats are
-## handed out in this order when the round starts.
+func _color_button(parent: Control, slot: int, member: Dictionary, rect: Rect2) -> void:
+	var color_id := int(member.get("color", -1))
+	var caption := "PICK COLOR" if color_id < 0 else str(Palette.NAMES[color_id]).to_upper()
+	var button := _dark_button(_button(parent, caption, rect, _show_color_picker.bind(slot), false, 13))
+	button.name = "PlayerColor%d" % slot
+	button.tooltip_text = "Choose a color for player %d" % (slot + 1)
+
+func _bot_button(parent: Control, slot: int, is_bot: bool, rect: Rect2) -> void:
+	var button := _dark_button(_button(parent, "REMOVE BOT" if is_bot else "ADD BOT", rect,
+		func():
+			session.set_bot(slot, not is_bot)
+			if view == "menu":
+				_refresh_screen()
+				var replacement := screen.find_child("SetBot%d" % slot, true, false) as Button
+				if replacement: _focus(replacement),
+		false, 13))
+	button.name = "SetBot%d" % slot
+	button.tooltip_text = "Leave seat %d open" % (slot + 1) if is_bot else "Put a bot in seat %d" % (slot + 1)
+
+func _show_color_picker(slot: int) -> void:
+	if not session.can_pick_color(slot): return
+	_clear_overlay()
+	color_picker_slot = slot
+	var panel := _modal("CHOOSE A COLOR", "Player %d can pick any available color." % (slot + 1), 364)
+	for id in Palette.SELECTABLE.size():
+		var x := 32.0 + (id % 4) * 126.0
+		var y := 132.0 + floorf(id / 4.0) * 72.0
+		var key := _button(panel, "", Rect2(x, y, 118, 60), _pick_color.bind(slot, id), false, 14)
+		key.name = "ColorOption%d" % id
+		key.set_meta("color_id", id)
+		var tint := Kit.vivid(Palette.SELECTABLE[id])
+		key.add_theme_stylebox_override("normal", Kit.box(tint))
+		key.add_theme_stylebox_override("hover", Kit.box(tint.lightened(0.2)))
+		key.add_theme_stylebox_override("pressed", Kit.box(tint, Kit.OUTLINE, 4, 1))
+		key.add_theme_stylebox_override("disabled", Kit.box(tint.darkened(0.72), Kit.OUTLINE, 4, 0, 0.16, 5, false))
+		for state in ["font_color", "font_hover_color", "font_pressed_color", "font_focus_color"]:
+			key.add_theme_color_override(state, Kit.OUTLINE)
+		key.add_theme_color_override("font_disabled_color", INK)
+	color_pick_status = _label(panel, "", Rect2(32, 269, 496, 23), 15, WARN)
+	var done := _button(panel, "DONE", Rect2(32, 302, 496, 44), _clear_overlay, true, 18)
+	done.name = "ColorDone"
+	_refresh_color_picker()
+	var first: Button
+	for key in panel.get_children():
+		if key.has_meta("color_id") and not key.disabled:
+			if first == null or key.button_pressed: first = key
+	if first: first.grab_focus()
+
+func _refresh_color_picker() -> void:
+	if color_picker_slot < 0: return
+	if not session.can_pick_color(color_picker_slot):
+		_clear_overlay()
+		return
+	var owners: Dictionary = session.color_owners()
+	var refocus := false
+	for key in color_pick_status.get_parent().get_children():
+		if not key.has_meta("color_id"): continue
+		var id: int = key.get_meta("color_id")
+		var owner := int(owners.get(id, -1))
+		var selected := owner == color_picker_slot
+		var taken := owner >= 0 and not selected
+		var caption := str(Palette.NAMES[id]).to_upper()
+		key.text = caption + ("\nSELECTED" if selected else ("\nTAKEN" if taken else ""))
+		key.tooltip_text = "Taken by player %d" % (owner + 1) if taken else str(Palette.NAMES[id])
+		key.toggle_mode = true
+		key.set_pressed_no_signal(selected)
+		key.add_theme_color_override("font_hover_pressed_color", Kit.OUTLINE)
+		if taken and key.has_focus(): refocus = true
+		key.disabled = taken
+	if refocus: color_pick_status.get_parent().get_node("ColorDone").grab_focus()
+
+func _pick_color(slot: int, id: int) -> void:
+	if color_picker_slot != slot: return
+	color_pick_status.text = ""
+	session.pick_color(slot, id)
+	if view == "menu": _refresh_screen()
+	_refresh_color_picker()
+
+## Menu: who plays on this screen, with a separate color picker per seat.
 func _local_players(parent: Control) -> void:
-	var rows := 1 + pads.extras.size()
-	var row_h := 34.0
-	var pitch := 40.0
+	var row_h := 40.0
+	var pitch := 46.0
 	var w := 380.0
-	var h := 30.0 + rows * pitch + 26.0
+	var hints := not pads.devices.is_empty()
+	var h := 30.0 + Network.MAX_PLAYERS * pitch + (26.0 if hints else 0.0)
 	var box := Control.new()
 	box.name = "LocalPlayers"
 	box.position = Vector2(area.x - w - 48.0, area.y - 86.0 - h)
@@ -2289,13 +2455,15 @@ func _local_players(parent: Control) -> void:
 	box.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	parent.add_child(box)
 	_enter(box, 4, Vector2(90, 0))
-	_eyebrow(box, "PLAYERS ON THIS SCREEN", Rect2(0, 0, w, 22), LIME)
-	var p1_how := "KEYBOARD"
-	if pads.primary >= 0: p1_how = "KEYBOARD + PAD" if pads.keyboard_used else "CONTROLLER"
-	for k in rows:
-		var tint: Color = Kit.colors[k]
-		var who := player_name.to_upper() if k == 0 else "PLAYER %d" % (k + 1)
-		var how := p1_how if k == 0 else "B TO LEAVE"
+	_eyebrow(box, "LOCAL LINEUP", Rect2(0, 0, w, 22), LIME)
+	var members_by_slot := {}
+	for member in session.members: members_by_slot[member.slot] = member
+	for k in Network.MAX_PLAYERS:
+		var member: Dictionary = members_by_slot.get(k, {})
+		var human := not member.is_empty()
+		var is_bot: bool = not human and session.bot_at(k)
+		var tint := _member_tint(member) if human else (MUTED if is_bot else PANEL)
+		var who := player_name.to_upper() if k == 0 else ("PLAYER %d" % (k + 1) if human else ("%s  ·  BOT" % Network.BOT_NAMES[k] if is_bot else "OPEN SEAT"))
 		var lean := row_h * Kit.SLANT
 		var tile := Control.new()
 		tile.position = Vector2(0, 30.0 + k * pitch)
@@ -2305,12 +2473,15 @@ func _local_players(parent: Control) -> void:
 			var shape := Kit.slab(Rect2(0, 0, w - lean, row_h))
 			Kit.plate(tile, shape, tint, 3.0, 4.0)
 			tile.draw_colored_polygon(Kit.slab(Rect2(6, 5, row_h, row_h - 10)), Kit.OUTLINE)
-			Kit.text(tile, str(k + 1), Vector2(6 + row_h * 0.5 + (row_h - 10) * Kit.SLANT * 0.5, Kit.baseline(row_h * 0.5, 20)), 20, tint, 0, 0.5)
-			Kit.text(tile, who, Vector2(row_h + 18, Kit.baseline(row_h * 0.5, 18)), Kit.fit(who, 18, w - 200.0, 12), Kit.OUTLINE)
-			Kit.text(tile, how, Vector2(w - lean - 14, Kit.baseline(row_h * 0.5, 12)), 12, Kit.OUTLINE, 0, 1.0))
+			Kit.text(tile, str(k + 1), Vector2(6 + row_h * 0.5 + (row_h - 10) * Kit.SLANT * 0.5, Kit.baseline(row_h * 0.5, 20)), 20, tint if human or is_bot else MUTED, 0, 0.5)
+			Kit.text(tile, who, Vector2(row_h + 18, Kit.baseline(row_h * 0.5, 18)), Kit.fit(who, 18, w - 200.0, 12), Kit.OUTLINE if human or is_bot else MUTED))
 		box.add_child(tile)
-	var hint := "PRESS A ON ANOTHER CONTROLLER TO JOIN" if rows < Network.MAX_PLAYERS else "ALL SIX SEATS ARE TAKEN"
-	_eyebrow(box, hint, Rect2(0, 30.0 + rows * pitch, w, 22), MUTED).name = "PadHint"
+		var action := Rect2(w - lean - 132, 4, 120, 32)
+		if human: _color_button(tile, k, member, action)
+		elif session.can_set_bot(k): _bot_button(tile, k, is_bot, action)
+	if not hints: return
+	var hint := "CONTROLLERS: A TO JOIN  ·  X FOR COLOR" if session.members.size() < Network.MAX_PLAYERS else "ALL SIX SEATS ARE TAKEN  ·  X FOR COLOR"
+	_eyebrow(box, hint, Rect2(0, 30.0 + Network.MAX_PLAYERS * pitch, w, 22), MUTED).name = "PadHint"
 
 func _unhandled_key_input(event: InputEvent) -> void:
 	if not event is InputEventKey or event.echo: return
@@ -2336,6 +2507,8 @@ func _notification(what: int) -> void:
 ## The window lost focus mid-round: key-up events will not arrive, so let go of
 ## everything, and pause a solo game.
 func _focus_lost() -> void:
+	if touch_controls:
+		touch_controls.reset()
 	if play:
 		play.release()
 		play.forget_keys()
@@ -2357,7 +2530,7 @@ func _show_pause() -> void:
 		var panel := _modal("PAUSED", "Take a breather. The round is frozen until you come back.", 290)
 		_button(panel, "RESUME", Rect2(36, 132, 480, 60), _toggle_pause, true, 24).grab_focus()
 		_button(panel, "RESTART", Rect2(36, 210, 232, 52), func(): session.start_round())
-		_button(panel, "QUIT TO MENU", Rect2(284, 210, 232, 52), _leave)
+		_button(panel, "QUIT TO MENU", Rect2(284, 210, 232, 52), func(): session.lobby())
 		return
 	var roster_h := 6 * 50.0 + (80.0 if not session.election.is_empty() else 0.0)
 	var panel := _modal("PARTY MENU", "The round keeps running while this menu is open.", 236 + roster_h + 16 + 52 + 36)
@@ -2438,10 +2611,11 @@ func _show_results() -> void:
 	_backdrop()
 	if not relayout: _set_stage(true)
 	_land(_brand(screen), 1.35)
-	var order: Array = model.ranking()
+	var order: Array = model.ranking().filter(seat_is_active)
 	var winner: Dictionary = model.players[order[0]]
-	var winners: Array = model.winners()
+	var winners: Array = model.winners().filter(seat_is_active)
 	var single_winner := winners.size() == 1
+	var solo_loss := order.size() == 1 and winners.is_empty()
 	var my_slot: int = session.my_slot()
 	# The table may run past the column, but never into the party roster.
 	var table_w := minf(COL + 72.0, RIGHT_X - LEFT - 28.0) if session.is_online() else COL + 72.0
@@ -2466,15 +2640,15 @@ func _show_results() -> void:
 		if single_winner:
 			var name_size := Kit.fit(winner_name, 84, 610.0, 30)
 			Kit.text(headline, winner_name, Vector2(0, 68), name_size, win_tint, 14, 0.0, 7.0)
-			Kit.text(headline, "TAKES THE WIN!", Vector2(4, 130), 50, INK, 12, 0.0, 6.0)
+			Kit.text(headline, "SOLO COMPLETE!" if order.size() == 1 else "TAKES THE WIN!", Vector2(4, 130), 50, INK, 12, 0.0, 6.0)
 		else:
-			Kit.text(headline, "IT’S A DRAW!", Vector2(0, 68), 80, INK, 14, 0.0, 7.0)
+			Kit.text(headline, "ROUND OVER" if solo_loss else "IT’S A DRAW!", Vector2(0, 68), 80, INK, 14, 0.0, 7.0)
 			Kit.text(headline, "RUN IT BACK.", Vector2(4, 130), 50, LIME, 12, 0.0, 6.0))
 	screen.add_child(headline)
 	_land(headline, 1.8, 2)
 	_enter(_outlined(_label(screen, play.result_summary(), Rect2(LEFT + 4, rows_y - 44 + 10 * c, table_w, 26), 17, MUTED, true), 6), 3)
 	result_header_y = rows_y - 40 + 10 * c
-	for rank in 6:
+	for rank in order.size():
 		var i: int = order[rank]
 		var p: Dictionary = model.players[i]
 		var mine: bool = is_local(i)
@@ -2492,7 +2666,7 @@ func _show_results() -> void:
 			if mine: Kit.stroke(tile, shape, INK, 11.0)
 			Kit.plate(tile, shape, tint, 4.0, 5.0)
 			tile.draw_colored_polygon(Kit.slab(Rect2(8, 6, 46, row_h - 12)), Kit.OUTLINE)
-			Kit.text(tile, str(place), Vector2(8 + 23 + (row_h - 12) * Kit.SLANT * 0.5, Kit.baseline(row_h * 0.5, 26 - int(3 * c))), 26 - int(3 * c), Kit.GOLD if champ else tint, 0, 0.5))
+			Kit.text(tile, "—" if solo_loss else str(place), Vector2(8 + 23 + (row_h - 12) * Kit.SLANT * 0.5, Kit.baseline(row_h * 0.5, 26 - int(3 * c))), 26 - int(3 * c), Kit.GOLD if champ else tint, 0, 0.5))
 		screen.add_child(tile)
 		_enter(tile, rank + 4)
 		var name_text := str(p.name)
@@ -2507,7 +2681,7 @@ func _show_results() -> void:
 	var foot := area.y - 88.0
 	var action_h := 66.0 - 16.0 * c
 	# Compact screens put the buttons straight under the table.
-	var action_y := rows_y + 5 * pitch + row_h + 14.0 if tight else foot - action_h - 16.0
+	var action_y := rows_y + (order.size() - 1) * pitch + row_h + 14.0 if tight else foot - action_h - 16.0
 	var again := _button(actions, "PLAY AGAIN  →", Rect2(LEFT, action_y, half, action_h), func(): session.start_round(), true, 26)
 	again.name = "Again"
 	again.disabled = not session.is_leader()
@@ -2527,11 +2701,11 @@ func _show_results() -> void:
 	# The screen is rebuilt when the roster changes; the result is announced once.
 	if announced_round != model.round_id:
 		announced_round = model.round_id
-		if not single_winner:
+		if not single_winner and not solo_loss:
 			_voice("draw")
-		elif is_local(order[0]):
+		elif single_winner and is_local(order[0]):
 			_voice("you_win")
-		else:
+		elif single_winner:
 			_voice("winner")
 		if single_winner:
 			_sfx("victory", 0)

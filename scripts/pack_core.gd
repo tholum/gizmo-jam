@@ -136,7 +136,8 @@ static func game_entry(data: Dictionary, id: String, trust: String, sha256: Stri
 	var info: Variant = data.get("info")
 	var e := {"id": id, "version": data.get("version"), "net": data.get("net"), "core_min": data.get("core_min", 0),
 		"actions": data.get("actions"), "input_budget": data.get("input_budget"), "info": info,
-		"module": "res://games/%s/module.gd" % id, "trust": trust, "sha256": sha256, "size": size}
+		"module": "res://games/%s/module.gd" % id, "trust": trust, "sha256": sha256, "size": size,
+		"optional_seats": data.get("optional_seats", false) == true}
 	var problem := Registry.validate_entry(e)
 	if not problem.is_empty(): return {"error": problem}
 	e.net = int(e.net)
@@ -194,6 +195,7 @@ static func validate_catalog(c: Dictionary, channel: String = Core.CHANNEL, allo
 		games[id] = {"version": str(g.version), "net": int(g.net), "core_min": int(g.get("core_min", 0)),
 			"size": int(g.size), "sha256": str(g.sha256).to_lower(), "url": str(g.url),
 			"info": {"number": str(info.number), "title": str(info.title), "tags": str(info.tags), "blurb": str(info.blurb)}}
+		if g.get("optional_seats", false) == true: games[id]["optional_seats"] = true
 	var web := {}
 	if c.has("web"):
 		var w: Variant = c.web
@@ -208,9 +210,10 @@ static func validate_catalog(c: Dictionary, channel: String = Core.CHANNEL, allo
 
 ## Match the host's exact file, or match by net for a signed game bundled
 ## into a store app with no separate pack file.
-static func entry_for(catalog: Dictionary, id: String, sha256: String, bundled_net: int = 0) -> Dictionary:
+static func entry_for(catalog: Dictionary, id: String, sha256: String, bundled_net: int = 0, optional_seats: bool = false) -> Dictionary:
 	var g: Dictionary = catalog.get("games", {}).get(id, {})
 	if g.is_empty(): return {}
+	if optional_seats and not g.get("optional_seats", false): return {}
 	if sha256.is_empty() and bundled_net > 0:
 		return g if int(g.net) == bundled_net else {}
 	return g if str(g.sha256) == sha256.to_lower() else {}

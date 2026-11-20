@@ -15,6 +15,8 @@ const SEGMENTS := 96
 const MINT := Color("79d8bc")
 const CREAM := Color("f2d9a7")
 const ORANGE := Color("ff9c58")
+const WARNING_LIGHT := Color("ffe7ad")
+const WARNING_DARK := Color("2a2026")
 const DOCK := [Color("1b3d49"), Color("254954"), Color("1e424f"), Color("254a55"), Color("20404c"), Color("2a5058")]
 
 var camera: Camera3D
@@ -143,6 +145,8 @@ void fragment() {
 func _build_dock() -> void:
 	var painted := _paint(Color.WHITE)
 	painted.vertex_color_use_as_albedo = true
+	var warning_paint := _paint(Color.WHITE, true)
+	warning_paint.vertex_color_use_as_albedo = true
 	for i in Model.RADII.size():
 		var edge: float = Model.RADII[i]
 		var inner: float = Model.RADII[i + 1] if i < Model.DROP_TIMES.size() else 0.0
@@ -174,15 +178,37 @@ func _build_dock() -> void:
 			var alert := _paint(Color(1.0, 0.54, 0.21, 0.0), true)
 			var flash := _mesh(panel, _annulus(inner + 0.07, edge - 0.03), Vector3(0, 0.026, 0), alert)
 			flash.visible = false
+			var warning_band := _mesh(panel, _warning_band(edge), Vector3(0, 0.036, 0), warning_paint)
+			warning_band.visible = false
 			var wash := _paint(Color(0.65, 1.0, 0.88, 0.0), true)
 			var wake := _mesh(self, _annulus(edge - 0.10, edge + 0.12), Vector3(0, WATER_Y + 0.014, 0), wash)
 			wake.visible = false
-			info.merge({"flash": flash, "alert": alert, "wake": wake, "wash": wash})
+			info.merge({"flash": flash, "warning_band": warning_band, "alert": alert, "wake": wake, "wash": wash})
 		_rings.append(info)
 	var centre := _floor_text(_rings.back().root, "BUMPER\nCARS", 0.024, CREAM)
 	centre.position.z = 0.23
 	var beacon := _mesh(_rings.back().root, _annulus(0.93, 1.19), Vector3(0, 0.028, -1.0), _paint(ORANGE, true))
 	beacon.scale = Vector3(1.25, 1.0, 0.25)
+
+## One flat mesh per ring. The bright chevrons point at the surviving dock.
+func _warning_band(edge: float) -> ArrayMesh:
+	var surface := SurfaceTool.new()
+	surface.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for i in SEGMENTS:
+		_strip(surface, edge - 1.07, edge - 0.12, 0.0, i * TAU / SEGMENTS, (i + 1) * TAU / SEGMENTS, WARNING_DARK)
+	var count := maxi(10, roundi(edge * 2.25))
+	var span := TAU / count
+	for i in count:
+		var middle := (i + 0.5) * span
+		var left := middle - span * 0.29
+		var right := middle + span * 0.29
+		var tip := _point(edge - 0.97, 0.01, middle)
+		var notch := _point(edge - 0.68, 0.01, middle)
+		_quad(surface, _point(edge - 0.64, 0.01, left), _point(edge - 0.34, 0.01, left),
+			notch, tip, Vector3.UP, WARNING_LIGHT)
+		_quad(surface, tip, notch, _point(edge - 0.34, 0.01, right),
+			_point(edge - 0.64, 0.01, right), Vector3.UP, WARNING_LIGHT)
+	return surface.commit()
 
 func _build_buoys() -> void:
 	var body := CylinderMesh.new()
@@ -214,7 +240,9 @@ func _build_cars() -> void:
 	var car_scene: PackedScene
 	if ResourceLoader.exists(CAR_PATH):
 		car_scene = load(CAR_PATH) as PackedScene
-	var disc := _annulus(0.73, 0.99, 40)
+	var disc := _annulus(0.96, 1.15, 40)
+	var tracking_ring := _annulus(1.24, 1.49, 12, 0.58)
+	var tracking_paint := _paint(CREAM, true)
 	var shadow := _annulus(0.0, 1.02, 40)
 	var spray := _annulus(0.75, 1.0, 40)
 	var wake := _annulus(1.1, 1.24, 40)
@@ -236,14 +264,16 @@ func _build_cars() -> void:
 		if not _place_model(body, car_scene, tint):
 			_build_fallback_car(body, tint)
 		var marker := _mesh(self, disc, Vector3.ZERO, _paint(tint, true))
+		var local_ring := _mesh(self, tracking_ring, Vector3.ZERO, tracking_paint)
+		local_ring.visible = false
 		var car_shadow := _mesh(self, shadow, Vector3.ZERO, shadow_mat)
 		var trail := Node3D.new()
 		car.add_child(trail)
 		var tail := _paint(tint.lerp(Color.WHITE, 0.44), true)
 		for x in [-0.51, 0.51]:
 			_mesh(trail, trail_mesh, Vector3(x, 0.10, 1.25), tail)
-		var number := _tag(str(i + 1), tint, 0.013)
-		var tag := _tag("", tint, 0.015)
+		var number := _tag(str(i + 1), tint.lerp(Color.WHITE, 0.25), 0.020)
+		var tag := _tag("", tint, 0.021)
 		var splash_mat := _paint(Color(0.76, 1.0, 0.93, 0.0), true)
 		var splash := Node3D.new()
 		add_child(splash)
@@ -258,7 +288,7 @@ func _build_cars() -> void:
 		drops.material_override = splash_mat
 		drops.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		splash.add_child(drops)
-		_cars.append({"car": car, "body": body, "marker": marker, "shadow": car_shadow,
+		_cars.append({"car": car, "body": body, "marker": marker, "local_ring": local_ring, "shadow": car_shadow,
 			"tag": tag, "number": number, "trail": trail, "splash": splash, "water": splash_mat,
 			"drops": drops, "visual_fall": 0.0, "water_at": Vector2.ZERO})
 
@@ -362,10 +392,10 @@ func _update_rings(state: RefCounted, delta: float, fresh: bool) -> void:
 		ring.root.rotation.x = 0.085 * age * (1.0 if i % 2 == 0 else -1.0)
 		ring.root.rotation.z = 0.045 * age
 		ring.flash.visible = warning and i == ring_level
+		ring.warning_band.visible = ring.flash.visible
 		if ring.flash.visible:
-			var eta: float = Model.DROP_TIMES[i] - state.elapsed
-			var pulse := 0.5 + 0.5 * sin(state.elapsed * (9.5 + 5.0 / maxf(eta + 1.0, 1.0)))
-			ring.alert.albedo_color = Color(1.0, 0.58, 0.24, 0.23 + 0.50 * pulse)
+			var pulse := 0.5 + 0.5 * sin(state.elapsed * TAU * 1.6)
+			ring.alert.albedo_color = Color(1.0, 0.58, 0.24, 0.14 + 0.24 * pulse)
 		ring.wake.visible = age > 0.47 and age < RING_SINK
 		if ring.wake.visible:
 			var spread := 1.0 + (age - 0.47) * 0.12
@@ -381,6 +411,10 @@ func _display_car(slot: int) -> Dictionary:
 func _update_car(slot: int, p: Dictionary, delta: float, fresh: bool, own_slot: int) -> void:
 	var v: Dictionary = _cars[slot]
 	var car: Node3D = v.car
+	if not p.get("active", true):
+		for part in [car, v.shadow, v.marker, v.local_ring, v.tag, v.number, v.splash]:
+			part.hide()
+		return
 	var alive: bool = p.alive
 	var at: Vector2 = p.pos
 	var air := 0.0
@@ -405,13 +439,22 @@ func _update_car(slot: int, p: Dictionary, delta: float, fresh: bool, own_slot: 
 	v.trail.visible = alive and float(p.boost) > 0.0
 	v.trail.scale.z = 0.65 + 0.35 * sin(_clock * 69.0)
 	var local := own_slot >= 0 and (slot == own_slot or (local_mask & (1 << slot)) != 0)
+	v.local_ring.visible = alive and local
+	if v.local_ring.visible:
+		v.local_ring.position = v.marker.position
+		v.local_ring.rotation.y = _clock * 0.34
 	var show_tag := alive and (show_identities or local or winner) and str(p.name) != ""
 	v.tag.visible = show_tag
 	v.number.visible = alive and not show_tag
-	v.tag.position = Vector3(car.position.x, 1.59, car.position.z)
-	v.number.position = Vector3(car.position.x, 1.42, car.position.z)
+	v.tag.position = Vector3(car.position.x, 1.86, car.position.z)
+	v.number.position = Vector3(car.position.x, 1.64, car.position.z)
 	if show_tag:
-		v.tag.text = "YOU" if local and local_mask == 0 and not show_identities else str(p.name).to_upper()
+		if local and not show_identities:
+			v.tag.text = "YOU" if local_mask == 0 else "P%d" % (slot + 1)
+		else:
+			v.tag.text = str(p.name).to_upper()
+		v.tag.pixel_size = 0.026 if local else 0.021
+		v.tag.modulate = Kit.INK if local else Kit.colors[slot]
 	var water_age := air - WATER_HIT
 	if water_age >= 0.0 and (fresh or float(v.visual_fall) < WATER_HIT):
 		v.water_at = at
@@ -436,11 +479,11 @@ func _scatter_drops(foam: MultiMesh, age: float) -> void:
 		var pose := Transform3D(Basis.from_scale(shrink), _point(spread, height, angle))
 		foam.set_instance_transform(i, pose)
 
-func _annulus(inner: float, outer: float, segments: int = SEGMENTS) -> ArrayMesh:
+func _annulus(inner: float, outer: float, segments: int = SEGMENTS, coverage: float = 1.0) -> ArrayMesh:
 	var surface := SurfaceTool.new()
 	surface.begin(Mesh.PRIMITIVE_TRIANGLES)
 	for i in segments:
-		_strip(surface, inner, outer, 0.0, i * TAU / segments, (i + 1) * TAU / segments, Color.WHITE)
+		_strip(surface, inner, outer, 0.0, i * TAU / segments, (i + coverage) * TAU / segments, Color.WHITE)
 	return surface.commit()
 
 func _strip(surface: SurfaceTool, inner: float, outer: float, y: float, a: float, b: float, color: Color) -> void:

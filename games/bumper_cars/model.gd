@@ -29,6 +29,7 @@ const SNAP_INTS := 3
 
 var rng := RandomNumberGenerator.new()
 var players: Array = []
+var active_count := 0
 var phase := "countdown"
 var countdown := COUNTDOWN
 var elapsed := 0.0
@@ -47,14 +48,17 @@ func begin(seed_value: int, slots: Array, id: int = 1, _endless: bool = false) -
 	hit_count = 0
 	boost_count = 0
 	players.clear()
+	active_count = 0
 	var rotation := rng.randf_range(-PI, PI)
 	for i in SEATS:
 		var seat: Dictionary = slots[i]
+		var active: bool = seat.get("active", true)
+		active_count += int(active)
 		var pos := Vector2.from_angle(rotation + i * TAU / SEATS) * 8.6
 		players.append({
-			"name": seat.name, "peer": seat.peer, "bot": seat.bot,
+			"name": seat.name, "peer": seat.peer, "bot": seat.bot, "active": active,
 			"pos": pos, "velocity": Vector2.ZERO, "heading": atan2(-pos.x, pos.y),
-			"alive": true, "fall_time": 0.0, "kos": 0, "survived": 0.0,
+			"alive": active, "fall_time": 0.0, "kos": 0, "survived": 0.0,
 			"cooldown": 0.0, "boost": 0.0,
 			"_left": false, "_right": false, "_up": false, "_down": false,
 			"_hit_by": -1, "_hit_at": -SHOVE_WINDOW, "_target": -1, "_think": 0.0,
@@ -130,7 +134,8 @@ func _tick(dt: float) -> void:
 			if players[j].alive:
 				_collide(i, j)
 	_check_edge(true)
-	if elapsed >= ROUND_TIME or alive_count() <= 1:
+	var survivors := alive_count()
+	if elapsed >= ROUND_TIME or survivors == 0 or (active_count > 1 and survivors == 1):
 		phase = "finished"
 
 func _drive(p: Dictionary, want: Vector2, dt: float) -> void:
@@ -200,7 +205,7 @@ func _check_edge(credit_shove: bool) -> void:
 
 func _advance_falls(dt: float) -> void:
 	for p in players:
-		if p.alive or float(p.fall_time) >= FALL_DURATION:
+		if not p.active or p.alive or float(p.fall_time) >= FALL_DURATION:
 			continue
 		var fall_step := minf(dt, FALL_DURATION - float(p.fall_time))
 		var decay := exp(-4.0 * fall_step)
@@ -275,7 +280,7 @@ func take_over(slot: int) -> void:
 	if slot < 0 or slot >= players.size():
 		return
 	var p: Dictionary = players[slot]
-	if p.bot:
+	if not p.active or p.bot:
 		return
 	p.bot = true
 	p.peer = 0
@@ -296,7 +301,7 @@ func _compare(a: Dictionary, b: Dictionary) -> int:
 	return roundi(float(a.survived) * 1000.0) - roundi(float(b.survived) * 1000.0)
 
 func ranking() -> Array:
-	var order := range(players.size())
+	var order := range(players.size()).filter(func(i): return players[i].active)
 	order.sort_custom(func(a, b):
 		var result := _compare(players[a], players[b])
 		return a < b if result == 0 else result > 0)
@@ -304,7 +309,7 @@ func ranking() -> Array:
 
 func winners() -> Array:
 	var order := ranking()
-	if order.is_empty():
+	if order.is_empty() or (active_count == 1 and not players[order[0]].alive):
 		return []
 	var best: Dictionary = players[order[0]]
 	return order.filter(func(i): return _compare(players[i], best) == 0)
@@ -352,7 +357,7 @@ func apply_snapshot(data: Dictionary) -> void:
 		p.name = names[i]
 		p.peer = seats[seat]
 		p.kos = seats[seat + 1]
-		p.alive = (seats[seat + 2] & 1) != 0
+		p.alive = p.active and (seats[seat + 2] & 1) != 0
 		p.bot = (seats[seat + 2] & 2) != 0
 		p.pos = Vector2(cars[at], cars[at + 1])
 		p.velocity = Vector2(cars[at + 2], cars[at + 3])

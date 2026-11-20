@@ -102,6 +102,7 @@ func counts_match(game: Model) -> bool:
 
 func run() -> void:
 	test_start_and_countdown()
+	test_vacant_seats()
 	test_claim_and_repaint()
 	test_lock()
 	test_loop_capture()
@@ -125,6 +126,31 @@ func run() -> void:
 	quit(0 if failures == 0 else 1)
 
 # -------------------------------------------------------------------- tests
+
+func test_vacant_seats() -> void:
+	var lineup := seats()
+	for i in 6:
+		if i != 3:
+			lineup[i]["active"] = false
+			lineup[i]["bot"] = true
+	var game := Model.new()
+	game.begin(7, lineup)
+	var empty_cell := under(game, 0)
+	var occupied_cell := under(game, 3)
+	check(painted(game) == 1 and game.owners[empty_cell] == 0, "The round only paints active starting tiles")
+	for i in 8:
+		check(game._aim_cell() == occupied_cell, "Surge targeting only considers active runners")
+	game.step(Model.COUNTDOWN)
+	game.surges = [{"id": 0, "axis": 0, "line": game.grid.line_of(empty_cell, 0), "warn": 0.0, "fire": 1.0}]
+	game.step(TICK)
+	check(under(game, 0) == empty_cell and game.players[0].zaps == 0 and game.owners[empty_cell] == 0,
+		"An inactive runner stays idle, cannot claim tiles and cannot be zapped")
+	var guest := Model.new()
+	guest.begin(7, lineup)
+	var snapshot := game.snapshot()
+	guest.apply_snapshot(snapshot)
+	check(snapshot.runners.size() == 6 * Model.SNAP_RUNNER_BYTES and guest.ranking() == [3] and guest.winners() == [3],
+		"Snapshot rows stay fixed and inactive seats do not appear in the results")
 
 func test_start_and_countdown() -> void:
 	var game := Model.new()

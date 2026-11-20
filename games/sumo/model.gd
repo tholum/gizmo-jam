@@ -34,6 +34,7 @@ enum { X, Z, VX, VZ, FACE, GAIT, READY, STRIKE, RETURN, GUARD_END,
 
 var rng := RandomNumberGenerator.new()
 var players: Array[Dictionary] = []
+var active_count := 0
 var phase := "countdown"
 var countdown := COUNTDOWN
 var elapsed := 0.0
@@ -59,13 +60,16 @@ func begin(seed_value: int, slots: Array, id: int = 1, _endless: bool = false) -
 	_count_ticks = roundi(COUNTDOWN * HZ)
 	_spawn_angle = rng.randf_range(-0.19, 0.19)
 	players.clear()
+	active_count = 0
 	for i in SEATS:
 		var seat: Dictionary = slots[i]
+		var active: bool = seat.get("active", true)
+		active_count += int(active)
 		var pos := socket(i, 3.05)
 		players.append({
-			"name": seat.name, "peer": seat.peer, "bot": seat.bot,
+			"name": seat.name, "peer": seat.peer, "bot": seat.bot, "active": active,
 			"pos": pos, "velocity": Vector2.ZERO, "face": (-pos).angle(), "gait": 0.0,
-			"score": 0, "outs": 0, "last_credit": -1, "alive": true, "planted": false,
+			"score": 0, "outs": 0, "last_credit": -1, "alive": active, "planted": false,
 			"ready_tick": 0, "strike_tick": NEVER, "respawn_tick": NEVER,
 			"guard_until": 0, "hit_tick": NEVER,
 			"input": 0, "queued": false, "drive": Vector2.ZERO, "knock": Vector2.ZERO,
@@ -84,7 +88,7 @@ func command(slot: int, action: String, pressed: bool) -> void:
 	if slot < 0 or slot >= players.size() or phase == "finished":
 		return
 	var p := players[slot]
-	if p.bot:
+	if not p.active or p.bot:
 		return
 	if action == "shove":
 		if pressed and phase == "running" and p.alive:
@@ -114,7 +118,7 @@ func _tick() -> void:
 	# rotates with the tick instead of always going to seat one.
 	for offset in SEATS:
 		var i := (tick + offset) % SEATS
-		if players[i].respawn_tick == tick:
+		if players[i].active and players[i].respawn_tick == tick:
 			_respawn(i)
 
 	for i in SEATS:
@@ -244,6 +248,8 @@ func _ring_out(slot: int) -> void:
 	p.strike_tick = NEVER
 	p.queued = false
 	p.planted = false
+	if active_count == 1:
+		phase = "finished"
 
 func _respawn(slot: int) -> void:
 	var p := players[slot]
@@ -324,13 +330,15 @@ func take_over(slot: int) -> void:
 	if slot < 0 or slot >= players.size():
 		return
 	var p := players[slot]
+	if not p.active:
+		return
 	p.bot = true
 	p.input = 0
 	p.queued = false
 	p.think_tick = tick
 
 func ranking() -> Array:
-	var order := range(players.size())
+	var order := range(players.size()).filter(func(i): return players[i].active)
 	order.sort_custom(func(a, b):
 		if players[a].score != players[b].score:
 			return players[a].score > players[b].score
@@ -339,7 +347,7 @@ func ranking() -> Array:
 
 func winners() -> Array:
 	var order := ranking()
-	if order.is_empty():
+	if order.is_empty() or (active_count == 1 and not players[order[0]].alive):
 		return []
 	var best: int = players[order[0]].score
 	return order.filter(func(i): return players[i].score == best)
@@ -393,6 +401,8 @@ func apply_snapshot(data: Dictionary) -> void:
 		p.score = seats[row + POINTS]
 		p.outs = seats[row + OUTS]
 		p.last_credit = seats[row + CREDIT_SEAT]
-		p.alive = (seats[row + FLAGS] & 1) != 0
+		p.alive = p.active and (seats[row + FLAGS] & 1) != 0
 		p.planted = (seats[row + FLAGS] & 2) != 0
 		p.bot = (seats[row + FLAGS] & 4) != 0
+		if active_count == 1 and p.active and not p.alive and phase == "running":
+			phase = "finished"

@@ -59,6 +59,9 @@ func run() -> void:
 	# The HUD menu button pauses, even as a second finger.
 	await touch(3, Vector2(size.x * 0.2, size.y * 0.5), true)
 	var menu_point: Vector2 = main.hud_menu.get_global_transform_with_canvas() * (main.hud_menu.size * 0.5)
+	await touch(4, menu_point, true)
+	await touch(4, menu_point, false, true)
+	check(not main.paused and not layer.fingers.has(4), "a system-canceled menu touch cannot pause")
 	await tap(4, menu_point)
 	check(main.paused, "the menu button pauses")
 	check(not bool(me.duck), "pausing lets go of the duck")
@@ -92,6 +95,21 @@ func run() -> void:
 		check(held == want, "stick %s holds %s (got %s)" % [direction, want, held])
 	await touch(5, origin + Vector2(reach, 0), false)
 	check(not module.sent.values().has(true), "lifting the stick lets go of every direction")
+	await touch(7, origin, true)
+	await drag(7, origin + Vector2(reach, 0))
+	check(bool(module.sent.get("right", false)), "a second drag holds the stick before focus loss")
+	# A party stays in play when the app loses focus. Simulate that branch with
+	# the offline peer so the test can check focus recovery without networking.
+	main.session.mode = "host"
+	main._focus_lost()
+	main.session.mode = "offline"
+	check(not main.paused and layer.fingers.is_empty(), "focus loss frees the stick during a live party")
+	check(not module.sent.values().has(true), "focus loss releases held directions")
+	await touch(8, origin, true)
+	await drag(8, origin - Vector2(reach, 0))
+	check(bool(module.sent.get("left", false)), "a fresh finger can steer even when the previous lift never arrived")
+	await touch(8, origin, false, true)
+	check(not module.sent.values().has(true), "a system-canceled drag releases held directions")
 	var player: Dictionary = main.model.players[main.session.my_slot()]
 	await tap(6, Vector2(size.x * 0.85, size.y * 0.5))
 	await frames(2)
@@ -113,11 +131,12 @@ func frames(count: int) -> void:
 		await process_frame
 
 ## A touch at `pos` in canvas units, sent through the engine as from the screen.
-func touch(index: int, pos: Vector2, pressed: bool) -> void:
+func touch(index: int, pos: Vector2, pressed: bool, canceled := false) -> void:
 	var event := InputEventScreenTouch.new()
 	event.index = index
 	event.position = root.get_final_transform() * pos
 	event.pressed = pressed
+	event.canceled = canceled
 	Input.parse_input_event(event)
 	await frames(2)
 

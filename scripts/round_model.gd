@@ -6,6 +6,7 @@ const MAX_HITS := 7
 const JUMP_DURATION := 0.68
 const JUMP_CLEARANCE := 0.36
 const JUMP_BUFFER := 0.20
+const SOLO_DURATION := 90.0
 const BOT_NAMES := ["BOLT", "NOVA", "ECHO", "FLUX", "PIXEL", "COMET"]
 
 var players: Array = []
@@ -20,6 +21,7 @@ var rng := RandomNumberGenerator.new()
 var next_wave := 1.35
 var wave_id := 0
 var practice := false
+var active_count := SEATS
 
 func begin(seed_value: int, slots: Array, id: int = 1, endless: bool = false) -> void:
 	rng.seed = seed_value
@@ -34,10 +36,13 @@ func begin(seed_value: int, slots: Array, id: int = 1, endless: bool = false) ->
 	phase = "countdown"
 	next_wave = 1.35
 	wave_id = 0
+	active_count = 0
 	for i in SEATS:
 		var seat: Dictionary = slots[i]
+		var active: bool = seat.get("active", true)
+		if active: active_count += 1
 		players.append({"name": seat.name, "peer": seat.peer, "bot": seat.bot,
-			"hp": MAX_HITS, "score": 0, "streak": 0, "best_streak": 0,
+			"active": active, "hp": MAX_HITS if active else 0, "score": 0, "streak": 0, "best_streak": 0,
 			"jump": -1.0, "jump_buffer": 0.0, "duck": false, "flash": 0.0, "out_at": -1.0,
 			"planned": -1, "reaction": 0.25, "mistake": false})
 	_generate_waves()
@@ -118,7 +123,8 @@ func step(delta: float) -> void:
 	waves = waves.filter(func(w): return float(w.at) > progress - 1.2)
 	_generate_waves()
 	var alive := players.filter(func(p): return p.hp > 0).size()
-	if (not practice and alive <= 1) or alive == 0:
+	var survived := alive == 1 and (active_count > 1 or elapsed >= SOLO_DURATION)
+	if alive == 0 or (not practice and survived):
 		phase = "finished"
 
 func _bot_step(slot: int) -> void:
@@ -142,7 +148,7 @@ func next_obstacle() -> Dictionary:
 	return {}
 
 func take_over(slot: int) -> void:
-	if slot >= 0 and slot < players.size():
+	if slot >= 0 and slot < players.size() and players[slot].get("active", true):
 		players[slot].bot = true
 		players[slot].peer = 0
 		players[slot].duck = false
@@ -150,7 +156,7 @@ func take_over(slot: int) -> void:
 		players[slot].name = str(players[slot].name).left(12) + " · BOT"
 
 func ranking() -> Array:
-	var order := range(players.size())
+	var order := range(players.size()).filter(func(i): return players[i].get("active", true))
 	order.sort_custom(func(a, b):
 		var pa: Dictionary = players[a]
 		var pb: Dictionary = players[b]
@@ -167,6 +173,7 @@ func winners() -> Array:
 	var order := ranking()
 	if order.is_empty(): return []
 	var best: Dictionary = players[order[0]]
+	if order.size() == 1 and best.hp == 0: return []
 	return order.filter(func(i):
 		var p: Dictionary = players[i]
 		return (p.hp > 0) == (best.hp > 0) and is_equal_approx(float(p.out_at), float(best.out_at)) and p.score == best.score and p.hp == best.hp)

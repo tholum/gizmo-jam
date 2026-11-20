@@ -25,10 +25,10 @@ cp -a project.godot scripts scenes assets "$smoke/"
 "$godot" --headless --path "$smoke" --editor --import --quit
 "$godot" --headless --fixed-fps 60 --path "$smoke" \
   --script "$PWD/games/orb_racing/tests/pack_smoke.gd" -- \
-  "--pack=$PWD/builds/packs/orb_racing-1.0.0.pck" --no-update-check
+  "--pack=$PWD/builds/packs/orb_racing-1.1.0.pck" --no-update-check
 "$godot" --headless --fixed-fps 60 --path "$smoke" \
   --script "$PWD/games/orb_racing/tests/pack_smoke.gd" -- \
-  "--pack=$PWD/builds/packs/orb_racing-1.0.0.pck" --no-update-check --handheld --safe-inset=32
+  "--pack=$PWD/builds/packs/orb_racing-1.1.0.pck" --no-update-check --handheld --safe-inset=32
 ```
 
 The race test exercises timing-line width and order, the finish window and hard cap, boost and rails, a full race using eight-way input, and seeded bot races with compressed snapshot round trips. The pack smoke test mounts the PCK via the core Pack Manager, then exercises solo start, keyboard and independent pads or handheld touches, and the race results. To capture the rendered grid, race and results, run the smoke script with a display and pass `--capture-dir=/path/to/existing/directory` after `--`.

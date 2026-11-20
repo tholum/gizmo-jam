@@ -311,7 +311,9 @@ func servable() -> Dictionary:
 ## `exact` (the game library's Update) wants exactly that file, not just a
 ## compatible version.
 func acquire(id: String, host_entry: Dictionary, host_files: Dictionary, host_name: String, exact: bool = false) -> void:
-	var target := {"id": id, "sha256": str(host_entry.get("sha256", "")), "net": int(host_entry.get("net", 0))}
+	var optional_seats: bool = host_entry.get("requires_optional_seats", false)
+	var target := {"id": id, "sha256": str(host_entry.get("sha256", "")), "net": int(host_entry.get("net", 0)),
+		"optional_seats": optional_seats}
 	if target == _target:
 		var current: Dictionary = state.get(id, {})
 		if not current.is_empty(): status_changed.emit(id, current.state, current.progress)
@@ -337,19 +339,19 @@ func acquire(id: String, host_entry: Dictionary, host_files: Dictionary, host_na
 	var sha := str(host_entry.get("sha256", ""))
 	var bundled_net := int(host_entry.get("net", 0)) if host_entry.get("trust") == "signed" and not exact else 0
 	var can_fetch_from_host := not host_files.is_empty() and not sha.is_empty()
-	var entry := PackCore.entry_for(catalog, id, sha, bundled_net)
+	var entry := PackCore.entry_for(catalog, id, sha, bundled_net, optional_seats)
 	if entry.is_empty() and can_fetch_from_host:
 		# The host's catalog may be newer than ours.
 		_report(id, "verifying")
 		var bytes := await _fetch("http://%s:%d/catalog" % [host_files.ip, int(host_files.port)], PackCore.MAX_CATALOG, CATALOG_TIMEOUT)
 		if generation != _generation: return
 		if not bytes.is_empty(): adopt_catalog(bytes)
-		entry = PackCore.entry_for(catalog, id, sha, bundled_net)
+		entry = PackCore.entry_for(catalog, id, sha, bundled_net, optional_seats)
 	if entry.is_empty():
 		_report(id, "verifying")
 		await refresh_catalog()
 		if generation != _generation: return
-		entry = PackCore.entry_for(catalog, id, sha, bundled_net)
+		entry = PackCore.entry_for(catalog, id, sha, bundled_net, optional_seats)
 	if entry.is_empty():
 		_report(id, "failed", 0, "not in the signed catalog")
 		return

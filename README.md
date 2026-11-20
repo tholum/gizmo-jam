@@ -83,9 +83,11 @@ press a button is player one's, and it also drives the menus (**d-pad** or
 stick to move, **A** to confirm, **B** to go back). Every other pad joins as a
 player of its own by pressing **A** or **Start** on the menu, or in the lobby
 of a party this machine hosts, and leaves again with **B** or **Back**. The
-menu lists who is playing on this screen, and **Play** starts a round with all
-of them against bots for the empty seats. Hosting works the same way: the extra
-players take seats in the party and remote players fill the rest, up to six.
+local lineup shows who is playing on this screen. Choose **Pick Color** beside
+your name or press **X** on your controller to claim any of eight available
+colors. Use **Add Bot** or **Remove Bot** on a seat to set up a round for one
+to six participants. Solo initially offers five bots. Local multiplayer
+starts with open seats unless you select bots.
 
 A round with more than one player on the screen marks every one of their
 runners and plates, calls each player's hits, clears, zaps and loops out over
@@ -367,8 +369,10 @@ regenerates, `--reprocess` rebuilds from the cached downloads).
    **Connect**.
 3. The lobby's **Next Game** panel shows which game is up. The party host can
    switch it there between rounds; everyone's lobby follows, arena included.
-4. The party host clicks **Start for Everyone**. All connected players enter
-   the same round automatically. Open seats become bots.
+4. Each player can claim an available color beside their name. Open seats stay
+   empty unless the party host selects **Add Bot**. The host selects **Start
+   for Everyone** when the lineup is ready. Guests on older versions need to
+   update to use a lineup with vacant seats.
 5. After the round, the party host can replay or return everyone to the lobby.
    Additional players can join between rounds. A disconnected player's runner
    becomes a bot for the rest of the round.

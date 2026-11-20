@@ -57,6 +57,9 @@ func registry() -> void:
 	# Who can play what.
 	var host_entry := {"net": 2, "sha256": "a".repeat(64), "trust": "signed"}
 	check(Registry.compatible({"sumo": {"net": 2, "sha256": "b".repeat(64), "trust": "signed"}}, "sumo", host_entry), "Same net, any signed version, plays together")
+	host_entry["requires_optional_seats"] = true
+	check(not Registry.compatible({"sumo": {"net": 2, "trust": "signed"}}, "sumo", host_entry), "A sparse round requires an updated pack")
+	check(Registry.compatible({"sumo": {"net": 2, "trust": "signed", "optional_seats": true}}, "sumo", host_entry), "An updated pack supports a sparse round")
 	check(not Registry.compatible({"sumo": {"net": 1}}, "sumo", host_entry), "Another net does not")
 	check(not Registry.compatible({}, "sumo", host_entry), "Nor a build without the game")
 	var dev := {"net": 1, "sha256": "c".repeat(64), "trust": "untrusted"}
@@ -96,6 +99,11 @@ func catalog() -> void:
 	check(PackCore.entry_for(opened.catalog, "sumo", "AB".repeat(32)).size == 1234, "It vouches for an exact file")
 	check(PackCore.entry_for(opened.catalog, "sumo", "cd".repeat(32)).is_empty(), "and no other")
 	check(PackCore.entry_for(opened.catalog, "sumo", "", 1).size == 1234, "A bundled host can match a signed catalog pack on net")
+	check(PackCore.entry_for(opened.catalog, "sumo", "", 1, true).is_empty(), "A sparse round never fetches a pack without its capability")
+	var sparse := catalog_payload(2)
+	sparse.games.sumo["optional_seats"] = true
+	var sparse_catalog := PackCore.open_catalog(signed_envelope(sparse, key), trusted)
+	check(PackCore.entry_for(sparse_catalog.catalog, "sumo", "", 1, true).size == 1234, "The signed catalog carries the optional-seat capability")
 	check(PackCore.entry_for(opened.catalog, "sumo", "", 2).is_empty(), "A bundled host still needs a matching net")
 	check(PackCore.entry_for(opened.catalog, "sumo", "cd".repeat(32), 1).is_empty(), "A host with a pack must still match the exact file")
 	check(not PackCore.open_catalog(signed_envelope(catalog_payload(1), key), {}).ok, "An unknown key is refused")

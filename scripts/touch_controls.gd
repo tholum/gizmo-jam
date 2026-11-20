@@ -55,6 +55,7 @@ func reset() -> void:
 	for index in fingers.keys():
 		_finish(index, false)
 	fingers.clear()
+	pressed_flash = 0.0
 
 func _input(event: InputEvent) -> void:
 	if not (event is InputEventScreenTouch or event is InputEventScreenDrag):
@@ -62,11 +63,11 @@ func _input(event: InputEvent) -> void:
 	if not active():
 		return
 	if event is InputEventScreenTouch:
-		if event.pressed:
+		if event.pressed and not event.canceled:
 			_begin(event.index, event.position)
 		elif fingers.has(event.index):
 			fingers[event.index].pos = event.position
-			_finish(event.index, true)
+			_finish(event.index, not event.canceled)
 			fingers.erase(event.index)
 	elif fingers.has(event.index):
 		fingers[event.index].pos = event.position
@@ -154,25 +155,27 @@ func _draw() -> void:
 	var layout: Dictionary = main.play.touch_layout()
 	var h := size.y
 	var counting: bool = main.model != null and str(main.model.phase) == "countdown"
-	var hint_alpha := 0.9 if counting else 0.35
+	var idle_ring_alpha := 0.54 if counting else 0.21
+	var left_x := size.x * (0.14 if layout.get("left") == "stick" else 0.12)
+	var right_x := size.x * 0.88
 	var y := h * 0.6
 	# Left half.
 	if layout.get("left") == "stick":
 		var stick := _stick_finger()
 		if stick.is_empty():
-			_ring(Vector2(size.x * 0.14, y), STICK_RADIUS * h, hint_alpha * 0.6, Kit.INK)
+			_ring(Vector2(left_x, y), STICK_RADIUS * h, idle_ring_alpha, Kit.INK)
 		else:
 			_ring(stick.origin, STICK_RADIUS * h, 0.55, Kit.INK)
 			var knob: Vector2 = stick.origin + (stick.pos - stick.origin).limit_length(STICK_RADIUS * h)
 			draw_circle(knob, STICK_RADIUS * h * 0.45, Color(Kit.LIME, 0.75))
 	else:
 		var ducking := _role_count("duck") > 0
-		_ring(Vector2(size.x * 0.12, y), 0.1 * h, 0.9 if ducking else hint_alpha * 0.6, Kit.colors[1] if Kit.colors.size() > 1 else Kit.CYAN)
-	Kit.text(self, str(layout.get("left_label", "")), Vector2(size.x * 0.12, y + 0.16 * h), 18, Color(Kit.INK, hint_alpha), 6, 0.5)
+		_ring(Vector2(left_x, y), 0.1 * h, 0.9 if ducking else idle_ring_alpha, Kit.DUCK)
+	Kit.text(self, str(layout.get("left_label", "")), Vector2(left_x, y + 0.16 * h), 22, Kit.INK, 6, 0.5)
 	# Right half.
 	var lit: bool = pressed_flash > 0.0 or (_role_count("dash") > 0 and layout.get("right") == "dash")
-	_ring(Vector2(size.x * 0.88, y), 0.1 * h, 0.9 if lit else hint_alpha * 0.6, Kit.LIME)
-	Kit.text(self, str(layout.get("right_label", "")), Vector2(size.x * 0.88, y + 0.16 * h), 18, Color(Kit.INK, hint_alpha), 6, 0.5)
+	_ring(Vector2(right_x, y), 0.1 * h, 0.9 if lit else idle_ring_alpha, Kit.LIME)
+	Kit.text(self, str(layout.get("right_label", "")), Vector2(right_x, y + 0.16 * h), 22, Kit.INK, 6, 0.5)
 
 func _stick_finger() -> Dictionary:
 	for finger in fingers.values():

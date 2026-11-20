@@ -144,6 +144,7 @@ func build_hud() -> void:
 		plate.size = PLATE_SIZE
 		plate.pivot_offset = Vector2(PLATE_SIZE.x * 0.5, PLATE_SIZE.y)
 		plate.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		plate.visible = main.model.players[i].active
 		hud.add_child(plate)
 		plate.draw.connect(_draw_plate.bind(plate, i))
 		_plates.append(plate)
@@ -380,14 +381,14 @@ func forget_keys() -> void:
 # -------------------------------------------------------------------- Menus
 
 func build_rules() -> void:
-	var panel: Panel = main._modal(INFO.title, "Six robots. One raised dohyo. Stay inside the pale rim.", 530)
+	var panel: Panel = main._modal(INFO.title, "Steer inside the pale rim and shove rivals off the raised dohyo.", 530)
 	var steer := "LEFT THUMB" if Platform.handheld else ("STICK / D-PAD" if main.pad_captions() else "WASD / ARROWS")
 	var shove := "RIGHT TAP" if Platform.handheld else ("A" if main.pad_captions() else "SPACE")
 	_rule(panel, 132, steer, "Steer. Let go to plant your feet and take less knockback.")
 	_rule(panel, 213, shove, "Shove where you face. Ready again in 1.4s.")
 	var scoring: Label = main._label(panel, "The last rival to land a shove within two seconds of a ring-out earns one point. Bumps only crowd. Self-falls give no points. Robots return near center with a brief shield.", Rect2(32, 293, 496, 112), 17, Kit.INK)
 	main._wrap(scoring)
-	main._label(panel, "MOST POINTS IN 90 SECONDS WINS. TIES DRAW.", Rect2(32, 402, 496, 28), 18, SAND, true)
+	main._label(panel, "MOST POINTS WIN. ALONE, STAY IN FOR 90 SECONDS.", Rect2(32, 402, 496, 28), 18, SAND, true)
 	main._button(panel, "GOT IT", Rect2(36, 451, 480, 56), main._clear_overlay, true, 24).grab_focus()
 
 func _rule(parent: Control, y: float, keycap: String, desc: String) -> void:
@@ -397,7 +398,7 @@ func _rule(parent: Control, y: float, keycap: String, desc: String) -> void:
 	main._wrap(text)
 
 func result_summary() -> String:
-	return "90-SECOND MATCH"
+	return "%d SECONDS IN THE RING" % roundi(main.model.elapsed) if main.model.active_count == 1 else "90-SECOND MATCH"
 
 func result_headers(parent: Control, table_w: float) -> void:
 	var row_h := 38.0 if main.tight else 46.0

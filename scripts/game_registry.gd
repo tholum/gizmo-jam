@@ -78,6 +78,9 @@ static func input_budget(id: String) -> int:
 static func is_builtin(id: String) -> bool:
 	return id in BUILTIN_IDS
 
+static func supports_optional_seats(id: String) -> bool:
+	return is_builtin(id) or entry(id).get("optional_seats", false) == true
+
 ## A new game module instance for `main`, or null if the id is unknown.
 static func instantiate(id: String, main: Node) -> RefCounted:
 	var e := entry(id)
@@ -143,7 +146,8 @@ static func capabilities() -> Dictionary:
 	var caps := {}
 	for id in _entries:
 		var e: Dictionary = _entries[id]
-		caps[id] = {"net": int(e.net), "version": str(e.version), "sha256": str(e.sha256), "trust": str(e.trust)}
+		caps[id] = {"net": int(e.net), "version": str(e.version), "sha256": str(e.sha256), "trust": str(e.trust),
+			"optional_seats": supports_optional_seats(id)}
 	return caps
 
 ## The menu card and the facts a guest needs to fetch a game it lacks.
@@ -153,6 +157,7 @@ static func public_entry(id: String) -> Dictionary:
 	var info: Dictionary = e.info
 	return {"net": int(e.net), "version": str(e.version), "sha256": str(e.sha256), "trust": str(e.trust),
 		"size": int(e.get("size", 0)), "core_min": int(e.core_min),
+		"optional_seats": supports_optional_seats(id),
 		"info": {"number": str(info.number), "title": str(info.title), "tags": str(info.tags), "blurb": str(info.blurb)}}
 
 ## Whether a peer that advertised `caps` (see capabilities()) can play the
@@ -162,6 +167,7 @@ static func compatible(caps: Dictionary, id: String, host_entry: Dictionary) -> 
 	if not caps.has(id): return false
 	var theirs: Dictionary = caps[id]
 	if int(theirs.get("net", -1)) != int(host_entry.get("net", -2)): return false
+	if host_entry.get("requires_optional_seats", false) and not theirs.get("optional_seats", false): return false
 	if str(host_entry.get("trust", "")) == "untrusted" or str(theirs.get("trust", "")) == "untrusted":
 		return str(theirs.get("sha256", "")) == str(host_entry.get("sha256", "")) and not str(host_entry.get("sha256", "")).is_empty()
 	return true

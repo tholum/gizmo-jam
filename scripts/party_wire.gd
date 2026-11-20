@@ -26,6 +26,12 @@ const PARTY := 2
 ## Member to host: where this member is with the current game
 ## (ready, downloading, needs update, declined, ...).
 const STATUS := 3
+## Member to host: asks to select a color for one of its seats.
+const PICK_COLOR := 4
+## Host to the requesting member: explains why a color request failed.
+const COLOR_REJECTED := 5
+## Leader to host: mark an unoccupied slot as a bot or open.
+const SET_BOT := 6
 
 static func encode(kind: int, payload: Dictionary) -> PackedByteArray:
 	var bytes := PackedByteArray([MAGIC_0, MAGIC_1, VERSION, kind])

@@ -2,7 +2,7 @@ extends RefCounted
 ## Shared look of the arcade UI: palette, fonts and chunky drawing helpers.
 ## Everything here is static, so HUD widgets and main.gd draw the same shapes.
 
-const Arena = preload("res://scripts/arena.gd")
+const Palette = preload("res://scripts/palette.gd")
 
 const INK := Color("f6f9ff")
 const OUTLINE := Color("070b16")
@@ -46,14 +46,19 @@ static func setup() -> void:
 		face.variation_embolden = 0.7
 		face.variation_transform = Transform2D(Vector2(1.0, 0.2), Vector2(0.0, 1.0), Vector2.ZERO)
 	display = face
+	update_player_colors()
+
+## Existing game packs read this array by seat. Keep its six entries in sync
+## before building any materials or HUD for a round.
+static func update_player_colors() -> void:
 	colors.clear()
-	for c in Arena.COLORS:
-		colors.append(vivid(c))
+	for seat in Palette.COLORS.size():
+		colors.append(vivid(Palette.for_seat(seat)))
 
 ## The HUD fills whole shapes with a player's colour, so push the arena's
 ## pastel tints to a fully saturated version of the same hue.
 static func vivid(c: Color) -> Color:
-	return Color.from_hsv(c.h, clampf(c.s * 1.5, 0.0, 0.88), maxf(c.v, 0.97))
+	return Palette.vivid(c)
 
 ## Greyed-out version of a player colour for eliminated runners.
 static func drained(c: Color) -> Color:

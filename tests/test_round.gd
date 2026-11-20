@@ -92,6 +92,21 @@ func run() -> void:
 		game.step(1.0 / 60.0)
 		if game.phase == "finished": break
 	check(game.winners().size() == 6, "Simultaneous equal eliminations must be a draw")
+	var solo_slots := slots.duplicate(true)
+	for i in range(1, solo_slots.size()):
+		solo_slots[i]["active"] = false
+	game.begin(42, solo_slots)
+	game.step(3.1)
+	game.step(0.01)
+	check(game.phase == "running" and game.ranking() == [0], "A lone runner starts normally and vacant seats are excluded")
+	game.elapsed = Model.SOLO_DURATION
+	game.step(0.01)
+	check(game.phase == "finished" and game.winners() == [0], "A solo player wins by surviving 90 seconds")
+	game.begin(42, solo_slots)
+	for frame in 60 * 60:
+		game.step(1.0 / 60.0)
+		if game.phase == "finished": break
+	check(game.phase == "finished" and game.ranking() == [0] and game.winners().is_empty(), "A solo player can lose and still appear in the results")
 	# A six-person host vote needs three of the other five people, never the
 	# absent incumbent. Votes are unique and only members can nominate.
 	var session := Network.new()

@@ -17,6 +17,7 @@ func _initialize() -> void:
 	_test_snapshot_and_tick_batching()
 	_test_contested_round()
 	_test_human_seats()
+	_test_vacant_seats()
 	_test_active_solo()
 	for failure in _failures:
 		push_error(failure)
@@ -54,6 +55,36 @@ func _carried(game, cargo: Dictionary, slot: int, at: Vector2, direction: Vector
 	cargo.velocity = Vector2.ZERO
 	cargo.drift_until = 0
 	cargo.protected_until = 0
+
+func _test_vacant_seats() -> void:
+	var seats := _slots(1)
+	for slot in Model.SEATS:
+		seats[slot].active = slot == 3
+		seats[slot].bot = slot != 3
+	var host := Model.new()
+	host.begin(12, seats)
+	host.step(Model.COUNTDOWN)
+	var empty := host.players[0]
+	var cargo: Dictionary = host.crates[0]
+	empty.pos = cargo.pos
+	var empty_start: Vector2 = empty.pos
+	_check(host.action_target(0).kind == "idle", "A vacant tug cannot target nearby cargo")
+	_tap(host, 0)
+	host.command(0, "right", true)
+	host.take_over(0)
+	host.step(Model.STEP * 10)
+	_check(not empty.active and empty.pos == empty_start and empty.velocity == Vector2.ZERO, "Vacant tugs never simulate movement or bot AI")
+	_check(host.crates.all(func(crate): return crate.owner == -1), "A vacant tug cannot hook cargo")
+	_carried(host, cargo, 3, Model.harbor_center(0), Vector2.UP)
+	_check(host.action_target(3).kind == "release", "The occupied tug cannot bank at a vacant harbor")
+	_carried(host, cargo, 3, Model.harbor_center(3), Vector2.UP)
+	_check(host.action_target(3).kind == "deliver", "The occupied tug can bank at its own harbor")
+	empty.score = 50
+	_check(host.ranking() == [3] and host.winners() == [3], "Vacant seats cannot rank or win")
+	var guest := Model.new()
+	guest.begin(12, seats)
+	guest.apply_snapshot(host.snapshot())
+	_check(guest.ranking() == [3] and not guest.players[0].active, "Applying the six-seat snapshot preserves launch occupancy")
 
 func _test_round_clock() -> void:
 	var game = _model(12, 6, false)

@@ -29,6 +29,7 @@ const SIZES := [Vector2i(1024, 576), Vector2i(1024, 768), Vector2i(1280, 720), V
 const MIN_TEXT_PX := 11.0
 var main: Node
 var capture := false
+var spin_hit_only := false
 var sizes: Array = SIZES.duplicate()
 var failures: Array = []
 var checks := 0
@@ -36,6 +37,7 @@ var checks := 0
 func _initialize() -> void:
 	for arg in OS.get_cmdline_user_args():
 		if arg == "--capture": capture = true
+		if arg == "--spin-hit-only": spin_hit_only = true
 		if arg.begins_with("--sizes="):
 			sizes.clear()
 			for part in arg.trim_prefix("--sizes=").split(",", false):
@@ -146,9 +148,26 @@ func check_frame(screen_name: String) -> void:
 	check(not cue.intersects(esc) and not cue.intersects(names), "%s: cue hits the ESC button" % screen_name)
 	check(not status.intersects(esc), "%s: status hits the ESC button" % screen_name)
 
+## The actual live cue extends beyond its Control during peak animation.
+func check_spin_ink(screen_name: String) -> void:
+	var cue: Rect2 = main.play.cue.get_global_rect()
+	var cue_scale: float = main.play.cue.scale.x
+	var cue_ink := cue.grow_individual(22.0 * cue_scale, 0.0, 22.0 * cue_scale, 20.0 * cue_scale)
+	check(not cue_ink.intersects(main.play.status.get_global_rect()), "%s: punched rod cue covers the status" % screen_name)
+	check(not cue_ink.intersects(main.hud_menu.get_global_rect()) and
+		(not main.hud_names.visible or not cue_ink.intersects(main.hud_names.get_global_rect())),
+		"%s: punched rod cue reaches the menu corner" % screen_name)
+	check(cue_scale >= 0.78, "%s: rod cue shrinks below the readable scale" % screen_name)
+	check(main.hud_feedback.get_global_rect().position.y - 20.0 >= cue_ink.end.y,
+		"%s: hit rattle reaches the rod cue" % screen_name)
+	check(main.damage_shade.get_index() < main.hud_root.get_index(), "%s: damage shade covers cue colors" % screen_name)
+	var shade_x: float = main.damage_shade.get_global_transform_with_canvas().origin.x
+	check(is_zero_approx(shade_x), "%s: damage frame starts inside the playfield" % screen_name)
+
 ## Spin Cycle: runners, action line and incoming rod clear of the plates.
 func check_hud(screen_name: String) -> void:
 	check_frame(screen_name)
+	check_spin_ink(screen_name)
 	var floor_y := plates_top()
 	var scene := Rect2(Vector2.ZERO, Vector2(main.area.x, floor_y))
 	for r in main.arena.runners:
@@ -192,6 +211,9 @@ func board_points() -> Array:
 func check_board(screen_name: String) -> void:
 	check_frame(screen_name)
 	var cue: Rect2 = main.play.cue.get_global_rect()
+	var alarm_band := cue.grow_individual(cue.size.x * 0.095, 0.0, cue.size.x * 0.095, 0.0)
+	check(not alarm_band.intersects(main.play.status.get_global_rect()) and not alarm_band.intersects(main.hud_menu.get_global_rect()),
+		"%s: active surge pulse must clear the status and menu" % screen_name)
 	# The call-out's drawn plate, not its whole box (the hint line is empty).
 	var blocked: Array = [main.play.status.get_global_rect(), Rect2(cue.position, Vector2(cue.size.x, cue.size.y * 0.8)), main.hud_menu.get_global_rect()]
 	for plate in main.play.plates: blocked.append(plate.get_global_rect())
@@ -242,6 +264,10 @@ func run() -> void:
 	await process_frame
 	main.test_mode = true
 	main.sound_enabled = false
+	if spin_hit_only:
+		await spin_hit()
+		finish()
+		return
 	main.name_field.text = "PLAYER ONE"
 	await create_timer(0.6).timeout
 	await sweep("menu", check_menu_scene)
@@ -256,6 +282,7 @@ func run() -> void:
 	main._host()
 	assert(main.view == "lobby")
 	await sweep("lobby", check_menu_scene)
+	for slot in range(1, 6): main.session.set_bot(slot, true)
 	main.session.start_round()
 	main.model.countdown = 0.0
 	main.model.phase = "running"
@@ -304,6 +331,9 @@ func run() -> void:
 	await live_wire()
 	main.queue_free()
 	await process_frame
+	finish()
+
+func finish() -> void:
 	for failure in failures:
 		print("SIZE_FAIL ", failure)
 	if failures.is_empty():
@@ -312,6 +342,25 @@ func run() -> void:
 	else:
 		print("SCREEN_SIZES_FAILED %d of %d checks" % [failures.size(), checks])
 		quit(1)
+
+func spin_hit() -> void:
+	main.session.solo("PLAYER ONE")
+	main.session.start_round()
+	main.set_physics_process(false)
+	main.model.phase = "running"
+	main.model.countdown = 0.0
+	main.model.players[0].flash = 0.42
+	main.model.players[0].hp = 6
+	for size in sizes:
+		await resize(size)
+		for kind in ["jump", "duck"]:
+			main.model.waves = [{"id": 90, "at": main.model.progress + 0.1, "kind": kind, "done": false}]
+			main._update_hud()
+			main.play.cue.punch = 1.0
+			main.play.status.bump = 1.0
+			check_spin_ink(kind)
+			check(main.play.cue.kind == kind and main.damage_shade.visible and main.hud_feedback.message.begins_with("HIT!"),
+				"%s: the active cue and both hit signals remain present" % kind)
 
 ## Live Wire: picked on the menu, a party lobby with the game picker, a round
 ## on the hex floor and its results.
@@ -328,6 +377,7 @@ func live_wire() -> void:
 	main._host()
 	assert(main.view == "lobby")
 	await sweep("lw-lobby", check_menu_board)
+	for slot in range(1, 6): main.session.set_bot(slot, true)
 	main.session.start_round()
 	assert(main.play == main.games["livewire"])
 	main.model.countdown = 0.0
@@ -335,7 +385,23 @@ func live_wire() -> void:
 	for p in main.model.players: p.bot = true
 	await create_timer(1.0).timeout
 	await sweep("lw-game", check_board)
+	# A stage announcement must leave both the surge timer and the player's
+	# event feedback available when a line fires as the stage changes.
+	main.set_physics_process(false)
+	main.model.elapsed = main.model.CHARGED_AT
+	main.model.surges = [{"id": 90, "axis": 0, "line": 0, "warn": 0.0, "fire": 0.35}]
+	var own: Dictionary = main.model.players[main.session.my_slot()]
+	own.zaps += 1
+	main._update_hud()
+	check(main.play.cue.kind == "surge" and main.play.cue.now and main.play.cue.hint == "CHARGED",
+		"stage change keeps the live surge cue and puts the stage in the hint")
+	check(main.hud_feedback.message.begins_with("ZAPPED!"), "stage change preserves zap feedback")
+	main.play.clock = main.play.stage_note_until
+	main._update_hud()
+	check(main.play.cue.kind == "surge" and main.play.cue.hint.is_empty(), "stage hint expires without removing the surge")
+	main.model.surges.clear()
 	main.model.elapsed = 89.7
+	main.set_physics_process(true)
 	for i in 900:
 		await process_frame
 		if main.view == "results": break

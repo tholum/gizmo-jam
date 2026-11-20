@@ -13,6 +13,7 @@ const TRIM := Color("404940")
 const DARK := Color("252f2a")
 const WOOD := Color("825343")
 const BRASS := Color("c58b51")
+const CLAP_FLASH_TICKS := 19
 
 const GROUND_SHADER := """
 shader_type spatial;
@@ -76,6 +77,7 @@ uniform float thickness = 0.07;
 uniform float fill = 1.0;
 uniform float opacity = 1.0;
 uniform bool track = false;
+uniform float segments = 0.0;
 uniform vec3 channel : source_color = vec3(0.09, 0.10, 0.09);
 varying vec2 at;
 void vertex() { at = VERTEX.xz; }
@@ -88,7 +90,8 @@ void fragment() {
 	float dark = (track ? ring * 0.89 : 0.0);
 	float lit = line * step(arc, fill);
 	ALBEDO = mix(channel, tint.rgb, lit);
-	ALPHA = max(dark, lit) * opacity;
+	float sections = segments > 0.0 ? smoothstep(0.18, 0.26, cos(arc * 6.283185 * segments)) : 1.0;
+	ALPHA = max(dark, lit) * opacity * sections;
 }
 """
 
@@ -326,7 +329,7 @@ func _build_pen(slot: int) -> void:
 	glyph.no_depth_test = false
 	var score := Pieces.label(node, "", _v(at.normalized() * -1.80, 1.08), 0.81, CREAM)
 	score.hide()
-	_pens.append({"ring": rim, "score": score, "total": 0, "gained": 0, "score_tick": Model.NO_TICK})
+	_pens.append({"root": node, "ring": rim, "score": score, "total": 0, "gained": 0, "score_tick": Model.NO_TICK})
 
 func _build_hatch(index: int) -> void:
 	var node := Node3D.new()
@@ -370,10 +373,13 @@ func _build_sheriff(slot: int) -> void:
 		"tint": Kit.colors[slot].lightened(0.64), "reach": Model.CLAP_RANGE, "half_angle": Model.CLAP_ANGLE,
 		"field_radius": Model.FIELD_RADIUS,
 	}))
-	var foot_ring := _ring(root, 0.64, 0.06, Kit.colors[slot].lightened(0.39), false, 0.050)
+	var foot_ring := _ring(root, 0.70, 0.13, CREAM, true, 0.052)
+	var rival_ring := _ring(root, 0.64, 0.06, Kit.colors[slot].lightened(0.39), false, 0.050)
+	foot_ring.material_override.set_shader_parameter("segments", 6.0)
+	rival_ring.material_override.set_shader_parameter("opacity", 0.48)
 	var tag := Pieces.label(root, str(slot + 1), Vector3(0, 1.63, 0), 0.51, Kit.colors[slot].lightened(0.58))
 	_sheriffs.append({"root": root, "rig": rig, "body": look.body, "feet": look.boots, "hands": look.hands, "cone": cone,
-		"ring": foot_ring, "label": tag, "pos": Vector2.ZERO, "face": 0.0, "stride": 0.0})
+		"ring": foot_ring, "rival_ring": rival_ring, "label": tag, "pos": Vector2.ZERO, "face": 0.0, "stride": 0.0})
 
 func _build_critter() -> void:
 	var root := Node3D.new()
@@ -405,9 +411,9 @@ func _render_sheriffs(state: RefCounted, delta: float, own_slot: int, ease: floa
 	for slot in Model.SEATS:
 		var p: Dictionary = state.players[slot]
 		var visual := _sheriffs[slot]
-		var local := slot == own_slot or (local_mask & (1 << slot)) != 0
+		var local := not _menu and (slot == own_slot or (local_mask & (1 << slot)) != 0)
 		var victory := _champion == slot and _menu
-		visual.root.visible = _champion < 0 or victory or not _menu
+		visual.root.visible = p.active and (_champion < 0 or victory or not _menu)
 		if not visual.root.visible:
 			continue
 		var target: Vector2 = Vector2(0, 1.4) if victory else p.pos
@@ -418,17 +424,19 @@ func _render_sheriffs(state: RefCounted, delta: float, own_slot: int, ease: floa
 		visual.stride += pace * 6.8
 		visual.face = lerp_angle(visual.face, PI * 0.5 if victory else p.face, ease)
 		visual.rig.rotation.y = -float(visual.face)
-		var pulse := float(int(state.tick) - int(p.clap_tick)) / 19.0
+		var pulse := float(int(state.tick) - int(p.clap_tick)) / CLAP_FLASH_TICKS
 		var firing := pulse >= 0.0 and pulse < 1.0 and not _menu
 		var ready := int(state.tick) - int(p.clap_tick) >= Model.CLAP_COOLDOWN
 		visual.cone.visible = firing or (local and not _menu and state.phase != "finished")
 		if visual.cone.visible:
-			visual.cone.rotation.y = -float(p.clap_face if firing else visual.face)
+			visual.cone.rotation.y = -float(p.clap_face if firing else p.face)
 			var material: ShaderMaterial = visual.cone.material_override
 			material.set_shader_parameter("pulse", pulse if firing else -1.0)
 			material.set_shader_parameter("opacity", 1.0 if firing or ready else 0.28)
-		var local_ring: ShaderMaterial = visual.ring.material_override
-		local_ring.set_shader_parameter("opacity", 1.0 if local else 0.58)
+		visual.ring.visible = local
+		visual.rival_ring.visible = not local
+		if local:
+			visual.ring.rotation.y = -float(p.face)
 		var walking := clampf(pace / maxf(delta * Model.PLAYER_SPEED, 0.02), 0.0, 1.0) if delta > 0.0 else 0.0
 		var step := sin(float(visual.stride))
 		var nod := sin(_clock * 11.0) * 0.09 if victory else absf(step) * walking * 0.07
@@ -490,10 +498,19 @@ func _render_critters(state: RefCounted, ease: float, fresh: bool) -> void:
 		var fraction := Model.heal_fraction(crit, state.tick)
 		visual.ring.visible = fraction < 1.0 or launch > 0
 		if visual.ring.visible:
+			# Only the synchronized clap recovery clock confirms a hit. A
+			# protected launch or an animal merely in the cone can't light up.
+			var hit_age := int(state.tick) + Model.CLAP_RECOVERY - int(crit.recover_tick)
+			var hit := launch <= 0 and hit_age >= 0 and hit_age < CLAP_FLASH_TICKS
+			var flare := 1.0 - float(hit_age) / CLAP_FLASH_TICKS if hit else 0.0
 			var material: ShaderMaterial = visual.ring.material_override
-			material.set_shader_parameter("tint", CREAM if launch > 0 else ORANGE.lerp(GOLD, fraction))
-			material.set_shader_parameter("channel", DARK if launch > 0 else Color("a34127"))
-			material.set_shader_parameter("fill", 1.0 - float(launch) / Model.LAUNCH_TICKS if launch > 0 else fraction)
+			material.set_shader_parameter("segments", 4.0 if hit else 0.0)
+			material.set_shader_parameter("radius", 0.70 + 0.16 * flare)
+			material.set_shader_parameter("thickness", 0.076 + 0.09 * flare)
+			material.set_shader_parameter("tint", CREAM if launch > 0 or hit else ORANGE.lerp(GOLD, fraction))
+			material.set_shader_parameter("channel", DARK if launch > 0 or hit else Color("a34127"))
+			var fill := 1.0 - float(launch) / Model.LAUNCH_TICKS if launch > 0 else fraction
+			material.set_shader_parameter("fill", 1.0 if hit else fill)
 		visual.label.visible = gold
 
 func _render_yard(state: RefCounted, fresh: bool) -> void:
@@ -515,6 +532,9 @@ func _render_yard(state: RefCounted, fresh: bool) -> void:
 	for i in _pens.size():
 		var visual := _pens[i]
 		var p: Dictionary = state.players[i]
+		visual.root.visible = p.active
+		if not p.active:
+			continue
 		if p.score != visual.total and not fresh:
 			visual.gained = int(p.score) - int(visual.total)
 			visual.score_tick = p.last_score

@@ -13,6 +13,13 @@ const DRIFT := Color("83d4ec")
 const WARNING := Color("ff9e65")
 const NORMAL := Color("f5d5a0")
 const TARGET_COLORS := {"hook": CREAM, "cut": WARNING, "deliver": BRASS, "release": SEAFOAM}
+enum RopeStyle { PROTECTED, CUTTABLE, SLACK }
+const ROPE_GLYPHS := ["◆", "×", "·"]
+const ROPE_WIDTHS := [0.10, 0.14, 0.055]
+const ROPE_GLYPH_SIZES := [0.031, 0.042, 0.023]
+const ROPE_GLYPH_COLORS := [SEAFOAM, WARNING, Color("91b2ae")]
+const SNAP_POOL_SIZE := 3
+const SNAP_DURATION := 0.32
 
 var camera: Camera3D
 var client_motion := false
@@ -26,26 +33,55 @@ var _champion := -1
 var _water: ShaderMaterial
 var _clock := 0.0
 var _state: RefCounted
+var _rendered_tick := -1
+var _rendered_round := -1
+var _latest_tick := -1
 var _boats: Array[Dictionary] = []
 var _harbors: Array[Dictionary] = []
 var _targets: Array[Dictionary] = []
 var _cargo: Dictionary = {}
 var _cargo_pool: Array[Dictionary] = []
 var _materials: Dictionary = {}
+var _rope_materials: Array[StandardMaterial3D] = []
+var _owner_materials: Array[StandardMaterial3D] = []
+var _target_materials: Dictionary = {}
+var _rope_segment := BoxMesh.new()
+var _cut_rope: ArrayMesh
+var _snaps: Array[Dictionary] = []
+var _next_snap := 0
 
 func _ready() -> void:
 	Kit.setup()
+	_rope_materials.assign([_paint(CREAM, true), _paint(WARNING, true), _paint(Color("567c78"), true)])
+	for kind in TARGET_COLORS:
+		_target_materials[kind] = _paint(TARGET_COLORS[kind], true)
+	var cut_mesh := SurfaceTool.new()
+	cut_mesh.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for offset in [-0.28, 0.28]:
+		cut_mesh.append_from(_rope_segment, 0,
+			Transform3D(Basis.from_scale(Vector3(0.44, 1, 1)), Vector3(offset, 0, 0)))
+	_cut_rope = cut_mesh.commit()
 	_setup_camera()
 	_build_bay()
 	for slot in Model.SEATS:
+		_owner_materials.append(_paint(Kit.colors[slot], true))
 		_build_harbor(slot)
 		_build_boat(slot)
 		_build_target(slot)
+	for i in SNAP_POOL_SIZE:
+		var near_end := _mesh(self, _rope_segment, _rope_materials[RopeStyle.CUTTABLE])
+		var far_end := _mesh(self, _rope_segment, _rope_materials[RopeStyle.CUTTABLE])
+		var flash := _ring(self, 0.63, 0.14, CREAM, 0.64, true)
+		_snaps.append({"near_end": near_end, "far_end": far_end, "flash": flash, "age": SNAP_DURATION})
+	_clear_snaps()
 	set_level(_level)
 	get_viewport().size_changed.connect(_frame_camera)
 	_frame_camera()
 
 func set_menu(value: bool) -> void:
+	if value != _menu:
+		_rendered_tick = -1
+		_clear_snaps()
 	_menu = value
 	_champion = -1
 	show_identities = false
@@ -162,7 +198,7 @@ func _build_harbor(slot: int) -> void:
 	_label(wharf, str(slot + 1), Vector3(0, 1.15, 0), 38, 0.033, Color.WHITE)
 	var flash := _ring(dock, Model.DOCK_RADIUS + 0.16, 0.14, tint.lightened(0.35), 0.056)
 	flash.hide()
-	_harbors.append({"flash": flash})
+	_harbors.append({"root": dock, "flash": flash})
 
 func _build_boat(slot: int) -> void:
 	var tint: Color = Kit.colors[slot]
@@ -221,9 +257,12 @@ func _build_boat(slot: int) -> void:
 func _build_target(slot: int) -> void:
 	var root := _group(self, Vector2.ZERO)
 	var target_color: Color = Kit.colors[slot]
-	var ring := _ring(root, 1.05, 0.125, target_color.lightened(0.25), 0.095)
+	var seat_color := target_color.lightened(0.34)
+	var ring := _ring(root, 1.05, 0.125, seat_color, 0.095)
+	var cut_ring := _ring(root, 1.64, 0.16, seat_color, 0.095, true)
 	var caption := _label(root, "", Vector3(0, 1.65, 0), 33, 0.027, CREAM)
-	_targets.append({"root": root, "ring": ring, "caption": caption})
+	_targets.append({"root": root, "ring": ring, "cut_ring": cut_ring, "caption": caption,
+		"seat_material": ring.material_override})
 	root.hide()
 
 func _new_crate(heavy: bool) -> Dictionary:
@@ -246,25 +285,37 @@ func _new_crate(heavy: bool) -> Dictionary:
 	var owner_ring := _ring(root, size * 0.70, 0.077, SEAFOAM, 0.064)
 	var drift_ring := _ring(root, size * 0.69, 0.073, DRIFT, 0.063, true)
 	var rope_shadow := _box(self, Vector3.ONE, Vector3.ZERO, INK, true)
-	var rope := _box(self, Vector3.ONE, Vector3.ZERO, SEAFOAM, true)
+	var rope := _mesh(self, _rope_segment, _rope_materials[RopeStyle.PROTECTED])
 	var midpoint := _label(self, "", Vector3.ZERO, 27, 0.023, WARNING)
 	return {"heavy": heavy, "root": root, "body": body, "owner_ring": owner_ring, "drift_ring": drift_ring,
 		"weight": weight, "rope": rope, "rope_shadow": rope_shadow, "midpoint": midpoint}
 
 func update_visuals(state: RefCounted, delta: float, own_slot: int = 0) -> void:
 	if state == null:
+		if _state != null:
+			_state = null
+			_clear_snaps()
 		return
-	var fresh := _state != state
+	var new_round: bool = _state != state or state.round_id != _rendered_round
+	var fresh: bool = new_round or state.tick < _rendered_tick
 	if fresh:
 		_clear_crates()
+		_clear_snaps()
+		_rendered_tick = -1
+	if new_round:
+		_latest_tick = -1
 	_state = state
 	_clock += delta
 	var ease := 1.0 if fresh or not client_motion else 1.0 - exp(-30.0 * delta)
 	for slot in Model.SEATS:
 		_render_boat(slot, state, own_slot, ease)
 		_render_harbor(slot, state)
+	_update_snaps(delta)
 	_render_cargo(state, ease)
 	_render_targets(state, own_slot)
+	_rendered_tick = state.tick
+	_rendered_round = state.round_id
+	_latest_tick = maxi(_latest_tick, state.tick)
 
 func _render_boat(slot: int, state: RefCounted, own_slot: int, ease: float) -> void:
 	var visual := _boats[slot]
@@ -272,7 +323,9 @@ func _render_boat(slot: int, state: RefCounted, own_slot: int, ease: float) -> v
 	var local := _local(slot, own_slot)
 	var winner := slot == _champion and _menu
 	var root: Node3D = visual.root
-	root.visible = _champion < 0 or winner or not _menu
+	root.visible = boat.active and (_champion < 0 or winner or not _menu)
+	if not boat.active:
+		return
 	var at: Vector2 = Vector2(0, 1.5) if winner else boat.pos
 	root.position = root.position.lerp(_v(at), ease)
 	root.scale = Vector3.ONE * (2.65 if winner else 1.0)
@@ -288,6 +341,7 @@ func _render_boat(slot: int, state: RefCounted, own_slot: int, ease: float) -> v
 
 func _render_harbor(slot: int, state: RefCounted) -> void:
 	var visual := _harbors[slot]
+	visual.root.visible = state.players[slot].active
 	var age := int(state.tick) - int(state.players[slot].bank_tick)
 	var flashing := not _menu and age >= 0 and age < 11
 	visual.flash.visible = flashing
@@ -313,6 +367,7 @@ func _render_cargo(state: RefCounted, ease: float) -> void:
 			visual = _new_crate(crate.heavy)
 			_cargo[id] = visual
 			visual.root.position = _v(crate.pos)
+			visual.prior_owner = -1
 		var root: Node3D = visual.root
 		root.visible = _champion < 0 or not _menu
 		root.position = root.position.lerp(_v(crate.pos), ease)
@@ -325,7 +380,15 @@ func _render_cargo(state: RefCounted, ease: float) -> void:
 		visual.drift_ring.rotation.y = _clock * 2.5
 		visual.owner_ring.visible = owner >= 0
 		if owner >= 0:
-			visual.owner_ring.material_override = _paint(Kit.colors[owner], true)
+			visual.owner_ring.material_override = _owner_materials[owner]
+		if owner < 0 and visual.prior_owner >= 0 and not _menu and _rendered_tick >= 0:
+			# Release also starts drift. Only a confirmed loss on the same tick
+			# as this crate started drifting identifies a cut of this rope.
+			var lost: int = state.players[visual.prior_owner].lost_tick
+			var age: float = (state.tick - lost) * Model.STEP
+			if lost > _latest_tick and lost == int(crate.drift_until) - Model.DRIFT_TICKS and age >= 0.0 and age < SNAP_DURATION:
+				_start_snap(visual.rope_start, visual.rope_end, age)
+		visual.prior_owner = owner
 		_render_rope(state, crate, visual)
 	for id in _cargo.keys():
 		if not known.has(id):
@@ -340,18 +403,68 @@ func _render_rope(state: RefCounted, crate: Dictionary, visual: Dictionary) -> v
 	visual.midpoint.visible = towing and not _menu
 	if not towing:
 		return
-	var guarded: bool = state.line_protected(crate)
-	var taut: bool = state.line_taut(crate)
-	var tint := SEAFOAM if guarded else (BRASS if taut else NORMAL.darkened(0.26))
+	var style := RopeStyle.SLACK
+	if state.line_protected(crate):
+		style = RopeStyle.PROTECTED
+	elif state.line_taut(crate):
+		style = RopeStyle.CUTTABLE
 	var tug: Node3D = _boats[owner].root
 	var start := tug.position
 	var end: Vector3 = visual.root.position
-	_span(visual.rope_shadow, start, end, 0.52, 0.17)
-	_span(visual.rope, start, end, 0.55, 0.096 if taut else 0.063)
-	visual.rope.material_override = _paint(tint, true)
-	visual.midpoint.position = _v(state.rope_midpoint(crate), 0.69)
-	visual.midpoint.text = "◆" if guarded else ("×" if taut else "·")
-	visual.midpoint.modulate = SEAFOAM if guarded else WARNING
+	visual.rope_start = start
+	visual.rope_end = end
+	var width: float = ROPE_WIDTHS[style]
+	_span(visual.rope_shadow, start, end, 0.52, width + 0.085)
+	_span(visual.rope, start, end, 0.55, width)
+	if visual.rope.material_override != _rope_materials[style]:
+		visual.rope.material_override = _rope_materials[style]
+		visual.rope.mesh = _cut_rope if style == RopeStyle.CUTTABLE else _rope_segment
+	visual.midpoint.position = _v(state.rope_midpoint(crate), 0.78)
+	var glyph: String = ROPE_GLYPHS[style]
+	if visual.midpoint.text != glyph:
+		visual.midpoint.text = glyph
+		visual.midpoint.pixel_size = ROPE_GLYPH_SIZES[style]
+		visual.midpoint.modulate = ROPE_GLYPH_COLORS[style]
+
+func _start_snap(start: Vector3, end: Vector3, age: float) -> void:
+	var snap := _snaps[_next_snap]
+	_next_snap = (_next_snap + 1) % _snaps.size()
+	snap.start = start
+	snap.end = end
+	snap.age = age
+	_render_snap(snap)
+
+func _clear_snaps() -> void:
+	_next_snap = 0
+	for snap in _snaps:
+		snap.age = SNAP_DURATION
+		_render_snap(snap)
+
+func _update_snaps(delta: float) -> void:
+	for snap in _snaps:
+		if snap.age < SNAP_DURATION:
+			snap.age += delta
+			_render_snap(snap)
+
+func _render_snap(snap: Dictionary) -> void:
+	var active: bool = snap.age < SNAP_DURATION
+	snap.near_end.visible = active
+	snap.far_end.visible = active
+	snap.flash.visible = active
+	if not active:
+		return
+	var progress: float = snap.age / SNAP_DURATION
+	var recoil := 1.0 - (1.0 - progress) ** 2
+	var start: Vector3 = snap.start
+	var end: Vector3 = snap.end
+	var midpoint := (start + end) * 0.5
+	var shrink := lerpf(0.14, 1.0, recoil)
+	var width := lerpf(0.24, 0.07, recoil)
+	_span(snap.near_end, start, midpoint.lerp(start, shrink), 0.58, width)
+	_span(snap.far_end, end, midpoint.lerp(end, shrink), 0.58, width)
+	snap.flash.position = midpoint
+	snap.flash.scale = Vector3(1.0 + progress, 1.0, 1.0 + progress)
+	snap.flash.visible = progress < 0.67
 
 func _span(mesh: MeshInstance3D, start: Vector3, end: Vector3, height: float, width: float) -> void:
 	mesh.position = (start + end) * 0.5 + Vector3.UP * height
@@ -373,16 +486,19 @@ func _render_targets(state: RefCounted, own_slot: int) -> void:
 		visual.root.show()
 		visual.root.position = _v(target.at)
 		var tint: Color = TARGET_COLORS[kind]
-		var ring_scale := 0.68 if kind == "cut" else (2.0 if kind == "deliver" else 1.0)
-		visual.ring.scale = Vector3.ONE * (ring_scale + sin(_clock * 6.1) * 0.10)
-		visual.ring.material_override = _paint(Kit.colors[slot].lightened(0.34) if local_mask != 0 else tint, true)
+		var count := int(used.get(target.at, 0))
+		used[target.at] = count + 1
+		var cutting := kind == "cut"
+		visual.ring.visible = not cutting
+		visual.cut_ring.visible = cutting
+		var ring: MeshInstance3D = visual.cut_ring if cutting else visual.ring
+		var ring_scale := 2.0 if kind == "deliver" else 1.0
+		ring.scale = Vector3.ONE * (ring_scale + count * 0.29 + sin(_clock * 6.1) * 0.08)
+		ring.material_override = visual.seat_material if local_mask != 0 else _target_materials[kind]
 		var index := "%d " % (slot + 1) if local_mask != 0 else ""
 		visual.caption.text = index + kind.to_upper()
 		visual.caption.modulate = tint
-		# Separate captions even when two local players target the same object.
-		var count := int(used.get(target.at, 0))
-		used[target.at] = count + 1
-		visual.caption.position.y = 2.00 + count * 0.85
+		visual.caption.position.y = 3.55 + count * 2.20 if cutting else 2.00 + count * 1.15
 
 func _local(slot: int, own_slot: int) -> bool:
 	return slot == own_slot or (local_mask & (1 << slot)) != 0

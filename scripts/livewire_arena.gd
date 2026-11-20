@@ -20,6 +20,7 @@ const Arena = preload("res://scripts/arena.gd")
 const Grid = preload("res://scripts/livewire_grid.gd")
 const RunnerVisual = preload("res://scripts/runner_visual.gd")
 const COLORS: Array = Arena.COLORS
+const Palette = preload("res://scripts/palette.gd")
 
 ## Camera: orthographic, looking from +z toward -z. Sized so the tiles and the
 ## surge emitters stay between the HUD bands of the 1440x900 design space: the
@@ -149,6 +150,15 @@ void fragment() {
 		col = mix(col, hot_core, smoothstep(0.84, 0.90, d) * pulse);
 		if (danger > 1.5) {
 			col = mix(hot_core, hot, 0.18 + 0.22 * sin(clock * 55.0) + 0.3 * smoothstep(0.55, 1.0, d));
+		} else {
+			// Broad hatching remains distinct from ownership and lock colours.
+			// The light bands get wider as the line approaches its firing time.
+			float stripe = fract((local.x + local.y) * 2.15 - clock * 0.60);
+			float band = smoothstep(0.08, 0.15, stripe) * (1.0 - smoothstep(0.34 + u * 0.26, 0.42 + u * 0.26, stripe));
+			vec3 ink = vec3(0.095, 0.058, 0.09);
+			col = mix(col, ink, 0.47);
+			col = mix(col, hot_core, band * (0.56 + 0.27 * u));
+			col = mix(col, ink, smoothstep(0.78, 0.90, d) * 0.90);
 		}
 	}
 	col = col * (1.0 + data.w * 0.55) + charge * (data.w * 0.36);
@@ -465,6 +475,16 @@ func set_menu(on: bool) -> void:
 	show_identities = false
 	_frame_camera()
 
+func update_player_colors() -> void:
+	_update_tile_palette()
+	for i in runners.size():
+		var runner: Dictionary = runners[i]
+		var tint := Palette.for_seat(i)
+		runner.visual.set_team_color(Arena.team_color(i))
+		runner.tag.modulate = tint.lightened(0.55)
+		runner.mark_mat.set_shader_parameter("tint", tint.lightened(0.2))
+		runner.trail.mesh = _trail_mesh(tint.lightened(0.35))
+
 ## The menu column's right edge, as a fraction of the screen width.
 func set_inset(value: float) -> void:
 	inset = clampf(value, 0.0, 0.8)
@@ -598,9 +618,9 @@ func celebrate(slot: int) -> void:
 	_begin()
 	_prism(Vector3(0, -0.34, 0), 2.1, 0.14, 6, 0.0, SAFETY)
 	_prism(Vector3(0, -0.3, 0), 1.75, 0.3, 24, 0.0, STEEL, 0.0, true, STEEL_LIGHT)
-	_prism(Vector3(0, 0.0, 0), 1.5, 0.02, 24, 0.0, COLORS[slot])
+	_prism(Vector3(0, 0.0, 0), 1.5, 0.02, 24, 0.0, Palette.for_seat(slot))
 	_node(victory, _commit(), Vector3.ZERO, _stage_mat)
-	_ring(Vector2(0, 0.8), 0.3, COLORS[slot], 1.0, 14.0, 0.9, 0.93)
+	_ring(Vector2(0, 0.8), 0.3, Palette.for_seat(slot), 1.0, 14.0, 0.9, 0.93)
 	for i in _dim.size():
 		_dim[i] = 0.42
 	_dim[slot + 1] = 1.0
@@ -720,10 +740,7 @@ func _build_board(grid: RefCounted) -> void:
 		_pal_lock.resize(21)
 		_dim.resize(7)
 		_dim.fill(1.0)
-		for seat in 6:
-			var tile := _tile_color(seat)
-			_set_palette(_pal, seat + 1, tile)
-			_set_palette(_pal_lock, seat + 1, tile.lightened(0.14))
+		_update_tile_palette()
 		_set_palette(_pal, 0, NEUTRAL)
 		_set_palette(_pal_lock, 0, NEUTRAL)
 		_gain_n.resize(7)
@@ -765,9 +782,16 @@ func _build_board(grid: RefCounted) -> void:
 		_plinth.scale = Vector3.ONE * (grid.extent() / _base_extent)
 	_board_idle = false
 
+func _update_tile_palette() -> void:
+	for seat in COLORS.size():
+		var tile := _tile_color(seat)
+		_set_palette(_pal, seat + 1, tile)
+		_set_palette(_pal_lock, seat + 1, tile.lightened(0.14))
+
 func _tile_color(seat: int) -> Color:
-	var c: Color = COLORS[seat]
-	var tune: Vector3 = TILE_TUNE[seat]
+	var c := Palette.for_seat(seat)
+	var color_id := Palette.id_for_seat(seat)
+	var tune := TILE_TUNE[color_id] if color_id < TILE_TUNE.size() else Vector3(0.0, 1.26, 0.95)
 	return Color.from_hsv(fposmod(c.h + tune.x, 1.0), minf(c.s * tune.y, 1.0), minf(c.v * tune.z, 1.0))
 
 func _set_palette(list: PackedFloat32Array, slot: int, color: Color) -> void:
@@ -1240,12 +1264,13 @@ func _build_runner(index: int) -> void:
 	tag.pixel_size = 0.0125 / RUNNER_SCALE
 	tag.outline_size = 16
 	tag.outline_modulate = Color(0.05, 0.08, 0.13, 1.0)
-	tag.modulate = COLORS[index].lightened(0.55)
+	var tint := Palette.for_seat(index)
+	tag.modulate = tint.lightened(0.55)
 	var r := {"root": root, "visual": visual, "tag": tag}
 	# Floor marker: blob shadow, thick team ring, and the local player's ring.
 	var mark_mat := ShaderMaterial.new()
 	mark_mat.shader = _mark_shader
-	mark_mat.set_shader_parameter("tint", COLORS[index].lightened(0.2))
+	mark_mat.set_shader_parameter("tint", tint.lightened(0.2))
 	mark_mat.set_shader_parameter("alarm", HOT)
 	var mark := _node(root, _mark_mesh, Vector3(0, 0.05, 0), mark_mat)
 	mark.name = "Mark"
@@ -1260,7 +1285,7 @@ func _build_runner(index: int) -> void:
 		var star := _node(sparks, _unit_box, Vector3(sin(a) * 0.42, 0, cos(a) * 0.42), _spark_mat)
 		star.scale = Vector3(0.21, 0.21, 0.21)
 		star.rotation = Vector3(0.8, a, 0.8)
-	var trail := _node(root, _trail_mesh(COLORS[index].lightened(0.35)), Vector3.ZERO, _trail_mat)
+	var trail := _node(root, _trail_mesh(tint.lightened(0.35)), Vector3.ZERO, _trail_mat)
 	trail.name = "Trail"
 	trail.visible = false
 	r.merge({"mark": mark, "mark_mat": mark_mat, "mark_own": false, "mark_stun": false, "top": top,
@@ -1727,7 +1752,7 @@ func _scan_loops(state: RefCounted, fresh: bool) -> void:
 		return
 	for i in runners.size():
 		var r: Dictionary = runners[i]
-		if r.seen and int(state.players[i].loops) > r.loops:
+		if r.seen and state.players[i].get("active", true) and int(state.players[i].loops) > r.loops:
 			_loop_flag[i + 1] = 1
 			_loop_from[i + 1] = r.pos
 
@@ -1743,7 +1768,7 @@ func _update_runners(state: RefCounted, delta: float, own_slot: int, fresh: bool
 	for i in runners.size():
 		var r: Dictionary = runners[i]
 		var root: Node3D = r.root
-		if not have:
+		if not have or not state.players[i].get("active", true):
 			root.visible = false
 			r.seen = false
 			continue
@@ -1802,7 +1827,7 @@ func _update_runners(state: RefCounted, delta: float, own_slot: int, fresh: bool
 			var hit := pos + Vector2(sin(r.face), cos(r.face)) * 0.8
 			var best := 2.6
 			for j in runners.size():
-				if j == i:
+				if j == i or not state.players[j].get("active", true):
 					continue
 				var other: Dictionary = state.players[j]
 				var at := Vector2(other.x, other.z)
@@ -1810,8 +1835,8 @@ func _update_runners(state: RefCounted, delta: float, own_slot: int, fresh: bool
 					best = at.distance_to(pos)
 					hit = (at + pos) * 0.5
 			_ring(hit, 0.12, Color("ffffff"), 0.3, 2.2, 0.36, 0.7)
-			_ring(hit, 0.12, COLORS[i], 0.2, 1.5, 0.5, 0.45)
-			_popup("BAM!", Vector3(hit.x, 2.5, hit.y), COLORS[i].lightened(0.3), 0.6, 0.8)
+			_ring(hit, 0.12, Palette.for_seat(i), 0.2, 1.5, 0.5, 0.45)
+			_popup("BAM!", Vector3(hit.x, 2.5, hit.y), Palette.for_seat(i).lightened(0.3), 0.6, 0.8)
 		r.shoves = int(p.shoves)
 		if int(p.loops) > r.loops and running:
 			var centre := pos
@@ -1819,8 +1844,8 @@ func _update_runners(state: RefCounted, delta: float, own_slot: int, fresh: bool
 				centre = Vector2(_gain_x[i + 1], _gain_z[i + 1]) / float(_gain_n[i + 1])
 			var reach := clampf(1.6 + sqrt(float(_gain_n[i + 1])) * 1.1, 2.4, 9.0)
 			_ring(centre, 0.22, Color("ffffff"), 0.4, reach, 0.7, 0.8)
-			_ring(centre, 0.22, COLORS[i].lightened(0.2), 0.2, reach * 0.75, 0.9, 0.55)
-			_popup("LOOP!", Vector3(centre.x, 2.6, centre.y), COLORS[i].lightened(0.25), 1.0, 1.25)
+			_ring(centre, 0.22, Palette.for_seat(i).lightened(0.2), 0.2, reach * 0.75, 0.9, 0.55)
+			_popup("LOOP!", Vector3(centre.x, 2.6, centre.y), Palette.for_seat(i).lightened(0.25), 1.0, 1.25)
 		r.loops = int(p.loops)
 		if not showing:
 			continue

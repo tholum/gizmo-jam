@@ -36,7 +36,7 @@ extends RefCounted
 ##             warn > 0: telegraphing (seconds until live). warn == 0: live for
 ##             `fire` more seconds. Entries are removed when fire reaches 0.
 ##   players   Array of six Dictionaries, by seat:
-##       name: String, peer: int, bot: bool
+##       name: String, peer: int, bot: bool, active: bool (from the launch lineup)
 ##       x, z: float     board position; grid.cell_at(Vector2(x, z)) is the tile
 ##       face: float     heading in radians; direction = (sin(face), cos(face))
 ##                       in (x, z), so it can be assigned to Node3D.rotation.y
@@ -200,13 +200,15 @@ func begin(seed_value: int, slots: Array, id: int = 1, endless: bool = false) ->
 	var ring := mini(START_RING, grid.radius)
 	for i in SEATS:
 		var seat: Dictionary = slots[i]
+		var active: bool = seat.get("active", true)
 		var cell: int = grid.index[Grid.DIRS[i] * ring]
 		var at := grid.centers[cell]
-		owners[cell] = i + 1
-		players.append({"name": seat.name, "peer": seat.peer, "bot": seat.bot,
+		if active:
+			owners[cell] = i + 1
+		players.append({"name": seat.name, "peer": seat.peer, "bot": seat.bot, "active": active,
 			"x": at.x, "z": at.y, "face": atan2(-at.x, -at.y), "speed": 0.0,
 			"stun": 0.0, "shove": 0.0, "dash": 0.0, "cool": 0.0,
-			"tiles": 1, "best": 1, "loops": 0, "zaps": 0, "shoves": 0,
+			"tiles": int(active), "best": int(active), "loops": 0, "zaps": 0, "shoves": 0,
 			"_l": false, "_r": false, "_u": false, "_d": false,
 			"_dx": 0.0, "_dz": 0.0, "_kx": 0.0, "_kz": 0.0, "_hit": 0,
 			"_think": 0.0, "_goal": -1, "_flee": false, "_seen": {}})
@@ -215,6 +217,8 @@ func command(slot: int, action: String, pressed: bool) -> void:
 	if slot < 0 or slot >= players.size() or phase == "finished":
 		return
 	var p: Dictionary = players[slot]
+	if not p.active:
+		return
 	# Directions are remembered during the countdown so a key that is already
 	# down at GO counts, but nothing moves until then.
 	match action:
@@ -273,10 +277,11 @@ func _tick(dt: float) -> void:
 				locks[i] = maxf(0.0, locks[i] - dt)
 	_step_surges(dt)
 	for i in players.size():
-		if players[i].bot:
+		if players[i].active and players[i].bot:
 			_bot_step(i, dt)
 	for p in players:
-		_move(p, dt)
+		if p.active:
+			_move(p, dt)
 	_collide(dt)
 	_claim()
 	_zap()
@@ -337,9 +342,13 @@ func _shove(from: Dictionary, target: int) -> void:
 func _collide(dt: float) -> void:
 	var push := minf(1.0, SEPARATION * dt) * 0.5
 	for i in players.size():
+		var a: Dictionary = players[i]
+		if not a.active:
+			continue
 		for j in range(i + 1, players.size()):
-			var a: Dictionary = players[i]
 			var b: Dictionary = players[j]
+			if not b.active:
+				continue
 			var gap := Vector2(float(b.x) - float(a.x), float(b.z) - float(a.z))
 			var dist := gap.length()
 			if dist < SHOVE_REACH:
@@ -365,8 +374,8 @@ func _claim() -> void:
 	var here := PackedInt32Array()
 	var able: Array[bool] = []
 	for p in players:
-		here.append(grid.cell_at(Vector2(p.x, p.z)))
-		able.append(float(p.stun) <= 0.0 and float(p.shove) <= 0.0)
+		here.append(grid.cell_at(Vector2(p.x, p.z)) if p.active else -1)
+		able.append(p.active and float(p.stun) <= 0.0 and float(p.shove) <= 0.0)
 	# The seat that goes first rotates so no seat wins every contested tile.
 	for k in players.size():
 		var slot := (k + _ticks) % players.size()
@@ -452,6 +461,8 @@ func _count() -> void:
 			totals[owner] += 1
 	for i in players.size():
 		var p: Dictionary = players[i]
+		if not p.active:
+			continue
 		p.tiles = totals[i + 1]
 		p.best = maxi(int(p.best), totals[i + 1])
 
@@ -501,13 +512,18 @@ func _spawn_surge() -> void:
 func _aim_cell() -> int:
 	var total := 0.0
 	for p in players:
-		total += SURGE_AIM_BASE + float(p.tiles)
+		if p.active:
+			total += SURGE_AIM_BASE + float(p.tiles)
 	var pick := rng.randf() * total
+	var aimed_at := {}
 	for p in players:
+		if not p.active:
+			continue
+		aimed_at = p
 		pick -= SURGE_AIM_BASE + float(p.tiles)
 		if pick <= 0.0:
-			return grid.cell_at(Vector2(p.x, p.z))
-	return grid.cell_at(Vector2(players[-1].x, players[-1].z))
+			break
+	return -1 if aimed_at.is_empty() else grid.cell_at(Vector2(aimed_at.x, aimed_at.z))
 
 func _zap() -> void:
 	for s in surges:
@@ -515,7 +531,7 @@ func _zap() -> void:
 			continue
 		var done := int(_zapped.get(int(s.id), 0))
 		for i in players.size():
-			if done & (1 << i) != 0:
+			if not players[i].active or done & (1 << i) != 0:
 				continue
 			var p: Dictionary = players[i]
 			var cell := grid.cell_at(Vector2(p.x, p.z))
@@ -622,7 +638,7 @@ func _bot_plan(slot: int, pos: Vector2, here: int) -> bool:
 				if locks[cell] > 0.0:
 					continue
 				var holder: Dictionary = players[owner - 1]
-				if grid.cell_at(Vector2(holder.x, holder.z)) == cell:
+				if holder.active and grid.cell_at(Vector2(holder.x, holder.z)) == cell:
 					continue
 			else:
 				cost -= 0.25
@@ -633,7 +649,7 @@ func _bot_plan(slot: int, pos: Vector2, here: int) -> bool:
 				cost -= BOT_COMMIT
 			if dist < 5.0:
 				for i in players.size():
-					if i != slot and grid.centers[cell].distance_to(Vector2(players[i].x, players[i].z)) < dist - 0.2:
+					if i != slot and players[i].active and grid.centers[cell].distance_to(Vector2(players[i].x, players[i].z)) < dist - 0.2:
 						cost += 0.8
 						break
 		if cost < best_cost:
@@ -654,8 +670,10 @@ func _bot_plan(slot: int, pos: Vector2, here: int) -> bool:
 	var foe_dist := BOT_REACH
 	for i in players.size():
 		var other: Dictionary = players[i]
+		if i == slot or not other.active:
+			continue
 		var gap := pos.distance_to(Vector2(other.x, other.z))
-		if i != slot and gap < foe_dist and float(other.shove) <= 0.0:
+		if gap < foe_dist and float(other.shove) <= 0.0:
 			foe = i
 			foe_dist = gap
 	if foe >= 0:
@@ -701,7 +719,7 @@ func remaining() -> float:
 	return maxf(0.0, DURATION - elapsed)
 
 func take_over(slot: int) -> void:
-	if slot < 0 or slot >= players.size():
+	if slot < 0 or slot >= players.size() or not players[slot].active:
 		return
 	var p: Dictionary = players[slot]
 	p.bot = true
@@ -718,7 +736,7 @@ func take_over(slot: int) -> void:
 
 ## Seat indices by tiles owned, highest first (equal tiles: lower seat first).
 func ranking() -> Array:
-	var order := range(players.size())
+	var order := range(players.size()).filter(func(slot): return players[slot].active)
 	order.sort_custom(func(a, b):
 		if int(players[a].tiles) != int(players[b].tiles):
 			return int(players[a].tiles) > int(players[b].tiles)
@@ -729,8 +747,9 @@ func ranking() -> Array:
 func winners() -> Array:
 	var top := 0
 	for p in players:
-		top = maxi(top, int(p.tiles))
-	return range(players.size()).filter(func(i): return int(players[i].tiles) == top)
+		if p.active:
+			top = maxi(top, int(p.tiles))
+	return range(players.size()).filter(func(i): return players[i].active and int(players[i].tiles) == top)
 
 ## Sent 20 times a second, so it is packed tightly: positions in millimetres,
 ## headings in 1/10000 rad, speed in tenths, timers in 1/50 s and locks in

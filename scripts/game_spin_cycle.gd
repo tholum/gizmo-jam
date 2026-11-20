@@ -28,6 +28,8 @@ const Plate = preload("res://scripts/hud_plate.gd")
 const Cue = preload("res://scripts/hud_cue.gd")
 const Status = preload("res://scripts/hud_status.gd")
 const Platform = preload("res://scripts/platform.gd")
+const CUE_SIDE_BLEED := 22.0
+const CUE_INK_BOTTOM := 160.0
 
 ## What each control is called on screen: keys, or touch on phones.
 const JUMP_HINT := "SPACE / ↑"
@@ -128,6 +130,7 @@ func build_hud() -> void:
 	var root: Control = main.hud_root
 	# Clock, speed and standings, top-left.
 	status = Status.new()
+	status.active_slots = main.active_slots
 	root.add_child(status)
 	# Next obstacle, top-centre: the one thing to watch.
 	cue = Cue.new()
@@ -146,7 +149,8 @@ func build_hud() -> void:
 		root.add_child(plate)
 		plates.append(plate)
 	main._plate_callouts()
-	main._hud_shade()
+	var shade: ColorRect = main._hud_shade()
+	main.screen.move_child(shade, root.get_index())
 	# Countdown and a one-time controls reminder, drawn in the same shapes as the cue.
 	main._hud_count()
 	var intro: Control = main._hud_intro()
@@ -159,7 +163,8 @@ func build_hud() -> void:
 		sample.show_demo(samples[i][0], samples[i][1])
 		intro.add_child(sample)
 	intro.draw.connect(func():
-		Kit.text(intro, "SEVEN HITS AND YOU’RE OUT", Vector2(intro.size.x * 0.5, 284), 22, Kit.LIME, 8, 0.5, 3.0))
+		var instruction := "SURVIVE FOR 90 SECONDS" if main.active_slots.size() == 1 else "SEVEN HITS AND YOU’RE OUT"
+		Kit.text(intro, instruction, Vector2(intro.size.x * 0.5, 284), 22, Kit.LIME, 8, 0.5, 3.0))
 	main._layout_hud()
 	main._enter(status, 0, Vector2(-120, 0))
 	main._enter(cue, 1, Vector2(0, -150))
@@ -170,7 +175,25 @@ func build_hud() -> void:
 func layout_hud() -> void:
 	var area: Vector2 = main.area
 	status.position = Vector2(28, 16)
-	cue.position = Vector2(roundf(area.x * 0.5 - Cue.SIZE.x * 0.5), 12)
+	# The cue punches beyond its control bounds. Keep that ink clear of both
+	# corners and give the prompt priority if the safe area is narrow.
+	var right: float = (main.hud_names.position.x if main.hud_names.visible else main.hud_menu.position.x) - CUE_SIDE_BLEED
+	var status_room := right - status.position.x - CUE_SIDE_BLEED - Cue.SIZE.x * 0.82
+	var status_scale := clampf(status_room / Status.SIZE.x, 0.82, 1.0)
+	status.scale = Vector2.ONE * status_scale
+	var left := status.position.x + Status.SIZE.x * status_scale + CUE_SIDE_BLEED
+	var cue_scale := clampf((right - left) / Cue.SIZE.x, 0.1, 1.0)
+	var width := Cue.SIZE.x * cue_scale
+	cue.pivot_offset = Vector2.ZERO
+	cue.scale = Vector2.ONE * cue_scale
+	cue.position = Vector2(clampf((area.x - width) * 0.5, left, right - width), 12)
+	main.hud_feedback.position.y = cue.position.y + CUE_INK_BOTTOM * cue_scale + 24.0
+	# The HUD avoids a phone cutout. The damage frame belongs to the full world.
+	var shade: ColorRect = main.damage_shade
+	var canvas_shift: float = main.canvas.offset.x
+	shade.offset_left = -canvas_shift
+	shade.offset_right = -canvas_shift
+	shade.material.set_shader_parameter("aspect", (area.x + canvas_shift * 2.0) / maxf(area.y, 1.0))
 	var rects: Array = main.plate_rects(area, main.plate_focus(), Plate.SIZE, 16.0)
 	main.place_plates(plates, rects, Plate.SIZE)
 	main.place_plate_calls(rects)
@@ -340,7 +363,7 @@ func forget_keys() -> void:
 # -------------------------------------------------------------------- rules
 
 func build_rules() -> void:
-	var panel: Panel = main._modal(INFO.title, "Six runners share one accelerating spiral track. The last one standing wins.", 520)
+	var panel: Panel = main._modal(INFO.title, "Be the last runner standing on the spiral track. Playing alone? Survive for 90 seconds.", 520)
 	main._rule_row(panel, 142, "jump", _hint(true), "Jump over the\norange rods")
 	main._rule_row(panel, 236, "duck", _hint(false), "Duck under the\nviolet rods")
 	var notes: Label = main._label(panel, "Every rod you clear scores a point. Your seventh hit knocks you out. Jumping briefly overrides a held duck.", Rect2(32, 336, 496, 72), 16, Kit.MUTED)

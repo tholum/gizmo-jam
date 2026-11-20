@@ -139,6 +139,7 @@ func build_hud() -> void:
 		hud.add_child(plate)
 		plate.draw.connect(_draw_plate.bind(plate, i))
 		_plates.append(plate)
+		plate.visible = main.model.players[i].active
 		var caption: Label = main._label(plate, "", Rect2(45, 5, 86, 25), 17, CREAM, true)
 		caption.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 		_names.append(caption)
@@ -168,9 +169,12 @@ func update_hud() -> void:
 		main._voice("ten_seconds")
 	var lead := 0
 	for p in state.players:
-		lead = maxi(lead, int(p.score))
+		if p.active:
+			lead = maxi(lead, int(p.score))
 	for i in Model.SEATS:
 		var p: Dictionary = state.players[i]
+		if not p.active:
+			continue
 		var local: bool = main.is_local(i)
 		_names[i].text = "YOU" if local and not main.shared_screen else str(p.name)
 		_points[i].text = str(p.score)
@@ -205,6 +209,8 @@ func _update_cues(state: RefCounted) -> void:
 			continue
 		var prior := _seen[i]
 		_seen[i] = current
+		if not p.active:
+			continue
 		var local: bool = main.is_local(i)
 		var volume := -4.0 if local else -18.0
 		if current.bank > prior.bank:

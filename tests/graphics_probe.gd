@@ -7,8 +7,10 @@ extends SceneTree
 ##   --high               same as --level=high
 ##   --size=WxH           window size (default 1440x900)
 ##   --default-window     same as --size=1280x800
-##   --game=twisted|livewire   which game's round to measure (default twisted);
-##                        Live Wire stops after the timing and the results shot
+##   --game=<id>          which game's round to measure (default twisted)
+##   --packs-dir=<dir> --dev-mode   load candidate packs from <dir>/dev-games
+##   --start-at=<seconds>   advance to this point in the seeded round (default 0)
+##   --target-fps=<rate>    frame budget (default 30 for Low, 60 otherwise)
 var main: Node
 var frames: Array[float] = []
 var iteration := "current"
@@ -16,6 +18,8 @@ var baseline := false
 var resolution := Vector2i(1440, 900)
 var level := "balanced"
 var game := "twisted"
+var start_at := 0.0
+var target_fps := 0.0
 
 func _initialize() -> void:
 	for arg in OS.get_cmdline_user_args():
@@ -25,6 +29,8 @@ func _initialize() -> void:
 		if arg == "--high": level = "high"
 		if arg.begins_with("--level="): level = arg.trim_prefix("--level=").to_lower()
 		if arg.begins_with("--game="): game = arg.trim_prefix("--game=")
+		if arg.begins_with("--start-at="): start_at = clampf(arg.trim_prefix("--start-at=").to_float(), 0.0, 100.0)
+		if arg.begins_with("--target-fps="): target_fps = arg.trim_prefix("--target-fps=").to_float()
 		if arg.begins_with("--size="):
 			var parts := arg.trim_prefix("--size=").split("x")
 			resolution = Vector2i(int(parts[0]), int(parts[1]))
@@ -43,6 +49,10 @@ func run() -> void:
 	await process_frame
 	main.test_mode = true
 	main.sound_enabled = false
+	if not main.games.has(game):
+		printerr("Game unavailable: ", game, ". Load its pack with --packs-dir and --dev-mode.")
+		quit(1)
+		return
 	main.graphics_level = level
 	main._apply_graphics()
 	# Whatever this machine's settings file says, the probe measures `game`.
@@ -52,27 +62,41 @@ func run() -> void:
 	await create_timer(0.5).timeout
 	await capture("menu")
 	main.session.solo("PLAYER ONE")
+	for slot in range(1, 6):
+		main.session.set_bot(slot, true)
 	main.session.start_round()
-	main.model.begin(74219, main.model.players.duplicate(true), main.model.round_id)
-	await process_frame
-	main.model.countdown = 0.0
-	main.model.phase = "running"
-	for p in main.model.players: p.bot = true
+	main.model.begin(74219, main.session.slots(), main.model.round_id)
+	main.model.take_over(0)
+	for tick in 6500:
+		if main.model.phase == "finished" or (main.model.phase == "running" and main.model.elapsed >= start_at):
+			break
+		main.model.step(1.0 / 60.0)
+	if main.model.phase != "running":
+		printerr("The seeded round did not reach an active sample at ", start_at, " seconds.")
+		quit(1)
+		return
 	await create_timer(1.0).timeout
 	await capture("game")
 	# The capture above is slow and may have lowered the dynamic scale; start
 	# from the round's starting scale, as a round does.
 	main.scaled_view.restore()
-	var deadline := Time.get_ticks_msec() + 8000
-	while Time.get_ticks_msec() < deadline:
+	var budget_ms := 1000.0 / (target_fps if target_fps > 0.0 else (30.0 if level == "low" else 60.0))
+	var sampled_at: float = main.model.elapsed
+	var deadline := Time.get_ticks_msec() + 10000
+	while Time.get_ticks_msec() < deadline and main.model.phase == "running":
 		var before := Time.get_ticks_usec()
 		await process_frame
 		frames.append((Time.get_ticks_usec() - before) / 1000.0)
+	if frames.is_empty():
+		printerr("The round ended before it could be sampled.")
+		quit(1)
+		return
 	frames.sort()
 	var mean := 0.0
 	for value in frames: mean += value
 	mean /= frames.size()
 	var stats := {"frames": frames.size(), "mean_ms": mean, "p95_ms": frames[int(frames.size() * 0.95)], "p99_ms": frames[int(frames.size() * 0.99)], "fps": 1000.0 / mean,
+		"sampled_at_s": sampled_at, "budget_ms": budget_ms, "frames_over_twice_budget": frames.filter(func(ms): return ms > 2.0 * budget_ms).size(),
 		"draw_calls": Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME),
 		"primitives": Performance.get_monitor(Performance.RENDER_TOTAL_PRIMITIVES_IN_FRAME),
 		"nodes": Performance.get_monitor(Performance.OBJECT_NODE_COUNT),
@@ -89,6 +113,9 @@ func run() -> void:
 			if main.view == "results": break
 		await create_timer(0.4).timeout
 		await capture("results")
+		quit()
+		return
+	if game != "twisted":
 		quit()
 		return
 	# Freeze simulation to inspect distinct action and feedback poses without

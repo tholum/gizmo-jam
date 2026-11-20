@@ -96,7 +96,7 @@ func begin(seed_value: int, slots: Array, id: int = 1, _endless: bool = false) -
 		var seat: Dictionary = slots[i]
 		var outward := pen(i).normalized()
 		players.append({
-			"name": seat.name, "peer": seat.peer, "bot": seat.bot,
+			"name": seat.name, "peer": seat.peer, "bot": seat.bot, "active": seat.get("active", true),
 			"pos": outward * 6.1, "velocity": Vector2.ZERO, "face": (-outward).angle(),
 			"score": 0, "gold": 0, "last_score": NO_TICK, "clap_tick": NO_TICK,
 			"clap_face": 0.0, "hits": 0, "claps": 0,
@@ -113,7 +113,7 @@ func command(slot: int, action: String, pressed: bool) -> void:
 	if slot < 0 or slot >= players.size() or phase == "finished":
 		return
 	var p := players[slot]
-	if p.bot:
+	if not p.active or p.bot:
 		return
 	if action == "clap":
 		if pressed and phase == "running" and tick - int(p.clap_tick) >= CLAP_COOLDOWN:
@@ -123,7 +123,7 @@ func command(slot: int, action: String, pressed: bool) -> void:
 		p.input = int(p.input) | bit if pressed else int(p.input) & ~bit
 
 func take_over(slot: int) -> void:
-	if slot >= 0 and slot < players.size():
+	if slot >= 0 and slot < players.size() and players[slot].active:
 		var p := players[slot]
 		p.bot = true
 		p.input = 0
@@ -150,6 +150,8 @@ func _tick() -> void:
 	var clapping: Array[int] = []
 	for i in SEATS:
 		var p := players[i]
+		if not p.active:
+			continue
 		var want: Vector2 = _bot_move(i) if p.bot else direction(p.input)
 		if not want.is_zero_approx():
 			p.face = want.angle()
@@ -246,10 +248,12 @@ func _walk_critters() -> void:
 		var end: Vector2 = (at + crit.velocity * STEP).limit_length(FIELD_RADIUS)
 		crit.pos = end
 		for slot in SEATS:
+			var p := players[slot]
+			if not p.active:
+				continue
 			# The center of a critter must touch the marked circular pen.
 			var center := pen(slot)
 			if Geometry2D.get_closest_point_to_segment(center, at, end).distance_squared_to(center) <= PEN_RADIUS * PEN_RADIUS:
-				var p := players[slot]
 				p.score += crit.value
 				p.gold += int(crit.value == 2)
 				p.last_score = tick
@@ -259,6 +263,8 @@ func _walk_critters() -> void:
 func _pressure(at: Vector2) -> Vector2:
 	var total := Vector2.ZERO
 	for p in players:
+		if not p.active:
+			continue
 		var away: Vector2 = at - p.pos
 		var length := away.length_squared()
 		if length >= PRESSURE_RANGE * PRESSURE_RANGE:
@@ -364,7 +370,7 @@ func _bot_move(slot: int) -> Vector2:
 	return move
 
 func ranking() -> Array:
-	var order := range(players.size())
+	var order := range(players.size()).filter(func(slot): return players[slot].active)
 	order.sort_custom(func(a, b):
 		return players[a].score > players[b].score if players[a].score != players[b].score else a < b)
 	return order

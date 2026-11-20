@@ -29,11 +29,15 @@ void fragment() {
 	float wedge = (1.0 - smoothstep(half_angle - band, half_angle, angle))
 		* smoothstep(0.34, 0.40, r) * (1.0 - smoothstep(reach - aa, reach, r)) * step(0.0, at.y);
 	float rim = max(smoothstep(reach - 0.10, reach - 0.04, r), smoothstep(half_angle - band * 2.5, half_angle - band, angle));
-	float wave = 1.0 - smoothstep(0.035, 0.115, abs(r - mix(0.42, reach - 0.04, charge)));
-	float centre = (1.0 - smoothstep(0.04, 0.085, abs(at.x))) * smoothstep(1.02, 1.22, r);
-	float light = max(max(rim, wave), centre) * (0.50 + charge * 0.38);
-	ALBEDO = mix(tint.rgb, vec3(1.0, 0.96, 0.82), max(light * 0.72, swing * 0.82));
-	ALPHA = wedge * max(mix(0.15 + charge * 0.10, light, max(max(rim, wave), centre)), swing * 0.74);
+	float row = (at.y + abs(at.x) * 0.44 - 0.69) / 0.38;
+	float arrow = (1.0 - smoothstep(0.09, 0.22, abs(fract(row + 0.5) - 0.5)))
+		* step(-0.25, row) * step(row, 2.25) * step(floor(row + 0.5) * 0.29, charge)
+		* (1.0 - step(0.001, swing));
+	float crest = (1.0 - smoothstep(0.045, 0.15, abs(r - mix(0.67, reach - 0.06, 1.0 - swing))))
+		* sqrt(swing);
+	float highlight = max(arrow * 0.93, crest);
+	ALBEDO = mix(tint.rgb, vec3(1.0, 0.96, 0.82), highlight);
+	ALPHA = wedge * max(0.23 + charge * 0.14 + rim * 0.22, highlight * 0.91);
 	ALPHA *= 1.0 - smoothstep(ring + 0.025, ring + 0.08, length(world));
 }
 """
@@ -46,6 +50,7 @@ uniform float planted = 0.0;
 uniform float guarded = 0.0;
 uniform float hit = 0.0;
 uniform float clock = 0.0;
+uniform float local_mark = 0.0;
 varying vec2 at;
 void vertex() { at = VERTEX.xz; }
 void fragment() {
@@ -59,8 +64,12 @@ void fragment() {
 	shield = max(shield, (1.0 - smoothstep(0.025, 0.025 + aa, abs(r - 0.58))) * guarded * 0.65);
 	float spark = (1.0 - smoothstep(0.036, 0.076, abs(r - mix(1.18, 0.28, hit))))
 		* smoothstep(0.52, 0.87, cos(a * 9.0)) * hit;
-	ALBEDO = mix(tint.rgb, vec3(1.0, 0.99, 0.87), max(spark, max(shield * 0.72, toe * 0.64)));
-	ALPHA = max(max(shield, toe), spark);
+	float dash = smoothstep(-0.20, 0.15, cos(a * 12.0)) * local_mark;
+	float halo = (1.0 - smoothstep(0.075, 0.075 + aa, abs(r - 1.02))) * dash;
+	float trim = (1.0 - smoothstep(0.037, 0.037 + aa, abs(r - 1.02))) * dash;
+	vec3 effects = mix(tint.rgb, vec3(1.0, 0.99, 0.87), max(spark, max(shield * 0.72, toe * 0.64)));
+	ALBEDO = mix(effects, mix(vec3(0.11, 0.075, 0.07), vec3(1.0, 0.98, 0.83), trim), halo);
+	ALPHA = max(max(shield, toe), max(spark, halo));
 }
 """
 
@@ -117,6 +126,7 @@ func setup(slot: int) -> void:
 	_cone_material = Art.shader_material(ATTACK, {
 		"tint": team.lightened(0.40), "reach": Model.SHOVE_RANGE,
 		"half_angle": Model.HALF_ANGLE, "ring": Model.RADIUS})
+	_cone_material.render_priority = 1
 	_mark_material = Art.shader_material(MARKS, {"tint": team.lightened(0.32)})
 	_burst_material = Art.shader_material(OUT, {"tint": team.lightened(0.25)})
 	_cone = _plane(Vector2(4.0, 4.0), _cone_material)
@@ -171,7 +181,6 @@ func render(p: Dictionary, tick: int, delta: float, clock: float, fresh: bool,
 	robot.position = Vector3(_shown_pos.x + drift.x, height, _shown_pos.y + drift.y)
 	robot.rotation.y = heading
 	robot.set_markers(alive)
-	robot.set_ring(local, 0.0)
 
 	var charge := clampf(1.0 - float(eta) / Model.WINDUP, 0.0, 1.0)
 	var strike := 1.0 - clampf(float(-eta) / Model.SWING, 0.0, 1.0)
@@ -179,6 +188,7 @@ func render(p: Dictionary, tick: int, delta: float, clock: float, fresh: bool,
 	var hit := clampf(1.0 - float(tick - int(p.hit_tick)) / Model.HIT_FLASH, 0.0, 1.0)
 	var planted: bool = p.planted and not guarded
 	var gait: float = p.gait
+	robot.set_ring(local, charge if windup else 0.0)
 	if robot.visible:
 		_restore_arms()
 		var mode := "run" if gait > 0.48 and not (windup or swing) else "idle"
@@ -187,6 +197,8 @@ func render(p: Dictionary, tick: int, delta: float, clock: float, fresh: bool,
 		elif falling:
 			mode = "down"
 		robot.pose(delta, {"mode": mode, "speed": 0.46 + gait * 0.15, "flash": hit})
+		var squash := hit * hit * 0.12
+		robot.body.scale = Vector3(1.0 + squash, 1.0 - squash, 1.0 + squash)
 		robot.body.rotation.x = (-0.10 if planted else 0.0) - (0.24 * charge if windup else 0.0)
 		robot.body.rotation.x += 0.36 * strike if swing else 1.34 * _fall_age
 		robot.body.rotation.z = 1.65 * _fall_age * (1.0 if _slot % 2 == 0 else -1.0)
@@ -201,7 +213,7 @@ func render(p: Dictionary, tick: int, delta: float, clock: float, fresh: bool,
 		_cone.rotation.y = heading
 		_cone_material.set_shader_parameter("charge", charge if windup else 1.0)
 		_cone_material.set_shader_parameter("swing", strike if swing else 0.0)
-	_mark.visible = alive and (planted or guarded or hit > 0.0)
+	_mark.visible = alive and (local or planted or guarded or hit > 0.0)
 	if _mark.visible:
 		_mark.position = Vector3(_shown_pos.x, 0.047, _shown_pos.y)
 		_mark.rotation.y = heading
@@ -209,6 +221,7 @@ func render(p: Dictionary, tick: int, delta: float, clock: float, fresh: bool,
 		_mark_material.set_shader_parameter("guarded", float(guarded))
 		_mark_material.set_shader_parameter("hit", hit)
 		_mark_material.set_shader_parameter("clock", clock)
+		_mark_material.set_shader_parameter("local_mark", float(local))
 
 	_burst.visible = not alive and _fall_age >= 0.22 and _fall_age < 0.95
 	if _burst.visible:
@@ -219,7 +232,13 @@ func render(p: Dictionary, tick: int, delta: float, clock: float, fresh: bool,
 	_tag.visible = alive
 	if alive:
 		_tag.text = identity if not identity.is_empty() else str(_slot + 1)
-		_tag.position = Vector3(_shown_pos.x, 1.53, _shown_pos.y)
+		_tag.position = Vector3(_shown_pos.x, 1.95 if local else 1.53, _shown_pos.y)
+		var priority := 2 if local else 0
+		if _tag.render_priority != priority:
+			_tag.render_priority = priority
+			_tag.outline_render_priority = priority - 1
+			_tag.pixel_size = 0.014 if local else 0.010
+			_tag.modulate = UI.INK if local else UI.colors[_slot].lightened(0.35)
 	_was_alive = alive
 
 func _restore_arms() -> void:

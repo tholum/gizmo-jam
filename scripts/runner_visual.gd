@@ -147,6 +147,11 @@ func setup(team: Color, deck_slope: float = 0.0) -> void:
 	play("idle", 0.0)
 	anim.advance(0.0)
 
+func set_team_color(tint: Color) -> void:
+	color = tint
+	material.set_shader_parameter("team", tint)
+	ring_material.set_shader_parameter("tint", tint)
+
 func _decal(mat: ShaderMaterial, size: float, lift: float) -> MeshInstance3D:
 	var node := MeshInstance3D.new()
 	node.mesh = _shared_quad()

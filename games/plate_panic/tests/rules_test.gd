@@ -15,6 +15,7 @@ var _failures := 0
 func _initialize() -> void:
 	_clock_and_movement()
 	_tilt_authority()
+	_vacant_seats()
 	_bot_counters_parked_weight()
 	_solo_parking_vs_keyboard()
 	_solo_repeated_steering()
@@ -90,6 +91,33 @@ func _clock_and_movement() -> void:
 	m.players[4].score = 301
 	m.players[4].last_score = 80
 	_check(m.ranking().slice(0, 2) == [2, 4] and m.winners() == [2, 4], "Tied leaders share the win")
+
+func _vacant_seats() -> void:
+	var seats := []
+	for slot in M.SEATS:
+		seats.append({"name": "P%d" % slot, "peer": slot, "bot": slot != 1, "active": slot == 1})
+	var host := M.new()
+	host.begin(4, seats)
+	host.step(M.COUNTDOWN)
+	var empty := host.players[0]
+	var empty_start: Vector2 = empty.pos
+	var closed_pocket := M.pocket(0)
+	host.marbles.clear()
+	host._add_marble(1, closed_pocket, Vector2.ZERO)
+	host.command(0, "up", true)
+	host.take_over(0)
+	host.step(M.STEP)
+	var own_direction := M.pocket(1).normalized()
+	_check(not empty.active and empty.pos == empty_start and empty.velocity == Vector2.ZERO, "A vacant player never simulates movement or bot AI")
+	_check(host.tilt.normalized().is_equal_approx(own_direction), "Only the occupied seat puts weight on the table")
+	_check(empty.score == 0 and host.marbles.size() == 1, "A vacant pocket does not consume or score a marble")
+	_check(host.wedge_site_open(closed_pocket) and not host.wedge_site_open(M.pocket(1)), "Only active pockets block wedge placement")
+	empty.score = 50
+	_check(host.ranking() == [1] and host.winners() == [1], "Vacant seats cannot rank or win")
+	var guest := M.new()
+	guest.begin(4, seats)
+	guest.apply_snapshot(host.snapshot())
+	_check(guest.ranking() == [1] and not guest.players[0].active, "Applying the six-seat snapshot preserves launch occupancy")
 
 func _tilt_authority() -> void:
 	var m := _make()

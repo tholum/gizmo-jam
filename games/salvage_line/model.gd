@@ -77,7 +77,7 @@ func begin(seed_value: int, slots: Array, id: int = 1, _endless: bool = false) -
 		var seat: Dictionary = slots[i]
 		var outward := harbor_center(i).normalized()
 		players.append({
-			"slot": i, "name": seat.name, "peer": seat.peer, "bot": seat.bot,
+			"slot": i, "name": seat.name, "peer": seat.peer, "bot": seat.bot, "active": seat.get("active", true),
 			"pos": _snap_pose(outward * 9.2), "velocity": Vector2.ZERO, "face": (-outward).angle(),
 			"score": 0, "towing": -1, "hook_tick": NO_TICK, "cut_tick": NO_TICK,
 			"lost_tick": NO_TICK, "bank_tick": NO_TICK, "bank_amount": 0,
@@ -94,7 +94,7 @@ func command(slot: int, action: String, pressed: bool) -> void:
 	if _guest or slot < 0 or slot >= players.size() or phase == "finished":
 		return
 	var p := players[slot]
-	if p.bot:
+	if not p.active or p.bot:
 		return
 	if action == "winch":
 		if pressed and not p.winch_down and phase == "running":
@@ -108,6 +108,8 @@ func take_over(slot: int) -> void:
 	if _guest or slot < 0 or slot >= players.size() or phase == "finished":
 		return
 	var p := players[slot]
+	if not p.active:
+		return
 	p.bot = true
 	p.input = 0
 	p.winch_down = false
@@ -132,7 +134,7 @@ func _tick() -> void:
 	# particular, steering away from a dock on the same tap still banks.
 	var intents: Array[Dictionary] = []
 	for p in players:
-		if not p.bot and not p.queued:
+		if not p.active or (not p.bot and not p.queued):
 			continue
 		var target := action_target(p.slot)
 		if p.bot:
@@ -150,10 +152,14 @@ func _tick() -> void:
 		_refills.pop_front()
 		_spawn_crate()
 
-	var moves: Array[Vector2] = []
+	var moves := PackedVector2Array()
+	moves.resize(SEATS)
 	for p in players:
-		moves.append(_bot_move(p) if p.bot else direction(p.input))
+		if p.active:
+			moves[p.slot] = _bot_move(p) if p.bot else direction(p.input)
 	for p in players:
+		if not p.active:
+			continue
 		var want := moves[p.slot]
 		var cargo := _crate(p.towing)
 		var speed := FREE_SPEED if cargo.is_empty() else (HEAVY_SPEED if cargo.heavy else LIGHT_SPEED)
@@ -236,6 +242,8 @@ func action_target(slot: int) -> Dictionary:
 	if slot < 0 or slot >= players.size() or phase != "running":
 		return target
 	var p := players[slot]
+	if not p.active:
+		return target
 	target.at = p.pos
 	if p.towing >= 0:
 		var cargo := _crate(p.towing)
@@ -351,7 +359,7 @@ func _bot_winch(p: Dictionary, target: Dictionary) -> bool:
 	return false
 
 func ranking() -> Array:
-	var order := range(players.size())
+	var order := range(players.size()).filter(func(slot): return players[slot].active)
 	order.sort_custom(func(a, b):
 		return players[a].score > players[b].score if players[a].score != players[b].score else a < b)
 	return order

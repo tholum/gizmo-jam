@@ -256,6 +256,7 @@ func _build_plate(hud: Control, slot: int) -> void:
 	var here: bool = main.is_local(slot)
 	var plate := _panel(hud, Rect2(Vector2.ZERO, CARD), team if here else BORDER)
 	plate.name = "Driver%d" % (slot + 1)
+	plate.visible = main.model.players[slot].active
 	plate.pivot_offset = Vector2(CARD.x * 0.5, CARD.y)
 	var badge := main._panel(plate, Rect2(8, 8, 29, 64), team, team, 1, 5) as Panel
 	badge.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -331,7 +332,7 @@ func _update_route(race: RefCounted, own: int) -> void:
 	if race.phase == "finished":
 		_route_dir.text = "•"
 		_route_title.text = "RACE COMPLETE"
-		_route_detail.text = "%d OF %d FINISHED" % [_finishers(), Model.SEATS]
+		_route_detail.text = "%d OF %d FINISHED" % [_finishers(), _racer_count()]
 		return
 	if main.shared_screen:
 		_route_dir.text = "•"
@@ -341,7 +342,7 @@ func _update_route(race: RefCounted, own: int) -> void:
 	if p.finish >= 0.0:
 		_route_dir.text = "•"
 		_route_title.text = "FINISHED  " + _time(p.finish)
-		_route_detail.text = "%d OF %d FINISHED" % [_finishers(), Model.SEATS]
+		_route_detail.text = "%d OF %d FINISHED" % [_finishers(), _racer_count()]
 		return
 	var track: RefCounted = race.track
 	var arc: float = track.project(p.pos).x
@@ -365,7 +366,7 @@ func _update_cues(race: RefCounted) -> void:
 	var charge := false
 	var lap := false
 	for i in Model.SEATS:
-		if not main.is_local(i):
+		if not main.is_local(i) or not race.players[i].active:
 			continue
 		var p: Dictionary = race.players[i]
 		dash = dash or p.spent > _last_spend[i]
@@ -431,13 +432,17 @@ func build_rules() -> void:
 func _finishers() -> int:
 	var total := 0
 	for p in main.model.players:
-		total += int(p.finish >= 0.0)
+		total += int(p.active and p.finish >= 0.0)
 	return total
+
+
+func _racer_count() -> int:
+	return main.model.ranking().size()
 
 
 func result_summary() -> String:
 	var count := _finishers()
-	return "%d / %d FINISHED   ·   %s" % [count, Model.SEATS,
+	return "%d / %d FINISHED   ·   %s" % [count, _racer_count(),
 		"TIME LIMIT" if main.model.elapsed >= Model.ROUND_TIME else "THREE LAPS"]
 
 

@@ -13,6 +13,7 @@ const DARK := Color("091e25")
 const DROP := Color("9effed")
 const ARROW := Color("ffdf78")
 const BANK := 0.052
+const WEDGE_FOOTPRINT := [Vector2(1.20, 0), Vector2(-0.73, 0.59), Vector2(-0.73, -0.59)]
 
 const TABLE_SHADER := """
 shader_type spatial;
@@ -311,7 +312,7 @@ func _build_pocket(slot: int) -> void:
 	pulse.hide()
 	var points := _label(root, "+1", 60, PR / 58.0, LIGHT)
 	points.hide()
-	_pockets.append({"cup": cup, "number": number, "pulse": pulse, "points": points})
+	_pockets.append({"root": root, "cup": cup, "number": number, "pulse": pulse, "points": points})
 
 func _build_player(slot: int) -> void:
 	var paint: Color = Kit.colors[slot]
@@ -334,10 +335,12 @@ func _build_player(slot: int) -> void:
 	_mesh(aim, _flat_shape(chevron, radius * 1.13), _flat(DARK), Vector3.ZERO)
 	_mesh(aim, _flat_shape(chevron, radius), _flat(paint.lightened(0.52)), Vector3.UP * 0.012)
 	var ring := _marker(root, radius * 1.58, paint.lightened(0.32), 0.028)
-	var names := _label(root, "", 38, radius / 31.0, paint.lightened(0.18))
+	var names := _label(root, "", 38, radius / 25.0, Kit.INK)
 	names.position.y = height + radius * 1.35
+	names.outline_size = 12
 	names.hide()
 
+	var preview := _build_wedge_preview(paint)
 	var wedge := Node3D.new()
 	_table.add_child(wedge)
 	wedge.hide()
@@ -345,14 +348,32 @@ func _build_player(slot: int) -> void:
 	var charge := _marker(wedge, R * 0.108, paint.lightened(0.40), 0.032)
 	var spark := _marker(wedge, R * 0.118, LIGHT, 0.049)
 	spark.hide()
-	_players.append({"root": root, "aim": aim, "pos": Vector2.ZERO, "face": 0.0, "names": names,
+	_players.append({"root": root, "aim": aim, "pos": Vector2.ZERO, "face": 0.0, "names": names, "preview": preview,
 		"ring": ring, "wedge": wedge, "charge": charge, "spark": spark, "deflections": 0, "spark_tick": -100})
+
+func _build_wedge_preview(paint: Color) -> Dictionary:
+	var root := Node3D.new()
+	_table.add_child(root)
+	root.hide()
+	var footprint := PackedVector2Array(WEDGE_FOOTPRINT)
+	var rim := _mesh(root, _flat_shape(footprint, R * 0.077), _flat(DARK), Vector3.ZERO)
+	var open := _mesh(root, _flat_shape(footprint, R * 0.064), _flat(paint.lightened(0.48)), Vector3.UP * 0.004)
+	var blocked := SurfaceTool.new()
+	blocked.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for i in 24:
+		var a := Vector2.from_angle(i * TAU / 24.0)
+		var b := Vector2.from_angle((i + 1) * TAU / 24.0)
+		blocked.add_triangle_fan(PackedVector3Array([_v(a * 0.47), _v(a * 0.62), _v(b * 0.62), _v(b * 0.47)]))
+	var slash := Vector2(0.36, 0.36)
+	var width := Vector2(0.052, -0.052)
+	blocked.add_triangle_fan(PackedVector3Array([_v(-slash + width), _v(slash + width), _v(slash - width), _v(-slash - width)]))
+	return {"root": root, "rim": rim, "open": open, "blocked": _mesh(root, blocked.commit(), _flat(LIGHT), Vector3.ZERO)}
 
 func _build_wedge(root: Node3D, paint: Color) -> void:
 	var size := R * 0.067
-	var head := Vector2(1.20, 0)
-	var tail := Vector2(-0.73, 0.59)
-	var tail_other := Vector2(tail.x, -tail.y)
+	var head: Vector2 = WEDGE_FOOTPRINT[0]
+	var tail: Vector2 = WEDGE_FOOTPRINT[1]
+	var tail_other: Vector2 = WEDGE_FOOTPRINT[2]
 	var ridge := R * 0.053
 	var rim := R * 0.020
 	var a := _v(head * size, rim)
@@ -419,6 +440,12 @@ func _render_players(state: RefCounted, ease: float, fresh: bool, own_slot: int)
 		var player: Dictionary = state.players[i]
 		var visual := _players[i]
 		var pocket := _pockets[i]
+		visual.root.visible = player.active
+		pocket.root.visible = player.active
+		if not player.active:
+			visual.wedge.hide()
+			visual.preview.root.hide()
+			continue
 		var local := (local_seats & (1 << i)) != 0 and not _menu
 		var age := int(state.tick) - int(player.wedge_tick)
 		var scored := float(state.tick - int(player.last_score)) / 46.0
@@ -429,11 +456,36 @@ func _render_players(state: RefCounted, ease: float, fresh: bool, own_slot: int)
 		visual.face = lerp_angle(visual.face, player.face, ease)
 		visual.root.position = _v(visual.pos)
 		visual.aim.rotation.y = -float(visual.face)
+		var preview: Dictionary = visual.preview
+		var ready: bool = local and state.phase == "running" and age >= Model.WEDGE_COOLDOWN
+		preview.root.visible = ready
+		visual.aim.visible = not ready
+		if ready:
+			var site: Vector2 = player.pos + Vector2.from_angle(player.face) * Model.WEDGE_OFFSET
+			var open: bool = state.wedge_site_open(site)
+			if site.length_squared() > R * R:
+				# Keep an off-table rejection visible beside the lip and away from the tag.
+				var outward := site.normalized()
+				site = outward * (R - 0.55) + outward.orthogonal() * 1.10
+			preview.root.position = _v(site, 0.025)
+			preview.root.rotation.y = -float(player.face) if open else 0.0
+			preview.rim.visible = open
+			preview.open.visible = open
+			preview.blocked.visible = not open
 		visual.ring.visible = local
 		visual.ring.material_override.set_shader_parameter("fill", clampf(float(age) / Model.WEDGE_COOLDOWN, 0.0, 1.0))
-		visual.names.visible = show_identities and not _menu
+		visual.names.visible = not _menu and (local or show_identities)
 		if visual.names.visible:
-			visual.names.text = str(player.name).to_upper()
+			var physical_pos: Vector2 = visual.pos
+			var toward_center := -physical_pos.normalized()
+			var inset := smoothstep(R * 0.70, R * 0.94, physical_pos.length()) if local else 0.0
+			var offset := (toward_center + toward_center.orthogonal() * 1.49) * inset
+			visual.names.position.x = offset.x
+			visual.names.position.z = offset.y
+			if show_identities:
+				visual.names.text = str(player.name).to_upper()
+			else:
+				visual.names.text = "P%d" % (i + 1) if local_mask > 0 else "YOU %d" % (i + 1)
 
 		pocket.cup.set_shader_parameter("flash", score_flash)
 		pocket.cup.set_shader_parameter("local", 1.0 if local else 0.0)

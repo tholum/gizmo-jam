@@ -1,8 +1,9 @@
 {
   "id": "salvage_line",
-  "version": "1.0.0",
+  "version": "1.1.0",
+  "optional_seats": true,
   "net": 1,
-  "core_min": 8,
+  "core_min": 10,
   "actions": ["up", "down", "left", "right", "winch"],
   "input_budget": 240,
   "info": {

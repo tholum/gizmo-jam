@@ -11,6 +11,7 @@ func _initialize() -> void:
 	_walk_six_lanes()
 	_clap_and_recovery()
 	_rival_steal()
+	_vacant_pens()
 	_edge_lane()
 	_hatches()
 	_seeded_matches()
@@ -38,6 +39,28 @@ func _isolated() -> RefCounted:
 	for i in M.SEATS:
 		model.players[i].pos = M.pen(i).normalized() * M.FIELD_RADIUS
 	return model
+
+func _vacant_pens() -> void:
+	var model := M.new()
+	var seats: Array = []
+	for i in M.SEATS:
+		seats.append({"name": "P%d" % (i + 1), "peer": i + 1, "bot": i != 3, "active": i == 3})
+	model.begin(1, seats, 42)
+	model.step(M.COUNTDOWN)
+	model.critters.clear()
+	var vacant_spawn: Vector2 = model.players[0].pos
+	_check(model._pressure(vacant_spawn) == Vector2.ZERO, "A vacant sheriff applies no pressure")
+	model._add_critter(M.pen(0), Vector2.LEFT, 1, 0)
+	model.step(M.STEP)
+	_check(model.critters.size() == 1 and model.players[0].score == 0 and model.players[0].pos == vacant_spawn,
+		"A vacant pen neither scores nor consumes critters and its sheriff stays idle")
+	model._add_critter(M.pen(3), Vector2.RIGHT, 2, 0)
+	model.step(M.STEP)
+	var guest := M.new()
+	guest.begin(1, seats, 42)
+	guest.apply_snapshot(model.snapshot())
+	_check(guest.critters.size() == 1 and guest.players[3].score == 2 and guest.ranking() == [3] and guest.winners() == [3],
+		"An active pen still scores and only active sheriffs enter results after snapshot sync")
 
 func _clock_and_ties() -> void:
 	var m := _make()

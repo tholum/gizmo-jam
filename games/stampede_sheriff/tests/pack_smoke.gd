@@ -33,7 +33,7 @@ func _run() -> void:
 		elif arg.begins_with("--capture-dir="):
 			_capture_dir = arg.trim_prefix("--capture-dir=")
 	if path.is_empty():
-		printerr("Pass --pack=/absolute/path/to/stampede_sheriff-1.0.0.pck after --")
+		printerr("Pass --pack=/absolute/path/to/stampede_sheriff-1.1.0.pck after --")
 		quit(1)
 		return
 
@@ -62,7 +62,7 @@ func _run() -> void:
 		quit(1)
 		return
 	var entry := Registry.entry(ID)
-	_check(entry.core_min == 7 and entry.net == 1 and entry.version == "1.0.0" and entry.info.number == "06",
+	_check(entry.core_min == 10 and entry.net == 1 and entry.version == "1.1.0" and entry.optional_seats and entry.info.number == "06",
 		"Registry has the release metadata")
 	_check(entry.actions == ["up", "down", "left", "right", "clap"], "Registry accepts all five game actions")
 	_main._add_game(ID)

@@ -18,7 +18,7 @@
       "id": "spin-cycle",
       "name": "Spin Cycle",
       "caption": "Jump and duck as the ramp speeds up.",
-      "description": "Six robots stand on a spiral ramp around a reactor. Jump the orange rods and duck under the violet ones as the ramp speeds up. Seven hits and you’re out. Last robot standing wins.",
+      "description": "Jump the orange rods and duck under the violet ones as the spiral ramp speeds up. Seven hits and you’re out. Last robot standing wins. Playing alone? Survive for 90 seconds.",
       "controls": "`Space` or `Up` to jump over orange rods. Hold `S` or `Down` to duck under violet rods.",
       "touchControls": "tap the right side to jump and hold the left side to duck.",
       "screenshot": {
@@ -55,7 +55,7 @@
       "name": "Bumper Cars",
       "caption": "Stay afloat as the dock shrinks.",
       "description": "Boost into rivals on a floating dock with no railings. Five rings sink one at a time, shrinking the arena. Stay out of the water and be the last car afloat.",
-      "controls": "`W``A``S``D` or the arrow keys to steer. Press `Space` to boost and move inward when the outer ring flashes.",
+      "controls": "`W``A``S``D` or the arrow keys to steer. Press `Space` to boost. Follow the inward chevrons when the next ring is about to sink.",
       "touchControls": "drag your left thumb to steer and tap the right side to boost.",
       "desktopLibrary": true,
       "screenshot": {
@@ -66,7 +66,7 @@
           "320": "img/bumper-cars-320.webp",
           "640": "img/bumper-cars-640.webp"
         },
-        "alt": "Colorful bumper cars on a floating dock with its outer ring glowing before it sinks."
+        "alt": "Bumper cars on a floating dock with inward chevrons marking the sinking ring and a Move In warning."
       }
     },
     {
@@ -174,8 +174,8 @@
         "320": "img/menu-320.webp",
         "640": "img/menu-640.webp"
       },
-      "alt": "The Gizmo Jam menu showing Spin Cycle, Live Wire, and Bumper Cars beside the Spin Cycle arena.",
-      "caption": "Pick a game and play solo or with friends"
+      "alt": "The Gizmo Jam menu with the local lineup showing a color selector, optional bots, and open seats.",
+      "caption": "Pick a color and play with one to six participants. Add bots to any open seats you want to fill."
     },
     {
       "file": "img/late-round.webp",

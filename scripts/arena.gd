@@ -8,7 +8,8 @@ const Model = preload("res://scripts/round_model.gd")
 const Kit = preload("res://scripts/arena_kit.gd")
 const RunnerVisual = preload("res://scripts/runner_visual.gd")
 ## Seat colours. The HUD and the robots both use `team_color()`, the vivid version.
-const COLORS := [Color("bcf573"), Color("9b8afb"), Color("64d8f1"), Color("ffb569"), Color("f383b8"), Color("f4df7c")]
+const Palette = preload("res://scripts/palette.gd")
+const COLORS := Palette.COLORS
 const PITCH := 4.8
 const INNER_RADIUS := 3.0
 const RUNNER_SPACING := 0.87
@@ -137,8 +138,13 @@ var inset := REFERENCE_INSET
 
 ## Saturated seat colour, identical to the HUD's `ui_kit.vivid()` of COLORS.
 static func team_color(index: int) -> Color:
-	var c: Color = COLORS[index]
-	return Color.from_hsv(c.h, clampf(c.s * 1.5, 0.0, 0.88), maxf(c.v, 0.97))
+	return Palette.vivid(Palette.for_seat(index))
+
+func update_player_colors() -> void:
+	for i in runners.size():
+		var tint := team_color(i)
+		runners[i].visual.set_team_color(tint)
+		runners[i].tag.modulate = tint
 
 func _ready() -> void:
 	software = software_renderer(RenderingServer.get_video_adapter_name())
@@ -785,6 +791,9 @@ func update_visuals(model: RefCounted, delta: float, own_slot: int = 0) -> void:
 		var mode := "run"
 		if model and not model.players.is_empty():
 			var p: Dictionary = model.players[i]
+			if not p.get("active", true):
+				visual.hide()
+				continue
 			jump_clock = p.jump
 			if client_motion:
 				if jump_clock >= 0.0:

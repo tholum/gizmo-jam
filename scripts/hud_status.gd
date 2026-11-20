@@ -19,6 +19,7 @@ var caption := "WARM-UP"
 var stage := 0
 var scores: Array = [0, 0, 0, 0, 0, 0]
 var alive: Array = [true, true, true, true, true, true]
+var active_slots: Array = [0, 1, 2, 3, 4, 5]
 ## Bar length per seat, 0 (far behind) .. 1 (level with the leader).
 var reach: Array = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
 var own_slot := 0
@@ -110,13 +111,14 @@ func _draw() -> void:
 	Kit.text(self, caption, Vector2(x + 2, 72), 15, stage_tint, 6)
 	# Standings stack.
 	var best := 0
-	for s in scores:
-		best = maxi(best, int(s))
+	for i in active_slots:
+		best = maxi(best, int(scores[i]))
 	var leaders := 0
-	for s in scores:
-		if int(s) == best: leaders += 1
-	for i in 6:
-		var y := 90.0 + i * 18.0
+	for i in active_slots:
+		if int(scores[i]) == best: leaders += 1
+	for row in active_slots.size():
+		var i: int = active_slots[row]
+		var y := 90.0 + row * 18.0
 		var length := 46.0 + 150.0 * float(reach[i])
 		var tint: Color = Kit.colors[i] if alive[i] else Kit.drained(Kit.colors[i])
 		var bar := Kit.slab(Rect2(6, y, length, 12))

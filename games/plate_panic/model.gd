@@ -120,7 +120,7 @@ func begin(seed_value: int, slots: Array, id: int = 1, _endless: bool = false) -
 		_pockets.append(goal)
 		# Start near the center so an idle seat puts less weight on its own pocket.
 		players.append({
-			"name": seat.name, "peer": seat.peer, "bot": seat.bot, "slot": i,
+			"name": seat.name, "peer": seat.peer, "bot": seat.bot, "slot": i, "active": seat.get("active", true),
 			"pos": outward * PLAYER_START_RADIUS, "velocity": Vector2.ZERO, "face": outward.angle(),
 			"score": 0, "last_score": NO_TICK, "wedge_pos": Vector2.ZERO,
 			"wedge_face": 0.0, "wedge_tick": NO_TICK, "deflections": 0, "last_deflect": NO_TICK,
@@ -140,7 +140,7 @@ func command(slot: int, action: String, pressed: bool) -> void:
 	if slot < 0 or slot >= players.size() or phase == "finished":
 		return
 	var p := players[slot]
-	if p.bot:
+	if not p.active or p.bot:
 		return
 	if action == "wedge":
 		if pressed and phase == "running" and tick + 1 - int(p.wedge_tick) >= WEDGE_COOLDOWN:
@@ -153,6 +153,8 @@ func take_over(slot: int) -> void:
 	if slot < 0 or slot >= players.size() or phase == "finished":
 		return
 	var p := players[slot]
+	if not p.active:
+		return
 	p.bot = true
 	p.input = 0
 	p.queued = false
@@ -183,6 +185,8 @@ func _tick() -> void:
 	var flank := 4 if _drop_turn > 0.0 else 2
 	for i in SEATS:
 		var p := players[i]
+		if not p.active:
+			continue
 		var before: Vector2 = p.pos
 		var want := direction(p.input)
 		if p.bot:
@@ -236,8 +240,8 @@ func _place_wedge(p: Dictionary) -> void:
 func wedge_site_open(at: Vector2) -> bool:
 	if at.length_squared() > (MARBLE_EDGE - WEDGE_RADIUS) ** 2:
 		return false
-	for center in _pockets:
-		if at.distance_squared_to(center) < WEDGE_POCKET_CLEARANCE ** 2:
+	for slot in _pockets.size():
+		if players[slot].active and at.distance_squared_to(_pockets[slot]) < WEDGE_POCKET_CLEARANCE ** 2:
 			return false
 	for center in _drop_sites:
 		if at.distance_squared_to(center) < DROP_CLEARANCE ** 2:
@@ -287,6 +291,8 @@ func _roll_marbles(wedges: Array[Dictionary]) -> void:
 		marble.pos = end
 		var scored := false
 		for slot in SEATS:
+			if not players[slot].active:
+				continue
 			if Geometry2D.get_closest_point_to_segment(_pockets[slot], at, end).distance_squared_to(_pockets[slot]) <= POCKET_RADIUS ** 2:
 				players[slot].score += 1
 				players[slot].last_score = tick
@@ -389,13 +395,13 @@ func _release_drops() -> void:
 func _parked_rival() -> int:
 	var best_cpu := 0
 	for p in players:
-		if p.bot:
+		if p.active and p.bot:
 			best_cpu = maxi(best_cpu, p.score)
 	var challenge_score := maxi(BOT_CHALLENGE_START_SCORE, best_cpu - BOT_CHALLENGE_MARGIN)
 	var strongest := PARKED_RELEASE
 	var parked := -1
 	for rival in players:
-		if rival.bot:
+		if not rival.active or rival.bot:
 			continue
 		# Give a new wedge time to catch a roll. A contact buys more time.
 		var recent_wedge := (tick - int(rival.wedge_tick) <= BOT_CHALLENGE_PLACE_GAP
@@ -487,7 +493,7 @@ func _predict_roll(marble: Dictionary, lead: float) -> Vector2:
 	return (at + (speed + future_speed) * (lead * 0.5)).limit_length(MARBLE_EDGE)
 
 func ranking() -> Array:
-	var order := range(players.size())
+	var order := range(players.size()).filter(func(slot): return players[slot].active)
 	order.sort_custom(func(a, b):
 		return players[a].score > players[b].score if players[a].score != players[b].score else a < b)
 	return order

@@ -53,6 +53,7 @@ var plate_names: Array[Label] = []
 var plate_stats: Array[Label] = []
 var round_ring := 0
 var last_warning := false
+var warned_rim := 0
 var last_hit := 0
 var last_boost := 0
 var last_impact_time := -1.0
@@ -111,6 +112,7 @@ func round_started() -> void:
 		seat_before[main.seat_pads[k]] = main.pads.mask(main.seat_pads[k + 1])
 	round_ring = 0
 	last_warning = false
+	warned_rim = 0
 	last_hit = 0
 	last_boost = 0
 	last_impact_time = -1.0
@@ -131,7 +133,7 @@ func finished() -> void:
 		main._voice("time_up")
 
 func callouts() -> Array:
-	return ["IN THE WATER!", "RING DROPPED!"]
+	return ["IN THE WATER!", "RING DROPPED!", "MOVE IN!"]
 
 func build_hud() -> void:
 	var hud: Control = main.hud_root
@@ -159,6 +161,7 @@ func build_hud() -> void:
 		plate.size = PLATE_SIZE
 		plate.pivot_offset = Vector2(PLATE_SIZE.x * 0.5, PLATE_SIZE.y)
 		plate.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		plate.visible = main.model.players[i].active
 		hud.add_child(plate)
 		plate.draw.connect(_draw_plate.bind(plate, i))
 		plates.append(plate)
@@ -166,12 +169,15 @@ func build_hud() -> void:
 		driver.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 		plate_names.append(driver)
 		plate_stats.append(main._label(plate, "", Rect2(43, 34, 148, 22), 14, SEAFOAM, true))
+	main._plate_callouts()
 	main._layout_hud()
 
 func layout_hud() -> void:
 	var width: float = main.area.x
 	cue.position.x = (width - cue.size.x) * 0.5
-	main.place_plates(plates, main.plate_rects(main.area, main.plate_focus(), PLATE_SIZE), PLATE_SIZE)
+	var rects: Array = main.plate_rects(main.area, main.plate_focus(), PLATE_SIZE)
+	main.place_plates(plates, rects, PLATE_SIZE)
+	main.place_plate_calls(rects)
 
 func _draw_plate(plate: Control, slot: int) -> void:
 	if main.model == null:
@@ -202,7 +208,10 @@ func update_hud() -> void:
 	var own: int = main.session.my_slot()
 	for i in Model.SEATS:
 		var p: Dictionary = model.players[i]
-		plate_names[i].text = "%s  %s" % [main._role(i, p, own), p.name] if main.is_local(i) else str(p.name)
+		if main.is_local(i):
+			plate_names[i].text = "P%d  %s" % [i + 1, p.name] if main.shared_screen else "YOU"
+		else:
+			plate_names[i].text = str(p.name)
 		plate_names[i].modulate = Color.WHITE if p.alive else Kit.DIM
 		plate_stats[i].text = "%d KO  ·  %s" % [p.kos, "BOOST" if float(p.cooldown) <= 0.0 else "CHARGING"] if p.alive else "%d KO  ·  OUT" % p.kos
 		plate_stats[i].modulate = Color.WHITE if p.alive else Kit.DIM
@@ -215,13 +224,15 @@ func _update_cues(model: RefCounted, warning: bool, own: int) -> void:
 		title_said = true
 		if elapsed < 2.0:
 			_play_audio("bumper_cars")
-	if warning and not last_warning:
+	if warning and (not last_warning or model.ring_level != round_ring):
 		_play_audio("ring_warning")
 	last_warning = warning
 	if model.ring_level > round_ring:
 		_play_audio("ring_drop")
 		main.hud_feedback.pop("RING DROPPED!", AMBER)
 		main.feedback_time = 0.85
+	if model.ring_level != round_ring:
+		warned_rim = 0
 	round_ring = model.ring_level
 	if model.hit_count > last_hit and elapsed - last_impact_time >= 0.30:
 		_play_audio("impact", randf_range(0.89, 1.13))
@@ -235,7 +246,7 @@ func _update_cues(model: RefCounted, warning: bool, own: int) -> void:
 	for i in Model.SEATS:
 		var p: Dictionary = model.players[i]
 		var bit := 1 << i
-		if not p.alive and float(p.fall_time) >= SPLASH_TIME and (splashed & bit) == 0:
+		if p.active and not p.alive and float(p.fall_time) >= SPLASH_TIME and (splashed & bit) == 0:
 			new_splashes |= bit
 	splashed |= new_splashes
 	if new_splashes:
@@ -243,6 +254,24 @@ func _update_cues(model: RefCounted, warning: bool, own: int) -> void:
 		if new_splashes & (1 << own):
 			main.hud_feedback.rattle("IN THE WATER!", SEAFOAM)
 			main.feedback_time = 1.2
+	if warning:
+		_warn_local_drivers(model)
+
+func _warn_local_drivers(model: RefCounted) -> void:
+	var limit: float = Model.RADII[model.ring_level + 1] - Model.BODY_RADIUS
+	for i in Model.SEATS:
+		var p: Dictionary = model.players[i]
+		var bit := 1 << i
+		if not main.is_local(i) or not p.alive or (warned_rim & bit) != 0 or Vector2(p.pos).length() <= limit:
+			continue
+		if main.shared_screen:
+			main.plate_say(i, "MOVE IN!", AMBER, false, 0.9)
+		elif main.feedback_time <= 0.0:
+			main.hud_feedback.pop("MOVE IN!", AMBER)
+			main.feedback_time = 0.9
+		else:
+			continue
+		warned_rim |= bit
 
 func _play_audio(id: String, pitch: float = 1.0) -> void:
 	if main.test_mode:
@@ -350,12 +379,12 @@ func forget_keys() -> void:
 	touch_bits = 0
 
 func build_rules() -> void:
-	var panel: Panel = main._modal(INFO.title, "Six cars, one floating dock. Send rivals into the water and stay on the deck.", 530)
+	var panel: Panel = main._modal(INFO.title, "Stay on the floating dock as it shrinks. Boost to steer clear or knock rivals into the water.", 530)
 	var steer := "LEFT THUMB" if Platform.handheld else ("STICK / D-PAD" if main.pad_captions() else "WASD / ARROWS")
 	var boost := "RIGHT TAP" if Platform.handheld else ("A" if main.pad_captions() else "SPACE")
 	main._rule_row(panel, 132, "move", steer, "Steer and correct early.\nYour car carries momentum.", 0.67)
-	main._rule_row(panel, 214, "dash", boost, "Boost into another car\nto knock it toward the edge.", 0.67)
-	var notes: Label = main._label(panel, "Move in when a ring flashes. It drops into the water with any car still on it.\n\nLast car afloat wins. At the time limit, the survivor with the most knockouts wins. Tied leaders draw.", Rect2(32, 305, 496, 116), 17, Kit.INK)
+	main._rule_row(panel, 214, "dash", boost, "Boost out of danger or knock a rival toward the edge.", 0.67)
+	var notes: Label = main._label(panel, "Move in when a ring flashes. It drops into the water with any car still on it.\n\nLast car afloat wins. At the time limit, knockouts break ties. Playing alone? Stay afloat until time runs out.", Rect2(32, 305, 496, 116), 17, Kit.INK)
 	main._wrap(notes)
 	main._button(panel, "GOT IT", Rect2(36, 437, 480, 58), main._clear_overlay, true, 24).grab_focus()
 

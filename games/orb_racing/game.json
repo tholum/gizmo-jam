@@ -1,8 +1,9 @@
 {
   "id": "orb_racing",
-  "version": "1.0.0",
+  "version": "1.1.0",
+  "optional_seats": true,
   "net": 1,
-  "core_min": 6,
+  "core_min": 10,
   "actions": ["left", "right", "up", "down", "dash"],
   "input_budget": 240,
   "info": {

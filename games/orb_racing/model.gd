@@ -28,6 +28,7 @@ const PAD_BOUNDS := Rect2(-Track.PAD_HALF_LENGTH, -Track.PAD_HALF_WIDTH,
 var track := Track.new()
 var rng := RandomNumberGenerator.new()
 var players: Array[Dictionary] = []
+var active_count := SEATS
 var phase := "countdown"
 var countdown := COUNTDOWN
 var elapsed := 0.0
@@ -47,11 +48,14 @@ func begin(seed_value: int, slots: Array, id: int = 1, _endless: bool = false) -
 	_accumulator = 0.0
 	_ready_ticks = roundi(COUNTDOWN * HZ)
 	players.clear()
+	active_count = 0
 	for i in SEATS:
 		var seat: Dictionary = slots[i]
+		var active: bool = seat.get("active", true)
+		active_count += int(active)
 		var pos := track.grid(i, SEATS)
 		players.append({
-			"name": seat.name, "peer": seat.peer, "bot": seat.bot,
+			"name": seat.name, "peer": seat.peer, "bot": seat.bot, "active": active,
 			"pos": pos, "velocity": Vector2.ZERO, "laps": 0, "gate": 0,
 			"started": false, "progress": 0.0, "finish": -1.0,
 			"charges": 1, "boost": 0.0, "picked": 0, "spent": 0,
@@ -67,7 +71,7 @@ func command(slot: int, action: String, pressed: bool) -> void:
 	if slot < 0 or slot >= players.size() or phase == "finished":
 		return
 	var p := players[slot]
-	if p.bot or p.finish >= 0.0:
+	if not p.active or p.bot or p.finish >= 0.0:
 		return
 	if action == "dash":
 		if pressed and not p._dash_down and phase == "running":
@@ -79,7 +83,7 @@ func command(slot: int, action: String, pressed: bool) -> void:
 
 
 func take_over(slot: int) -> void:
-	if slot >= 0 and slot < players.size():
+	if slot >= 0 and slot < players.size() and players[slot].active:
 		var p := players[slot]
 		p.bot = true
 		p._input = 0
@@ -109,7 +113,8 @@ func step(delta: float) -> void:
 
 
 func deadline() -> float:
-	return minf(ROUND_TIME, first_finish + FINISH_WINDOW) if first_finish >= 0.0 else ROUND_TIME
+	if first_finish < 0.0: return ROUND_TIME
+	return first_finish if active_count == 1 else minf(ROUND_TIME, first_finish + FINISH_WINDOW)
 
 
 func remaining() -> float:
@@ -118,7 +123,7 @@ func remaining() -> float:
 
 func _tick(dt: float) -> void:
 	for p in players:
-		if p.finish >= 0.0:
+		if not p.active or p.finish >= 0.0:
 			continue
 		var road: Vector3 = p._road
 		var direction := _bot_input(p, road.x) if p.bot else _held(p._input)
@@ -264,7 +269,7 @@ func _bot_input(p: Dictionary, arc: float) -> Vector2:
 
 
 func ranking() -> Array:
-	var order := range(players.size())
+	var order := range(players.size()).filter(func(slot): return players[slot].active)
 	order.sort_custom(func(a: int, b: int) -> bool:
 		var left := players[a]
 		var right := players[b]
@@ -283,6 +288,8 @@ func winners() -> Array:
 	if order.is_empty():
 		return []
 	var lead := players[order[0]]
+	if order.size() == 1 and lead.finish < 0.0:
+		return []
 	var tied: Array = []
 	for i in order:
 		if players[i].finish == lead.finish and players[i].progress == lead.progress:

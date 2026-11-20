@@ -9,8 +9,11 @@ const Kit = preload("res://scripts/ui_kit.gd")
 const ShellShader = preload("res://games/orb_racing/orb.gdshader")
 const AWAY_POINT := Vector2(0, 2.6)
 const RING_HEIGHT := 0.053
-const BADGE_OFFSETS := [Vector2.ZERO, Vector2(0, 2.68), Vector2(1.5, -1.24),
-	Vector2(-1.55, 0), Vector2(1.55, 2.65), Vector2(-1.60, 2.65)]
+const BADGE_PIXEL_SIZE := 0.022
+const LOCAL_BADGE_PIXEL_SIZE := 0.029
+const BADGE_OFFSETS := [Vector2.ZERO, Vector2(2.8, -0.9), Vector2(-2.8, -0.9),
+	Vector2(0, -2.5), Vector2(0, 3.0), Vector2(-2.8, 2.1), Vector2(2.8, 2.1),
+	Vector2(0, -4.2), Vector2(0, 4.9), Vector2(-5.6, -2.1), Vector2(5.6, -2.1)]
 
 var camera: Camera3D
 var client_motion := false
@@ -29,9 +32,14 @@ var _shells: Array[MeshInstance3D] = []
 var _rings: Array[MeshInstance3D] = []
 var _trails: Array[MeshInstance3D] = []
 var _badges: Array[Label3D] = []
+var _badge_slots := PackedInt32Array()
+var _badge_offsets := PackedVector2Array()
+var _badge_sizes := PackedVector2Array()
 var _marks: Array[Node3D] = []
 var _gate_labels: Array[Label3D] = []
+var _gate_sizes := PackedVector2Array()
 var _band: ShaderMaterial
+var _badge_links := ImmediateMesh.new()
 
 
 func _ready() -> void:
@@ -86,6 +94,7 @@ func _frame_camera() -> void:
 
 
 func _build_gates() -> void:
+	_gate_sizes.resize(_track.gates.size())
 	var lamp := BoxMesh.new()
 	lamp.size = Vector3(0.52, 0.12, 0.8)
 	var dash := BoxMesh.new()
@@ -102,8 +111,9 @@ func _build_gates() -> void:
 			_mesh(marker, lamp, light, Vector3(0, 1.19 if i == 0 else 0.94, side * 6.55))
 			if i != 0:
 				_mesh(marker, dash, light, Vector3(0, 0.079, side * 4.7))
-		var tag := _tag("GATE %d" % i, 0.029)
-		tag.position = _world(line.origin - line.y * 8.9, 0.55)
+		var tag := _tag("", 0.034)
+		tag.modulate = Venue.ICE
+		tag.position = _world(line.origin - line.y * 6.9, 0.55)
 		add_child(tag)
 		_gate_labels.append(tag)
 		marker.hide()
@@ -111,6 +121,13 @@ func _build_gates() -> void:
 
 
 func _build_orbs() -> void:
+	_badge_slots.resize(Model.SEATS)
+	_badge_offsets.resize(Model.SEATS)
+	_badge_sizes.resize(Model.SEATS)
+	var link_paint := _flat(Kit.INK)
+	link_paint.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	link_paint.no_depth_test = true
+	_mesh(self, _badge_links, link_paint, Vector3.ZERO)
 	var sphere := SphereMesh.new()
 	sphere.radius = Track.ORB_RADIUS
 	sphere.height = Track.ORB_RADIUS * 2.0
@@ -148,10 +165,10 @@ func _build_orbs() -> void:
 		shell.rotation = Vector3(0.6, i * 0.68, -0.36 + i * 0.10)
 		_shells.append(shell)
 		_mesh(racer, shadow, shade, Vector3(0.14, 0.043, 0.24))
-		_rings.append(_mesh(racer, ring, _flat(Kit.colors[i].lerp(Color.WHITE, 0.42)),
+		_rings.append(_mesh(racer, ring, _flat(Kit.colors[i].lerp(Color.WHITE, 0.65)),
 			Vector3(0, RING_HEIGHT, 0)))
 		_trails.append(_mesh(self, trail, _band, Vector3.ZERO))
-		var badge := _tag(str(i + 1), 0.022)
+		var badge := _tag("", BADGE_PIXEL_SIZE)
 		badge.modulate = Kit.colors[i].lerp(Color.WHITE, 0.32)
 		add_child(badge)
 		_badges.append(badge)
@@ -209,29 +226,64 @@ func update_visuals(state: RefCounted, delta: float, own_slot: int = 0) -> void:
 		return
 	var fresh := _last_round != state.get_instance_id()
 	_last_round = state.get_instance_id()
+	if fresh:
+		_badge_slots.fill(0)
+		_badge_offsets.fill(Vector2.ZERO)
 	_showcase_time += delta
+	var locals := 0
 	var active := 0
 	var lap_line := false
-	var used: Array[Vector2] = []
+	var start_line := false
+	var gate_seats := PackedInt32Array()
+	gate_seats.resize(_marks.size())
 	for i in state.players.size():
 		var p: Dictionary = state.players[i]
-		var here: bool = not _menu and (i == own_slot or local_mask & (1 << i) != 0)
-		if here and p.finish < 0.0:
-			active |= 1 << int(p.gate)
-			lap_line = lap_line or (p.gate == 0 and p.started)
-		_show_orb(i, p, float(state.elapsed), delta, fresh, here, used)
+		var here: bool = p.active and not _menu and (i == own_slot or local_mask & (1 << i) != 0)
+		if here:
+			locals |= 1 << i
+			if p.finish < 0.0:
+				var gate: int = p.gate
+				active |= 1 << gate
+				gate_seats[gate] |= 1 << i
+				lap_line = lap_line or (gate == 0 and p.started)
+				start_line = start_line or (gate == 0 and not p.started)
+		_show_orb(i, p, float(state.elapsed), delta, fresh, here)
+	var used: Array[Rect2] = []
+	var split := (active & (active - 1)) != 0
 	for i in _marks.size():
-		var hot := active & (1 << i) != 0
+		var hot := gate_seats[i] != 0
+		var tag := _gate_labels[i]
 		_marks[i].visible = hot
-		_gate_labels[i].visible = hot
-	_gate_labels[0].text = "LAP LINE" if lap_line else "START"
+		tag.visible = hot
+		if not hot:
+			continue
+		var caption := "GATE %d" % i
+		if i == 0:
+			caption = "START / LAP LINE" if lap_line and start_line else ("LAP LINE" if lap_line else "START")
+		if split:
+			var seats := PackedStringArray()
+			for slot in _racers.size():
+				if (gate_seats[i] & (1 << slot)) != 0:
+					seats.append("P%d" % (slot + 1))
+			caption = "/".join(seats) + "  " + caption
+		if tag.text != caption:
+			tag.text = caption
+			_gate_sizes[i] = _label_size(tag)
+		var center := Vector2(tag.position.x, tag.position.z)
+		used.append(Rect2(center - _gate_sizes[i] * 0.5, _gate_sizes[i]).grow(0.08))
+	var settle := 1.0 if fresh else 1.0 - exp(-18.0 * delta)
+	for local_first: bool in [true, false]:
+		for i in _badges.size():
+			if _badges[i].visible and ((locals & (1 << i)) != 0) == local_first:
+				_place_badge(i, state.players[i], local_first, settle, used)
+	_link_badges(locals)
 
 
-func _show_orb(i: int, p: Dictionary, clock: float, dt: float, fresh: bool, here: bool, used: Array[Vector2]) -> void:
+func _show_orb(i: int, p: Dictionary, clock: float, dt: float, fresh: bool, here: bool) -> void:
 	var racer := _racers[i]
 	var champion := i == _champion
 	var visible_finish: bool = p.finish < 0.0 or clock - float(p.finish) < 1.4
-	racer.visible = visible_finish or champion
+	racer.visible = p.active and (visible_finish or champion)
 	_badges[i].visible = racer.visible and not champion
 	_trails[i].visible = _show_trails and racer.visible and p.boost > 0.0 and not champion
 	if not racer.visible:
@@ -260,16 +312,87 @@ func _show_orb(i: int, p: Dictionary, clock: float, dt: float, fresh: bool, here
 	if _trails[i].visible and movement != Vector2.ZERO:
 		_trails[i].position = racer.position - _world(movement.normalized() * 2.03, -0.07)
 		_trails[i].rotation.y = -movement.angle()
-	var at := Vector2(racer.position.x, racer.position.z)
-	var base := at + Vector2(0, -1.36)
-	var badge_at := base
-	for offset in BADGE_OFFSETS:
-		badge_at = base + offset
-		if not used.any(func(other: Vector2) -> bool: return other.distance_squared_to(badge_at) < 1.25):
-			break
-	used.append(badge_at)
-	_badges[i].position = _world(badge_at, 1.0)
-	_badges[i].text = ("%d  %s" % [i + 1, p.name]) if show_identities else str(i + 1)
+
+
+func _place_badge(i: int, p: Dictionary, here: bool, settle: float, used: Array[Rect2]) -> void:
+	var badge := _badges[i]
+	var caption := str(i + 1)
+	if show_identities:
+		caption = "%d  %s" % [i + 1, p.name]
+	elif here:
+		caption = "YOU %d" % (i + 1) if local_mask == 0 else "P%d" % (i + 1)
+	var pixel_size := LOCAL_BADGE_PIXEL_SIZE if here else BADGE_PIXEL_SIZE
+	if badge.text != caption or not is_equal_approx(badge.pixel_size, pixel_size):
+		badge.text = caption
+		badge.pixel_size = pixel_size
+		_badge_sizes[i] = _label_size(badge)
+	var priority := 2 if here else 0
+	if badge.render_priority != priority:
+		badge.render_priority = priority
+		badge.outline_render_priority = priority - 1
+		badge.modulate = Kit.INK if here else Kit.colors[i].lerp(Color.WHITE, 0.32)
+	var racer := _racers[i].position
+	var base := Vector2(racer.x, racer.z - 1.36)
+	var bounds := Rect2(-_badge_sizes[i] * 0.5, _badge_sizes[i])
+	var slot := _badge_slots[i]
+	# Keep a displaced tag in place until the center has enough space to stay clear.
+	if slot != 0 and _badge_room(bounds.grow(0.34), base, used):
+		slot = 0
+	if not _badge_room(bounds, base + BADGE_OFFSETS[slot], used):
+		for candidate in BADGE_OFFSETS.size():
+			if _badge_room(bounds, base + BADGE_OFFSETS[candidate], used):
+				slot = candidate
+				break
+	var target: Vector2 = BADGE_OFFSETS[slot]
+	var at := base + target
+	if not here and not show_identities and not _badge_room(bounds, at, used):
+		badge.hide()
+		return
+	_badge_slots[i] = slot
+	var offset := _badge_offsets[i].lerp(target, settle)
+	if not _badge_room(bounds, base + offset, used):
+		offset = target
+	_badge_offsets[i] = offset
+	badge.position = _world(base + offset, 1.0)
+	used.append(Rect2(bounds.position + at, bounds.size))
+	if not offset.is_equal_approx(target):
+		used.append(Rect2(bounds.position + base + offset, bounds.size))
+
+
+func _badge_room(bounds: Rect2, at: Vector2, used: Array[Rect2]) -> bool:
+	bounds.position += at
+	for other in used:
+		if bounds.intersects(other):
+			return false
+	return true
+
+
+func _label_size(label: Label3D) -> Vector2:
+	var text_size := label.font.get_string_size(label.text, HORIZONTAL_ALIGNMENT_LEFT, -1, label.font_size)
+	return (text_size + Vector2.ONE * label.outline_size) * label.pixel_size
+
+
+## A moved local tag still points to its own orb when six racers overlap.
+func _link_badges(locals: int) -> void:
+	_badge_links.clear_surfaces()
+	var linked := false
+	for i in _badges.size():
+		if (locals & (1 << i)) == 0 or not _badges[i].visible or _badge_offsets[i].length_squared() < 0.49:
+			continue
+		var from := _racers[i].position
+		from.y = 1.0
+		var to := _badges[i].position
+		var distance := from.distance_to(to)
+		if distance < 1.4:
+			continue
+		if not linked:
+			_badge_links.surface_begin(Mesh.PRIMITIVE_LINES)
+			linked = true
+		var axis := (to - from) / distance
+		_badge_links.surface_add_vertex(from + axis * 0.76)
+		_badge_links.surface_add_vertex(to - axis * 0.45)
+	if linked:
+		_badge_links.surface_end()
 
 
 static func _world(pos: Vector2, height: float) -> Vector3:

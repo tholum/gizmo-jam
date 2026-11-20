@@ -87,6 +87,7 @@ var seat_shoved := PackedInt32Array([0, 0, 0, 0, 0, 0])
 # What the HUD last saw, to turn state into events.
 var clock := 0.0
 var last_stage := 0
+var stage_note_until := -1.0
 var last_tiles := 1
 var last_zaps := 0
 var last_loops := 0
@@ -171,6 +172,7 @@ func round_started() -> void:
 	seat_shoves.fill(0)
 	seat_shoved.fill(0)
 	last_stage = 0
+	stage_note_until = -1.0
 	last_tiles = 1
 	last_zaps = 0
 	last_loops = 0
@@ -207,6 +209,7 @@ func build_hud() -> void:
 	var root: Control = main.hud_root
 	# Time left, surge level and standings, top-left.
 	status = Status.new()
+	status.active_slots = main.active_slots
 	root.add_child(status)
 	# Surge call-out, top-centre. Empty until a line starts charging.
 	cue = Cue.new()
@@ -227,7 +230,7 @@ func build_hud() -> void:
 	main._hud_shade()
 	main._hud_count()
 	# Controls reminder: it borrows the call-out slot until GO, so the board
-	# and the six starting tiles stay in view during the countdown.
+	# and the starting tiles stay in view during the countdown.
 	var intro: Control = main._hud_intro()
 	var samples := [["move", MOVE_TOUCH], ["dash", DASH_TOUCH]] if Platform.handheld else ([["move", "STICK"], ["dash", "A"]] if main.pad_captions() else [["move", "W A S D"], ["dash", "SPACE"]])
 	for i in 2:
@@ -248,7 +251,14 @@ func build_hud() -> void:
 func layout_hud() -> void:
 	var area: Vector2 = main.area
 	status.position = Vector2(28, 16)
-	cue.position = Vector2(roundf(area.x * 0.5 - Cue.SIZE.x * 0.5), 12)
+	# Reserve room for the danger badge's pulse beyond its control rectangle.
+	var left := status.position.x + Status.SIZE.x + 48.0
+	var right: float = (main.hud_names.position.x if main.hud_names.visible else main.hud_menu.position.x) - 48.0
+	var scale := minf(1.0, (right - left) / Cue.SIZE.x)
+	var width := Cue.SIZE.x * scale
+	cue.pivot_offset = Vector2.ZERO
+	cue.scale = Vector2.ONE * scale
+	cue.position = Vector2(roundf(clampf((area.x - width) * 0.5, left, right - width)), 12)
 	var rects: Array = main.plate_rects(area, main.plate_focus(), Plate.SIZE, 8.0)
 	main.place_plates(plates, rects, Plate.SIZE)
 	main.place_plate_calls(rects)
@@ -261,11 +271,11 @@ func update_hud() -> void:
 	var running: bool = model.phase == "running"
 	# Plates and standings.
 	var best := 0
-	for p in model.players:
-		best = maxi(best, int(p.tiles))
+	for i in main.active_slots:
+		best = maxi(best, int(model.players[i].tiles))
 	var leaders := 0
-	for p in model.players:
-		if int(p.tiles) == best: leaders += 1
+	for i in main.active_slots:
+		if int(model.players[i].tiles) == best: leaders += 1
 	var values: Array = []
 	var lengths: Array = []
 	var standing: Array = []
@@ -276,7 +286,7 @@ func update_hud() -> void:
 		plates[i].sync(p, main._role(i, p, my_slot), leading, charge, float(p.stun) > 0.0 and running)
 		values.append(int(p.tiles))
 		lengths.append(float(p.tiles) / float(maxi(best, 1)))
-		standing.append(true)
+		standing.append(p.active)
 	var left: float = model.remaining() if model.phase != "countdown" else float(model.DURATION)
 	var whole := int(ceil(left))
 	var stage_now: int = model.stage() if model.phase != "countdown" else 0
@@ -284,13 +294,17 @@ func update_hud() -> void:
 		stage_now, values, standing, lengths, my_slot, running and left <= 10.0)
 	if stage_now > last_stage and running:
 		last_stage = stage_now
+		var announce_in_cue: bool = not model.surges.is_empty()
+		stage_note_until = clock + 1.8 if announce_in_cue else -1.0
 		if stage_now == 1:
-			main.hud_feedback.pop("CHARGED!  DOUBLE SURGES", Kit.JUMP)
-			main.feedback_time = 1.5
+			if not announce_in_cue and main.feedback_time <= 0.0:
+				main.hud_feedback.pop("CHARGED!  DOUBLE SURGES", Kit.JUMP)
+				main.feedback_time = 1.5
 			main._sfx("round_start")
 		else:
-			main.hud_feedback.rattle("OVERDRIVE!  LOCKS ARE OFF", Kit.DANGER)
-			main.feedback_time = 1.8
+			if not announce_in_cue and main.feedback_time <= 0.0:
+				main.hud_feedback.rattle("OVERDRIVE!  LOCKS ARE OFF", Kit.DANGER)
+				main.feedback_time = 1.8
 			main._voice("overdrive")
 	if running and whole != last_whole:
 		if whole == 10:
@@ -333,14 +347,15 @@ func _update_surges(model: RefCounted, own: Dictionary, running: bool) -> void:
 	var can_move: bool = float(own.stun) <= 0.0 and not main.shared_screen
 	on_the_line = running and can_move and not mine.is_empty() and float(mine.warn) > 0.0
 	var warn_time := float(model.SURGE_WARN)
+	var stage_note: String = STAGE_NAMES[last_stage] if clock < stage_note_until else ""
 	if not running or soonest.is_empty():
 		cue.sync("", -1, "", 0.0, false, "")
 	elif on_the_line:
-		cue.sync("danger", int(mine.id), "%.1fs" % float(mine.warn), clampf(1.0 - float(mine.warn) / warn_time, 0.0, 1.0), false, "")
+		cue.sync("danger", int(mine.id), "%.1fs" % float(mine.warn), clampf(1.0 - float(mine.warn) / warn_time, 0.0, 1.0), false, stage_note)
 	else:
 		var live := float(soonest.warn) <= 0.0
 		var count: int = model.surges.size()
-		cue.sync("surge", int(soonest.id), "%.1fs" % float(soonest.warn), clampf(1.0 - float(soonest.warn) / warn_time, 0.0, 1.0), live, "",
+		cue.sync("surge", int(soonest.id), "%.1fs" % float(soonest.warn), clampf(1.0 - float(soonest.warn) / warn_time, 0.0, 1.0), live, stage_note,
 			"SURGE ×%d" % count if count > 1 else "")
 	if not running:
 		return
@@ -397,7 +412,7 @@ func _update_events(model: RefCounted, own: Dictionary, running: bool) -> void:
 func _update_seats(model: RefCounted, running: bool) -> void:
 	var locking: bool = model.stage() < 2
 	for i in 6:
-		if not main.is_local(i): continue
+		if not main.seat_is_active(i) or not main.is_local(i): continue
 		var p: Dictionary = model.players[i]
 		var tiles := int(p.tiles)
 		var shoved := 1 if float(p.shove) > 0.0 else 0
@@ -592,7 +607,8 @@ func result_summary() -> String:
 	var loops := 0
 	var zaps := 0
 	var shoves := 0
-	for p in main.model.players:
+	for i in main.active_slots:
+		var p: Dictionary = main.model.players[i]
 		loops += int(p.loops)
 		zaps += int(p.zaps)
 		shoves += int(p.shoves)

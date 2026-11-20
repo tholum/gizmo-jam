@@ -46,11 +46,13 @@ verify(subprocess.run(base + ["--script", "res://tests/test_round.gd"], text=Tru
 verify(subprocess.run(base + ["--script", "res://tests/test_livewire.gd"], text=True,
                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60))
 for game_test in (
+    "bumper_cars/tests/rules_test.gd",
     "sumo/tests/rules_test.gd",
     "orb_racing/tests/race_test.gd",
     "stampede_sheriff/tests/rules_test.gd",
     "plate_panic/tests/rules_test.gd",
     "salvage_line/tests/rules_test.gd",
+    "salvage_line/tests/arena_test.gd",
 ):
     verify(subprocess.run(base + ["--script", "res://games/" + game_test], text=True,
                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60))
@@ -65,6 +67,9 @@ if "GAMEPAD_TESTS PASS" not in pads.stdout:
 # Layout at every supported window size (geometry only when headless).
 verify(subprocess.run(base + ["--script", "res://tests/screen_sizes.gd"], text=True,
                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120))
+verify(subprocess.run(base + ["--script", "res://tests/screen_sizes.gd", "--", "--spin-hit-only",
+                              "--handheld", "--safe-inset=120", "--sizes=1024x576"], text=True,
+                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=20))
 verify(subprocess.run(base + ["--script", "res://tests/test_discovery.gd"], text=True,
                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30))
 # Touch controls: real touch events on a phone (with and without a camera
@@ -114,6 +119,14 @@ with tempfile.TemporaryDirectory(prefix="gizmojam-update-") as folder:
 with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
     sock.bind(("127.0.0.1", 0))
     port = sock.getsockname()[1]
+
+colors = subprocess.run(
+    base + ["--script", "res://tests/test_party_colors.gd", "--", f"--port={port}"],
+    text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=45,
+)
+verify(colors)
+if "PARTY_COLORS_PASS" not in colors.stdout:
+    raise SystemExit("Party colors test failed")
 
 processes = []
 with tempfile.TemporaryDirectory(prefix="gizmojam-network-") as folder:

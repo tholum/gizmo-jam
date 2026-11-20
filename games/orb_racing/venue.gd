@@ -119,7 +119,7 @@ func _infield() -> void:
 			var tint := Color("28494b") if i < 3 else Color("83c4b5")
 			_quad(f * Vector2(i * 0.78 - 2.0, -2.2), f * Vector2(i * 0.78 - 1.52, -2.2),
 				f * Vector2(i * 0.78 - 0.14, 2.2), f * Vector2(i * 0.78 - 0.62, 2.2), 0.0, tint)
-	_text("ORB RACING", Vector2(0, 2.55), -0.017, 0.123, Color("659c91"))
+	_text("ORB RACING", Vector2(0, 2.55), -0.017, 0.090, Color("4f7771"))
 
 
 func _grandstand(origin: Vector2, width: float, side: float, rotation: float = 0.0) -> void:

@@ -173,6 +173,7 @@ func build_hud() -> void:
 	for i in Model.SEATS:
 		var plate := Control.new()
 		plate.size = PLATE_SIZE
+		plate.visible = main.model.players[i].active
 		plate.pivot_offset = Vector2(PLATE_SIZE.x * 0.5, PLATE_SIZE.y)
 		plate.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		hud.add_child(plate)
@@ -214,9 +215,12 @@ func update_hud() -> void:
 	_timer.modulate = WARM if seconds <= 10 else Color.WHITE
 	_lead = 0
 	for p in state.players:
-		_lead = maxi(_lead, int(p.score))
+		if p.active:
+			_lead = maxi(_lead, int(p.score))
 	for i in Model.SEATS:
 		var p: Dictionary = state.players[i]
+		if not p.active:
+			continue
 		var local: bool = main.is_local(i)
 		if local and not main.shared_screen:
 			_names[i].text = "YOU"
@@ -268,6 +272,8 @@ func _update_cues(state: RefCounted) -> void:
 	var rival_gold := false
 	for i in Model.SEATS:
 		var p: Dictionary = state.players[i]
+		if not p.active:
+			continue
 		var local: bool = main.is_local(i)
 		if local:
 			clap = clap or p.claps > _claps[i]

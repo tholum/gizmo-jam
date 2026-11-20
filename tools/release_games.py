@@ -110,10 +110,13 @@ def pack_entry(game, pack, base_url):
     data = pack.read_bytes()
     if len(data) > MAX_PACK:
         raise SystemExit(f"{pack} is larger than the game accepts ({MAX_PACK} bytes)")
-    return {"version": game["version"], "net": int(game["net"]), "core_min": int(game.get("core_min", 0)),
-            "size": len(data), "sha256": hashlib.sha256(data).hexdigest(),
-            "url": f"{base_url}/{pack_key(game['id'], game['version'])}",
-            "info": {k: str(game["info"][k]) for k in ("number", "title", "tags", "blurb")}}
+    entry = {"version": game["version"], "net": int(game["net"]), "core_min": int(game.get("core_min", 0)),
+             "size": len(data), "sha256": hashlib.sha256(data).hexdigest(),
+             "url": f"{base_url}/{pack_key(game['id'], game['version'])}",
+             "info": {k: str(game["info"][k]) for k in ("number", "title", "tags", "blurb")}}
+    if game.get("optional_seats") is True:
+        entry["optional_seats"] = True
+    return entry
 
 
 def next_catalog(live, added, removed, channel):

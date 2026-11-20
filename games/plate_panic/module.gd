@@ -9,7 +9,7 @@ const Pads = preload("res://scripts/gamepads.gd")
 const Platform = preload("res://scripts/platform.gd")
 
 const ID := "plate_panic"
-const VERSION := "1.0.0"
+const VERSION := "1.1.0"
 const NET := 1
 const CORE_MIN := 7
 const INFO := {
@@ -164,6 +164,7 @@ func build_hud() -> void:
 		hud.add_child(plate)
 		plate.draw.connect(_draw_plate.bind(plate, slot))
 		_plates.append(plate)
+		plate.visible = main.model.players[slot].active
 		var caption: Label = main._label(plate, "", Rect2(41, 6, 83, 23), 17, CREAM, true)
 		caption.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 		_names.append(caption)
@@ -235,9 +236,12 @@ func update_hud() -> void:
 	_slope.queue_redraw()
 	_lead = 0
 	for player in state.players:
-		_lead = maxi(_lead, int(player.score))
+		if player.active:
+			_lead = maxi(_lead, int(player.score))
 	for i in Model.SEATS:
 		var player: Dictionary = state.players[i]
+		if not player.active:
+			continue
 		var local: bool = main.is_local(i)
 		_names[i].text = "YOU" if local and not main.shared_screen else str(player.name).to_upper()
 		_points[i].text = str(player.score)
@@ -276,6 +280,8 @@ func _update_cues(state: RefCounted) -> void:
 
 	for i in Model.SEATS:
 		var player: Dictionary = state.players[i]
+		if not player.active:
+			continue
 		var local: bool = main.is_local(i)
 		if int(player.score) > _scores[i]:
 			_cue("pocket", -4.0 if local else -13.0, 1.0 + i * 0.042)

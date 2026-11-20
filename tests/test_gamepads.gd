@@ -105,7 +105,7 @@ func run() -> void:
 	for id in real_pads: base = maxi(base, id + 1)
 	if real_pads.is_empty():
 		check(pads.devices.is_empty(), "No pads before any pad event")
-		check(main.screen.find_child("LocalPlayers", true, false) == null, "Keyboard-only menu has no local players panel")
+		check(main.screen.find_child("PlayerColor0", true, false) != null, "Keyboard-only players can pick a color")
 		check(solo_text() == "PLAY SOLO  ·  VS 5 BOTS", "Keyboard-only solo button unchanged")
 	else:
 		print("GAMEPAD NOTE: %d real pad(s) connected; simulated pads start at device %d and the no-pad checks are skipped" % [real_pads.size(), base])
@@ -125,7 +125,8 @@ func run() -> void:
 		seen[focused().get_meta("graphics", focused().name)] = true
 	check(seen.has("balanced") or seen.has("low") or seen.has("high"), "D-pad down reaches the graphics keys: %s" % [seen.keys()])
 	await tap(d(0), JOY_BUTTON_DPAD_RIGHT)
-	for i in 8:
+	for i in 16:
+		if focused().name == "Library": break
 		await tap(d(0), JOY_BUTTON_DPAD_UP)
 	# The top of the menu: the game library link above the cards, when shown.
 	var library: Node = main.screen.find_child("Library", true, false)
@@ -148,7 +149,7 @@ func run() -> void:
 	await tap(d(1), JOY_BUTTON_A)
 	check(main.view == "menu", "Another pad's A joins instead of pressing Solo")
 	check(Array(pads.extras) == [d(1)], "Pad 1 joined")
-	check(solo_text() == "PLAY  ·  2 PLAYERS VS 4 BOTS", "Solo button counts the players: " + solo_text())
+	check(solo_text() == "PLAY  ·  2 PLAYERS", "Local multiplayer starts without bots: " + solo_text())
 	check(focused() != null and focused().name == "Solo", "Focus survives the menu rebuild")
 	await tap(d(2), JOY_BUTTON_START)
 	await tap(d(3), JOY_BUTTON_A)
@@ -180,7 +181,7 @@ func run() -> void:
 	check(main.session.members.size() == 3, "Three seats on this machine")
 	check(main.session.pad_slot(d(1)) == 1 and main.session.pad_slot(d(2)) == 2, "Pads seated in join order")
 	check(main.model.players[1].name == "PLAYER 2" and not main.model.players[1].bot, "Pad seat is a player")
-	check(main.model.players[3].bot, "Empty seats are bots")
+	check(not main.model.players[3].active and not main.play.plates[3].visible, "Empty seats stay out of the round and HUD")
 	check(main.shared_screen and main.local_mask == 0b111, "Shared screen marks three local seats")
 	check(main.play.plates[1].own and main.play.plates[2].own and not main.play.plates[3].own, "Every local plate is marked")
 	check(main.play.plates[1].role == "P2" and main.play.plates[0].role == "P1", "Shared screen roles are player numbers")

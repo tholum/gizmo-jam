@@ -14,9 +14,11 @@ extends Node
 ## (scripts/party_wire.gd): their core build and installed games. A member that
 ## sends none within HELLO_WAIT is a 0.2.0 build and can play the built-in
 ## games only. The host launches a round only for members who can play the
-## chosen game; everyone else sits it out in the lobby and a bot takes their
-## seat. The leader may pick any game the host has; members who lack it fetch
+## chosen game; everyone else sits it out in the lobby. Their seats can stay
+## open or be played by bots. The leader may pick any game the host has; members who lack it fetch
 ## it (main.gd and scripts/pack_manager.gd) and report progress with STATUS.
+## A host that advertises color picking keeps explicit picks in its roster
+## and assigns everyone a color when the round launches.
 ##
 ## Local seats: a machine that plays solo or hosts can seat more players of its
 ## own, one per extra gamepad (add_local). They are ordinary members with this
@@ -34,10 +36,12 @@ signal returned_to_lobby
 signal failed(message: String)
 ## Capabilities, member states or the round's line-up changed.
 signal party_changed
+signal color_pick_rejected(message: String)
 
 const Registry = preload("res://scripts/game_registry.gd")
 const Wire = preload("res://scripts/party_wire.gd")
 const DualPeer = preload("res://scripts/dual_peer.gd")
+const Palette = preload("res://scripts/palette.gd")
 
 ## Bump whenever an RPC is added or its arguments change. A mixed-build join
 ## must still end in "Game versions do not match.", which relies on _register
@@ -49,6 +53,7 @@ const DualPeer = preload("res://scripts/dual_peer.gd")
 const PROTOCOL := 2
 const DEFAULT_PORT := 7777
 const MAX_PLAYERS := 6
+const ALL_BOTS := (1 << MAX_PLAYERS) - 1
 const BOT_NAMES := ["BOLT", "NOVA", "ECHO", "FLUX", "PIXEL", "COMET"]
 ## The games every build since 0.2.0 has. Packs add more (see Registry).
 const GAMES := Registry.BUILTIN_IDS
@@ -70,6 +75,8 @@ var game := "twisted"
 var members: Array = []
 var leader_id := 1
 var playing := false
+## -1 uses the default line-up. Explicit choices mark individual open seats.
+var bot_slots := -1
 var round_number := 0
 var local_name := "PLAYER"
 var port := DEFAULT_PORT
@@ -165,10 +172,7 @@ func local_seats_allowed() -> bool:
 func add_local(pad: int) -> int:
 	if not local_seats_allowed() or playing or members.size() >= MAX_PLAYERS or pad_slot(pad) >= 0:
 		return -1
-	var used := members.map(func(m): return int(m.slot))
-	var slot := 0
-	while slot in used:
-		slot += 1
+	var slot := _claim_open_slot()
 	members.append({"peer": multiplayer.get_unique_id(), "name": "PLAYER %d" % (slot + 1), "slot": slot, "pad": pad})
 	if mode == "host":
 		notice = "Player %d joined on this machine." % (slot + 1)
@@ -224,10 +228,11 @@ func solo(player_name: String) -> void:
 ## Opens a party. With `browser_port` > 0 browsers can join too, over a
 ## WebSocket on the first free port from browser_port (see dual_peer.gd).
 func host_game(player_name: String, server_port: int = DEFAULT_PORT, browser_port: int = 0) -> Error:
-	close()
+	var previous_color: int = _owned_seat(1, 0).get("color", -1) if mode == "offline" else -1
 	if server_port < 1024 or server_port > 65535:
 		return ERR_INVALID_PARAMETER
 	var peer: MultiplayerPeer
+	var bound_web_port := 0
 	if browser_port > 0:
 		var err := ERR_CANT_CREATE
 		for p in range(browser_port, browser_port + 10):
@@ -235,7 +240,7 @@ func host_game(player_name: String, server_port: int = DEFAULT_PORT, browser_por
 			err = dual.create(server_port, p, MAX_PLAYERS - 1, 2)
 			if err == OK:
 				peer = dual
-				web_port = p
+				bound_web_port = p
 				break
 			dual.close()
 			# A busy UDP port will not free up by trying other WebSocket ports.
@@ -251,24 +256,28 @@ func host_game(player_name: String, server_port: int = DEFAULT_PORT, browser_por
 		if err != OK:
 			return err
 		peer = enet
+	close()
 	multiplayer.multiplayer_peer = peer
 	mode = "host"
 	port = server_port
+	web_port = bound_web_port
 	local_name = clean_name(player_name)
 	members = [{"peer": 1, "name": local_name, "slot": 0}]
+	if previous_color >= 0:
+		members[0]["color"] = previous_color
 	leader_id = 1
-	notice = "Lobby open. Players join automatically; empty seats become bots."
+	notice = "Lobby open. Share the join address with friends."
 	roster_changed.emit()
 	return OK
 
 func join_game(player_name: String, address: String, server_port: int = DEFAULT_PORT) -> Error:
-	close()
 	if address.strip_edges().is_empty() or server_port < 1024 or server_port > 65535:
 		return ERR_INVALID_PARAMETER
 	var peer := ENetMultiplayerPeer.new()
 	var err := peer.create_client(address.strip_edges(), server_port, 2)
 	if err != OK:
 		return err
+	close()
 	local_name = clean_name(player_name)
 	port = server_port
 	join_address = address.strip_edges()
@@ -280,11 +289,11 @@ func join_game(player_name: String, address: String, server_port: int = DEFAULT_
 ## Joins over a WebSocket: what the browser build does. `url` is
 ## ws://<host>:<port>.
 func join_web(player_name: String, url: String) -> Error:
-	close()
 	var peer := WebSocketMultiplayerPeer.new()
 	var err := peer.create_client(url)
 	if err != OK:
 		return err
+	close()
 	local_name = clean_name(player_name)
 	join_address = url.trim_prefix("ws://").get_slice(":", 0)
 	mode = "joining"
@@ -299,6 +308,7 @@ func is_browser(peer: int) -> bool:
 func close() -> void:
 	mode = "offline"
 	playing = false
+	bot_slots = -1
 	if multiplayer.multiplayer_peer:
 		multiplayer.multiplayer_peer.close()
 	multiplayer.multiplayer_peer = OfflineMultiplayerPeer.new()
@@ -336,10 +346,7 @@ func _register(player_name: String, protocol: int) -> void:
 	for m in members:
 		if int(m.peer) == sender:
 			return
-	var used := members.map(func(m): return int(m.slot))
-	var slot := 0
-	while slot in used:
-		slot += 1
+	var slot := _claim_open_slot()
 	members.append({"peer": sender, "name": clean_name(player_name), "slot": slot})
 	if not caps.has(sender):
 		hello_clock[sender] = 0.0
@@ -390,16 +397,141 @@ func _roster(roster: Array, leader: int, vote: Dictionary, message: String, curr
 	notice = message
 	roster_changed.emit()
 
-## Seats for a round. Members not in `in_round` (when given) sit it out and a
-## bot plays their seat.
+func _human_mask() -> int:
+	var mask := 0
+	for member in members:
+		mask |= 1 << int(member.slot)
+	return mask
+
+func _claim_open_slot() -> int:
+	var used := _human_mask()
+	var reserved := bot_slots if bot_slots >= 0 else 0
+	var vacant := ALL_BOTS & ~(used | reserved)
+	if vacant == 0: vacant = ALL_BOTS & ~used
+	for slot in MAX_PLAYERS:
+		if (vacant & (1 << slot)) != 0:
+			if bot_slots >= 0: bot_slots &= ~(1 << slot)
+			return slot
+	return -1
+
+func _bot_mask() -> int:
+	if mode == "client": return int(party.get("bot_mask", ALL_BOTS))
+	if not Registry.supports_optional_seats(game): return ALL_BOTS
+	if bot_slots >= 0: return bot_slots
+	# Solo keeps its usual opponents. Multiplayer starts with open seats
+	# unless a connected client needs a six-seat round.
+	if mode == "offline": return ALL_BOTS if members.size() <= 1 else 0
+	for peer in _connected_members():
+		if not caps.get(peer, {}).get("optional_seats", false):
+			return ALL_BOTS
+	return 0
+
+func bot_at(slot: int) -> bool:
+	return (_bot_mask() & (1 << slot)) != 0
+
+func can_set_bot(slot: int) -> bool:
+	if playing or sitting_out() or not is_leader() or slot < 0 or slot >= MAX_PLAYERS:
+		return false
+	if (_human_mask() & (1 << slot)) != 0: return false
+	if mode == "client":
+		return host_info.get("optional_seats", false) == true and party_games().get(game, {}).get("optional_seats", false) == true
+	return Registry.supports_optional_seats(game)
+
+func set_bot(slot: int, enabled: bool) -> void:
+	if not can_set_bot(slot): return
+	if mode == "client":
+		_send(1, Wire.SET_BOT, {"slot": slot, "enabled": enabled})
+	else:
+		_apply_bot(slot, enabled)
+
+func _apply_bot(slot: int, enabled: bool) -> void:
+	var mask := _bot_mask() & ~_human_mask()
+	bot_slots = (mask | (1 << slot)) if enabled else (mask & ~(1 << slot))
+	_broadcast_roster()
+
+## Seats missing from the line-up stay inactive unless that slot has a bot.
 func slots(in_round: Array = []) -> Array:
 	var seats: Array = []
+	var used_colors := {}
+	var bots := _bot_mask()
 	for i in MAX_PLAYERS:
-		seats.append({"peer": 0, "name": BOT_NAMES[i], "bot": true})
+		var seat := {"peer": 0, "name": BOT_NAMES[i], "bot": true}
+		if (bots & (1 << i)) == 0:
+			seat.name = ""
+			seat["active"] = false
+		seats.append(seat)
 	for m in members:
 		if in_round.is_empty() or int(m.peer) in in_round:
-			seats[int(m.slot)] = {"peer": m.peer, "name": m.name, "bot": false}
+			var slot: int = m.slot
+			seats[slot] = {"peer": m.peer, "name": m.name, "bot": false}
+			if m.has("color"):
+				seats[slot]["color"] = m.color
+				used_colors[m.color] = true
+	# Keep the usual seat colors wherever they are available before assigning
+	# substitutes to seats whose usual color was picked by someone else.
+	for slot in MAX_PLAYERS:
+		if not seats[slot].has("color") and not used_colors.has(slot):
+			seats[slot]["color"] = slot
+			used_colors[slot] = true
+	for seat in seats:
+		if seat.has("color"):
+			continue
+		for color in Palette.SELECTABLE.size():
+			if not used_colors.has(color):
+				seat["color"] = color
+				used_colors[color] = true
+				break
 	return seats
+
+func color_picking_supported() -> bool:
+	return is_server() or (mode == "client" and host_info.get("color_picking", false) == true)
+
+## Explicit picks only. Unselected players have no reservation.
+func color_owners() -> Dictionary:
+	var owners := {}
+	for member in members:
+		if member.has("color"):
+			owners[member.color] = member.slot
+	return owners
+
+func can_pick_color(slot: int) -> bool:
+	if not color_picking_supported() or playing or sitting_out():
+		return false
+	return not _owned_seat(multiplayer.get_unique_id(), slot).is_empty()
+
+## Clients submit a request. The host's roster confirms any accepted change.
+func pick_color(slot: int, color: int) -> bool:
+	if not can_pick_color(slot) or color < 0 or color >= Palette.SELECTABLE.size():
+		return false
+	if mode == "client":
+		_send(1, Wire.PICK_COLOR, {"slot": slot, "color": color})
+		return true
+	var reason := _apply_color_pick(multiplayer.get_unique_id(), slot, color)
+	if not reason.is_empty():
+		color_pick_rejected.emit(reason)
+	return reason.is_empty()
+
+func _owned_seat(peer: int, slot: int) -> Dictionary:
+	for member in members:
+		if int(member.peer) == peer and int(member.slot) == slot:
+			return member
+	return {}
+
+func _apply_color_pick(peer: int, slot: int, color: int) -> String:
+	if playing:
+		return "Colors can be changed between rounds."
+	var member := _owned_seat(peer, slot)
+	if member.is_empty() or color < 0 or color >= Palette.SELECTABLE.size():
+		return "This color pick is unavailable."
+	var owner: int = color_owners().get(color, -1)
+	if owner == slot:
+		return ""
+	if owner >= 0:
+		return "That color is already taken."
+	member["color"] = color
+	notice = "%s changed color." % member.name
+	_broadcast_roster()
+	return ""
 
 ## Leader only, between rounds only. Offline this sets `game` directly and
 ## emits nothing. Online the server decides: it sets `game` and re-broadcasts
@@ -460,6 +592,9 @@ func _begin() -> void:
 			if member_state(peer).state == "ready":
 				round_peers.append(peer)
 		var seats := slots(round_peers)
+		if seats.any(func(seat): return not seat.get("active", true)):
+			round_peers = round_peers.filter(func(peer): return peer == 1 or caps.get(peer, {}).get("games", {}).get(game, {}).get("optional_seats", false))
+			seats = slots(round_peers)
 		for peer in round_peers:
 			if peer != 1:
 				_launch.rpc_id(peer, seed_value, seats, round_number, game)
@@ -478,6 +613,9 @@ func _launch(seed_value: int, seats: Array, number: int, game_id: String) -> voi
 	playing = true
 	round_number = number
 	election.clear()
+	for slot in seats.size():
+		if not seats[slot].has("color"):
+			seats[slot]["color"] = slot
 	if mode == "client":
 		round_peers = []
 		for seat in seats:
@@ -650,9 +788,10 @@ func _send(peer: int, kind: int, payload: Dictionary) -> void:
 func _hello_payload() -> Dictionary:
 	var payload := {"build": int(ProjectSettings.get_setting("application/config/build", 0)),
 		"version": str(ProjectSettings.get_setting("application/config/version", "")),
-		"games": Registry.capabilities()}
+		"games": Registry.capabilities(), "optional_seats": true}
 	if mode == "host":
 		payload["file_port"] = file_port
+		payload["color_picking"] = true
 	return payload
 
 ## Advertises this build's games: a client to the host, the host to everyone.
@@ -674,7 +813,8 @@ func _packet(sender: int, bytes: PackedByteArray) -> void:
 		Wire.HELLO:
 			if mode == "host":
 				if typeof(data.get("games")) != TYPE_DICTIONARY: return
-				caps[sender] = {"build": int(data.get("build", 0)), "legacy": false, "games": _clean_caps(data.games)}
+				caps[sender] = {"build": int(data.get("build", 0)), "legacy": false, "games": _clean_caps(data.games),
+					"optional_seats": data.get("optional_seats", false) == true}
 				hello_clock.erase(sender)
 				_send(sender, Wire.HELLO, _hello_payload())
 				_broadcast_party()
@@ -691,6 +831,23 @@ func _packet(sender: int, bytes: PackedByteArray) -> void:
 				if not Registry.valid_id(state): return
 				states[sender] = {"game": str(data.get("game", "")), "state": state, "progress": clampi(int(data.get("progress", 0)), 0, 100)}
 				_broadcast_party()
+		Wire.PICK_COLOR:
+			if mode == "host" and _member(sender):
+				if typeof(data.get("slot")) != TYPE_INT or typeof(data.get("color")) != TYPE_INT:
+					return
+				var reason := _apply_color_pick(sender, data.slot, data.color)
+				if not reason.is_empty():
+					_send(sender, Wire.COLOR_REJECTED, {"message": reason})
+		Wire.COLOR_REJECTED:
+			if sender == 1 and mode == "client" and typeof(data.get("message")) == TYPE_STRING:
+				color_pick_rejected.emit(data.message)
+		Wire.SET_BOT:
+			if mode != "host" or playing or sender != leader_id or not _member(sender) or not Registry.supports_optional_seats(game):
+				return
+			if typeof(data.get("slot")) != TYPE_INT or typeof(data.get("enabled")) != TYPE_BOOL: return
+			var slot: int = data.slot
+			if slot >= 0 and slot < MAX_PLAYERS and (_human_mask() & (1 << slot)) == 0:
+				_apply_bot(slot, data.enabled)
 
 ## Keeps only well-formed capability entries, at most 512 games.
 func _clean_caps(raw: Dictionary) -> Dictionary:
@@ -700,13 +857,14 @@ func _clean_caps(raw: Dictionary) -> Dictionary:
 		if not Registry.valid_id(id) or typeof(raw[id]) != TYPE_DICTIONARY: continue
 		var e: Dictionary = raw[id]
 		clean[id] = {"net": int(e.get("net", 0)), "version": str(e.get("version", "")).left(32),
-			"sha256": str(e.get("sha256", "")).left(64), "trust": str(e.get("trust", "")).left(16)}
+			"sha256": str(e.get("sha256", "")).left(64), "trust": str(e.get("trust", "")).left(16),
+			"optional_seats": e.get("optional_seats", false) == true}
 	return clean
 
 func _broadcast_party() -> void:
 	if mode != "host": return
 	var payload := {"games": party_games(), "states": member_states(), "round": playing,
-		"round_peers": round_peers.duplicate(), "file_port": file_port}
+		"round_peers": round_peers.duplicate(), "file_port": file_port, "bot_mask": _bot_mask()}
 	for peer in _connected_members():
 		if not caps.get(peer, {}).get("legacy", false):
 			_send(peer, Wire.PARTY, payload)
@@ -736,19 +894,36 @@ func party_games() -> Dictionary:
 			list[id] = e
 		return list
 	for id in Registry.ids():
-		list[id] = Registry.public_entry(id)
+		list[id] = _party_game_entry(id)
 	return list
+
+func _party_game_entry(id: String) -> Dictionary:
+	var entry := Registry.public_entry(id)
+	if id != game: return entry
+	var active := _bot_mask()
+	for member in members:
+		var peer: int = member.peer
+		var compatible := Registry.compatible(caps[peer].games, game, entry) if caps.has(peer) else Registry.is_builtin(game)
+		if peer == 1 or compatible:
+			active |= 1 << int(member.slot)
+	if active != ALL_BOTS:
+		entry["requires_optional_seats"] = true
+	return entry
 
 ## Host: where a member is with the current game: {"state", "progress"}.
 func member_state(peer: int) -> Dictionary:
 	if peer == 1 or mode != "host":
 		return {"state": "ready", "progress": 100}
+	var host_entry := _party_game_entry(game)
+	# Older cores require a full line-up even if the snapshot shape matches.
+	if host_entry.get("requires_optional_seats", false) and not caps.get(peer, {}).get("optional_seats", false):
+		if not caps.has(peer): return {"state": "joining", "progress": 0}
+		return {"state": "needs_update", "progress": 0}
 	if not caps.has(peer):
 		# Every build since 0.2.0 plays the built-in games at net 1, so they
 		# need no capabilities; anything else waits for them.
 		if Registry.is_builtin(game): return {"state": "ready", "progress": 100}
 		return {"state": "joining", "progress": 0}
-	var host_entry := Registry.public_entry(game)
 	if Registry.compatible(caps[peer].games, game, host_entry):
 		return {"state": "ready", "progress": 100}
 	if caps[peer].get("legacy", false):

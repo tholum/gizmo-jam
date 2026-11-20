@@ -1,6 +1,6 @@
 extends SceneTree
 ## Loads a built PCK through the real core, then exercises its menu, controls
-## and results. Run from a core-only build-6 project to verify pack isolation.
+## and results. Run from a core-only build-10 project to verify pack isolation.
 
 const Registry = preload("res://scripts/game_registry.gd")
 const PackCore = preload("res://scripts/pack_core.gd")
@@ -36,7 +36,7 @@ func _run() -> void:
 		elif arg.begins_with("--capture-dir="):
 			_capture_dir = arg.trim_prefix("--capture-dir=")
 	if path.is_empty():
-		printerr("Pass --pack=/absolute/path/to/orb_racing-1.0.0.pck after --")
+		printerr("Pass --pack=/absolute/path/to/orb_racing-1.1.0.pck after --")
 		quit(1)
 		return
 
@@ -60,7 +60,7 @@ func _run() -> void:
 		quit(1)
 		return
 	var entry := Registry.entry("orb_racing")
-	_check(entry.core_min == 6 and entry.net == 1 and entry.version == "1.0.0" and entry.info.number == "05",
+	_check(entry.core_min == 10 and entry.net == 1 and entry.version == "1.1.0" and entry.optional_seats and entry.info.number == "05",
 		"Registry shows the requested pack metadata")
 	_main._add_game("orb_racing")
 	_main._select_game("orb_racing")

@@ -15,6 +15,7 @@ func _initialize() -> void:
 	_charge_and_rails()
 	_finish_and_timeout()
 	_takeover()
+	_vacant_grid()
 	_digital_race()
 	_seeded_races()
 	print("ORB_RACE %s: %d checks, %d failures, max snapshot %d bytes" %
@@ -40,6 +41,28 @@ func _new_race(bots: bool = false, seed_value: int = 123) -> RefCounted:
 	var race := Model.new()
 	race.begin(seed_value, _slots(bots), 31)
 	return race
+
+
+func _vacant_grid() -> void:
+	var seats := _slots(true)
+	for i in Model.SEATS:
+		seats[i]["active"] = i == 2
+	var race := Model.new()
+	race.begin(123, seats, 31)
+	var guest := Model.new()
+	guest.begin(123, seats, 31)
+	var vacant_spawn: Vector2 = race.players[0].pos
+	_check(race.players[2].pos == race.track.grid(2, Model.SEATS), "A lone racer starts on the matching painted grid marker")
+	race.step(Model.COUNTDOWN + 2.0)
+	_check(race.players[2].started and race.players[0].pos == vacant_spawn, "Only the active racer moves and crosses gates")
+	var snapshot := race.snapshot()
+	guest.apply_snapshot(snapshot)
+	_check(snapshot.cars.size() == Model.SEATS * Model.ROW_SIZE and guest.ranking() == [2] and guest.winners().is_empty(),
+		"Vacancies keep their network rows and are excluded from the results")
+	race.step(Model.ROUND_TIME)
+	guest.apply_snapshot(race.snapshot())
+	_check(guest.winners() == [2] and guest.elapsed == guest.players[2].finish,
+		"The lone racer gets results immediately after finishing")
 
 
 func _place(race: RefCounted, slot: int, pos: Vector2, velocity: Vector2 = Vector2.ZERO) -> void:
