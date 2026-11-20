@@ -1,0 +1,16 @@
+{
+  "id": "freezer_door",
+  "version": "1.0.0",
+  "optional_seats": true,
+  "net": 1,
+  "core_min": 14,
+  "actions": ["up", "down", "left", "right", "hold"],
+  "input_budget": 240,
+  "info": {
+    "number": "13",
+    "title": "FREEZER DOOR",
+    "tags": "TIMING  ·  SCORE ATTACK",
+    "blurb": "Hold a drawer open. Release in the stripe for +2.\nOpen drawers warm their neighbors.",
+    "voice": ""
+  }
+}

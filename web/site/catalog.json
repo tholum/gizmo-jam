@@ -239,6 +239,25 @@
         },
         "alt": "Six numbered players race between colorful domino rows and diamond bridge markers on a wooden workbench."
       }
+    },
+    {
+      "id": "freezer-door",
+      "name": "Freezer Door",
+      "caption": "Open a drawer and time your release for double points.",
+      "description": "Hold a freezer drawer open to warm a treat, then release when the solid needle reaches the striped band for two points. Every open drawer also heats its neighbors. Take up to two treats before each restock. Most points after eight restocks wins.",
+      "controls": "`W``A``S``D` or the arrow keys to select a drawer. Hold `Space` to open it and release to collect. On a controller, use the left stick or D-pad to select and hold A to open.",
+      "touchControls": "drag your left thumb to select a drawer. Hold your right thumb down to open it, then lift to collect.",
+      "desktopLibrary": true,
+      "screenshot": {
+        "file": "img/freezer-door.webp",
+        "width": 1280,
+        "height": 800,
+        "sources": {
+          "320": "img/freezer-door-320.webp",
+          "640": "img/freezer-door-640.webp"
+        },
+        "alt": "Six numbered players open drawers in a frosted cabinet. Striped temperature bands and arrows between drawers show which treats are warming."
+      }
     }
   ],
   "extraScreenshots": [
