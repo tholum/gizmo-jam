@@ -1,6 +1,6 @@
 {
   "id": "wobble_workshop",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "optional_seats": true,
   "net": 1,
   "core_min": 18,

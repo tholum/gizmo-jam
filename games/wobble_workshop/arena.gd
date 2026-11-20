@@ -585,10 +585,15 @@ func _draw_bench() -> void:
 		if mine:
 			_art.draw_rect(box.grow(-3), CREAM, false, 2)
 		var name := _joint_name(joint)
-		var caption := name + "   " + _force(data.force)
+		var heading := box.get_center() - Vector2(0, 5)
 		if data.owner >= 0:
-			caption = name + "  ✓"
-		_text(caption, box.get_center() - Vector2(0, 5), 21, CREAM)
+			_text(name, heading - Vector2(9, 0), 21, CREAM)
+			var check_at := heading + Vector2(10, 0)
+			_art.draw_polyline(PackedVector2Array([
+				check_at + Vector2(-5, 0), check_at + Vector2(-1, 4), check_at + Vector2(6, -5),
+			]), MINT, 2.5, true)
+		else:
+			_text(name + "   " + _force(data.force), heading, 21, CREAM)
 		var cursors: Array[int] = []
 		for p in _state.players:
 			if p.active and joint in _state.options(p.slot) and _selected(p.slot) == joint:
