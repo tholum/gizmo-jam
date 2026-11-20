@@ -3,8 +3,8 @@ config_version=5
 
 [application]
 config/name="Gizmo Jam"
-config/version="0.3.13"
-config/build=16
+config/version="0.3.14"
+config/build=17
 run/main_scene="res://scenes/main.tscn"
 config/features=PackedStringArray("4.5", "GL Compatibility")
 config/icon="res://assets/icon.svg"

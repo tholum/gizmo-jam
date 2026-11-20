@@ -1,0 +1,16 @@
+{
+  "id": "hat_clause",
+  "version": "1.0.0",
+  "optional_seats": true,
+  "net": 1,
+  "core_min": 16,
+  "actions": ["up", "down", "left", "right", "tap"],
+  "input_budget": 240,
+  "info": {
+    "number": "15",
+    "title": "HAT CLAUSE",
+    "tags": "HAT SWAPS  ·  SCORE ATTACK",
+    "blurb": "Offer a swap. Your first trade each bell pays 1 point.\nMatch your hat to your ticket at the bell for 2 points.",
+    "voice": ""
+  }
+}

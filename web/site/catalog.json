@@ -277,6 +277,25 @@
         },
         "alt": "Numbered toy floats pull the parade engine toward star and diamond arches. The tug tally shows which arch is ahead."
       }
+    },
+    {
+      "id": "hat-clause",
+      "name": "Hat Clause",
+      "caption": "Swap hats and match your ticket before the bell.",
+      "description": "Walk up to a player with a different hat and tap to offer a swap. If they tap back, you trade. Your first swap each bell earns one point, and wearing the hat on your ticket earns two more. Make a deal or get fitted at the reserve counter before time runs out.",
+      "controls": "`W``A``S``D` or the arrow keys to move. Press `Space` to offer, cancel, or start a fitting at your counter spot. On a controller, move with the left stick or D-pad and press A to act.",
+      "touchControls": "drag your left thumb to move, then tap the right half to offer a trade or get fitted.",
+      "desktopLibrary": true,
+      "screenshot": {
+        "file": "img/hat-clause.webp",
+        "width": 1280,
+        "height": 800,
+        "sources": {
+          "320": "img/hat-clause-320.webp",
+          "640": "img/hat-clause-640.webp"
+        },
+        "alt": "Numbered players wear different hats and signal trades in front of the reserve hatcheck counter."
+      }
     }
   ],
   "extraScreenshots": [
