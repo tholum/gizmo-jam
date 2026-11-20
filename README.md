@@ -32,6 +32,9 @@ console party minigames. Play on desktop, Android, or the web.
 - **09 Popcorn Catch** — steer your bowl under growing shadows to catch falling
   popcorn. Bank at any rim shelf or stay for a bigger deposit and risk a spill.
   Most points banked in 90 seconds wins.
+- **10 Knockdown Carnival** — line up a foam puck and knock down hinged targets.
+  Bank shots reach a shared shelf, where one hit can take down a whole chain.
+  Most targets knocked down in 90 seconds wins.
 
 ## Play
 
@@ -79,6 +82,9 @@ Keyboard or gamepad on computers, touch on phones and tablets. In every game
   Tow cargo into your numbered harbor and tap the action again to deliver it.
 - **Popcorn Catch:** **WASD**, **arrows**, the **left stick**, or the **d-pad**
   to steer. Catch popcorn automatically and cross a shelf to bank it.
+- **Knockdown Carnival:** **A / D**, **Left / Right**, the **left stick**, or the
+  **d-pad** to choose a shot line. Press **Space / Up** or **A** on a controller
+  to launch your puck.
 
 #### Several players on one screen
 
@@ -113,6 +119,8 @@ Computers, including touchscreen laptops, keep the keyboard layout unchanged.
   thumb and follows it past the rim. **Tap the right half** to use your game's
   action.
 - **Popcorn Catch:** drag on either half of the screen to steer the bowl.
+- **Knockdown Carnival:** drag left or right with your **left thumb** to aim
+  and tap the **right half** to flick the puck.
 - **MENU** (top right) pauses, with any finger.
 - **Notches:** on a phone with a camera cut-out, the interface stays clear of
   it; the 3D scene still fills the screen.

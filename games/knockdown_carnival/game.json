@@ -1,0 +1,16 @@
+{
+  "id": "knockdown_carnival",
+  "version": "1.0.0",
+  "optional_seats": true,
+  "net": 1,
+  "core_min": 11,
+  "actions": ["left", "right", "flick"],
+  "input_budget": 90,
+  "info": {
+    "number": "10",
+    "title": "KNOCKDOWN CARNIVAL",
+    "tags": "TARGET GALLERY  ·  TRICK SHOTS",
+    "blurb": "Flick foam pucks at hinged targets.\nBank off the rails to fell a whole shelf.",
+    "voice": ""
+  }
+}

@@ -182,6 +182,25 @@
         },
         "alt": "Six numbered bowls chase falling popcorn and glowing landing marks inside a brass-rimmed cabinet."
       }
+    },
+    {
+      "id": "knockdown-carnival",
+      "name": "Knockdown Carnival",
+      "caption": "Bank foam pucks to topple a chain of targets.",
+      "description": "Choose a shot line and flick a puck at your targets or bank it into the shared relay shelf. Follow its arrows to topple two or three targets in one shot. Most targets knocked down in 90 seconds wins.",
+      "controls": "`A` and `D` or `Left` and `Right` to aim. Press `Space` or `Up` to flick. On a controller, use the left stick or D-pad to aim and A to flick.",
+      "touchControls": "drag your left thumb left or right to aim, then tap the right half to flick.",
+      "desktopLibrary": true,
+      "screenshot": {
+        "file": "img/knockdown-carnival.webp",
+        "width": 1280,
+        "height": 800,
+        "sources": {
+          "320": "img/knockdown-carnival-320.webp",
+          "640": "img/knockdown-carnival-640.webp"
+        },
+        "alt": "Six colorful foam-puck launchers face hinged targets and a shared relay shelf in a plum carnival cabinet."
+      }
     }
   ],
   "extraScreenshots": [
