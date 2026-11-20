@@ -36,6 +36,8 @@ parser.add_argument("--godot", default=os.environ.get("GODOT", str(ROOT / ".tool
 args = parser.parse_args()
 base = [args.godot, "--headless", "--path", str(ROOT)]
 
+subprocess.run([sys.executable, str(ROOT / "tests/test_play_publish.py")], check=True)
+
 def verify(result):
     print(result.stdout)
     if result.returncode or "SCRIPT ERROR" in result.stdout or "ERROR:" in result.stdout:

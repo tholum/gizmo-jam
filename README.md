@@ -744,8 +744,7 @@ To cut a release:
 2. Publish the browser build first (see **Game packs** below):
    `python3 tools/release_games.py --web --publish`. New hosts look for it in
    the catalog as soon as they update, and the website plays it. The same
-   command then builds the Android app and releases it on Google Play (see
-   **Android** below).
+   command also builds the Android app locally (see **Android** below).
 3. Dry run: `python3 tools/release.py --godot <godot> --notes "What's new"`.
    It builds all three platforms with `tools/build.py`, writes and signs the
    manifest under `builds/release/<version>/`, checks the live manifest and the
@@ -891,12 +890,27 @@ publish a content-only edit or retry a failed website update.
 
 ### Android (Google Play)
 
-There is no separate step. After every catalog it publishes, `release_games.py
---publish` builds the Android app and releases it on Google Play. That covers
-the core release's `--web` step as well as each new game, so phones get both
-with no extra command (`--no-android` skips it). If the Android part fails, the
-catalog stays live, and the script prints the command to retry:
-`python3 tools/play_publish.py --serial <n>`.
+`release_games.py --publish` prepares the Android bundle locally after a
+catalog release. Desktop and web releases can ship while Google reviews
+Android changes. `--no-android` skips the local Android build.
+
+Immediately before any Google Play submission, check Gizmo Jam’s
+**Publishing overview** in Play Console. If any app change is **In review**,
+keep the new build or listing changes ready locally and wait for the review
+to clear. This applies to releases, track promotions, and store listing edits.
+`play_publish.py --check` reports track rollout status. Use the Console for
+review status.
+
+Once the Console shows no changes in review, submit all intended tracks in
+one edit. For the usual Internal testing, Beta, and Production rollout:
+
+```sh
+python3 tools/play_publish.py --skip-build --review-clear \
+  --track internal --track beta --track production
+```
+
+Use the newest tested bundle so queued releases can reach Play in a single
+submission. `--review-clear` confirms the Console check for this submission.
 
 - **The app carries every game.** `tools/build.py --android` bundles exactly
   the games in the live signed catalog and refuses one whose `game.json`
@@ -911,10 +925,8 @@ catalog stays live, and the script prints the command to retry:
 - **Output:** `builds/android/GizmoJam-<version>.aab` for Play (with a `.json`
   beside it recording the version code, bundled games and SHA-256), and a
   `.apk` signed the same way for sideloading.
-- **Track:** `TRACK` in `tools/play_publish.py`, currently `internal`. Set it
-  to `production` once the phone controls are done.
-  `python3 tools/play_publish.py --check` shows every track without changing
-  anything.
+- **Track:** `tools/play_publish.py` defaults to Internal testing. Use
+  `--track` for each track included in the same submission.
 - **Hardware:** `build.py` marks landscape and Wi-Fi optional in the Gradle
   template's manifest on every build, and fails if the app requires either:
   Play will not send such a release for review.

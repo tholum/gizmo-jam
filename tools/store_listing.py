@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Publish the Google Play store listing: text, icon, feature graphic, screenshots.
 
-    tools/store_listing.py --capture     re-take the screenshots from the game first
-    tools/store_listing.py               upload builds/store/ and the text below
+    tools/store_listing.py --review-clear --capture  re-take and publish after verifying no active review
+    tools/store_listing.py --review-clear            publish builds/store/ and the text below
     tools/store_listing.py --dry-run     show what would change, upload nothing
 
 Screenshots come from tools/store_shots.gd: the real game in phone mode
@@ -87,7 +87,9 @@ def upload_image(edit, image_type, path):
         raise PlayError(f"{image_type} upload: HTTP {status} {body.get('error', {}).get('message', '')}")
 
 
-def publish(dry_run=False):
+def publish(dry_run=False, *, review_clear=False):
+    if not dry_run:
+        play_publish.require_review_clear(review_clear)
     images = {"icon": [STORE / "icon-512.png"], "featureGraphic": [STORE / "feature-1024x500.png"],
               "phoneScreenshots": [SHOTS / name for name in SCREENSHOTS]}
     # Tablets show the same landscape game.
@@ -103,7 +105,7 @@ def publish(dry_run=False):
     if dry_run:
         print("Dry run: nothing uploaded.")
         return
-    with Edit(play_publish.access_token()) as edit:
+    with Edit(play_publish.access_token(), review_clear=review_clear) as edit:
         details = edit.call("GET", f"/edits/{edit.id}/details")
         wanted = {"defaultLanguage": LANGUAGE, "contactWebsite": WEBSITE,
                   "contactEmail": details.get("contactEmail") or EMAIL}
@@ -123,14 +125,18 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--capture", action="store_true", help="re-take the screenshots and redraw the art first")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--review-clear", action="store_true",
+                        help="attest that Play Console shows no changes in review for Gizmo Jam")
     args = parser.parse_args(argv)
-    STORE.mkdir(parents=True, exist_ok=True)
-    if args.capture:
-        capture()
-    if args.capture or not (STORE / "feature-1024x500.png").exists():
-        make_art()
     try:
-        publish(args.dry_run)
+        if not args.dry_run:
+            play_publish.require_review_clear(args.review_clear)
+        STORE.mkdir(parents=True, exist_ok=True)
+        if args.capture:
+            capture()
+        if args.capture or not (STORE / "feature-1024x500.png").exists():
+            make_art()
+        publish(args.dry_run, review_clear=args.review_clear)
     except PlayError as error:
         raise SystemExit(f"Google Play: {error}")
 

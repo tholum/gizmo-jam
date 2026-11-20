@@ -278,9 +278,11 @@ and the privacy policy at <https://timholum.com/games/gizmo-jam/privacy/>
 describes what the game sends. **Every store build must keep these answers
 true.** A change that would make one false is blocked until the declaration,
 the privacy policy and this section are updated first, before that build
-ships. Releases go to Play automatically (`release_games.py --publish`), so
-nobody gets a second look at a build before it ships: this section is the
-check.
+ships. `release_games.py --publish` prepares the Android bundle locally.
+Before submitting a release, promotion, or store listing change, check
+Gizmo Jam’s Publishing overview in Play Console and wait if any change is
+in review. The [release steps](../../README.md#android-google-play) cover
+submitting the intended tracks in one edit.
 
 ### 13.1 Content rating answers
 

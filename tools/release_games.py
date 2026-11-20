@@ -30,18 +30,17 @@ example game) are refused.
 
 Signing reuses tools/release.py: the same key, envelope and trusted keys.
 
-After the catalog is live, --publish refreshes the website catalog on stable.
-It also builds the Android app with every published game built in and releases
-it on Google Play (tools/play_publish.py),
-so both a core release and a new game reach phones with no extra step.
---no-android skips that. An Android failure never undoes the catalog: the
-script says so and how to retry.
+After the catalog is live, --publish refreshes the website catalog on stable
+and builds the Android app with every published game built in. Google Play
+submission is a separate step in tools/play_publish.py after verifying there
+are no changes in review in Play Console. --no-android skips the local build.
 """
 import argparse
 import gzip
 import hashlib
 import json
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import urllib.error
@@ -149,7 +148,7 @@ def main(argv=None):
     parser.add_argument("--key", default=str(release.DEFAULT_KEY), help="private signing key (default %(default)s)")
     parser.add_argument("--godot", help="Godot binary passed to tools/build.py")
     parser.add_argument("--skip-build", action="store_true", help="reuse packs already in builds/packs/")
-    parser.add_argument("--no-android", action="store_true", help="do not build and publish the Android app afterwards")
+    parser.add_argument("--no-android", action="store_true", help="skip preparing the Android bundle locally afterwards")
     parser.add_argument("--notes", default="", help="release notes for Google Play (max 500 characters)")
     args = parser.parse_args(argv)
     if not args.game and not args.remove and not args.web:
@@ -246,8 +245,7 @@ def main(argv=None):
     if args.channel == "stable":
         print(f"{'THEN' if args.publish else 'would then'}  refresh the public website catalog")
     if not args.no_android:
-        import play_publish
-        print(f"{'THEN' if args.publish else 'would then'}  build the Android app with serial {catalog['serial']} and release it to Google Play ({play_publish.TRACK})")
+        print(f"{'THEN' if args.publish else 'would then'}  prepare the Android bundle with serial {catalog['serial']} locally")
     if not args.publish:
         print("Dry run: nothing uploaded. Re-run with --publish to upload.")
         return
@@ -281,24 +279,27 @@ def main(argv=None):
             website_error = error
             print(error, file=sys.stderr)
     if not args.no_android:
-        publish_android(catalog["serial"], args.godot, args.notes)
+        prepare_android(catalog["serial"], args.godot, args.notes)
     if website_error:
         raise SystemExit(1)
 
 
-def publish_android(serial, godot=None, notes=""):
-    """Phones get the new catalog's games: build the app and release it."""
-    import play_publish
-    retry = f"python3 tools/play_publish.py --serial {serial}"
+def prepare_android(serial, godot=None, notes=""):
+    """Build the Android bundle and leave submission to the review check."""
+    command = [sys.executable, str(ROOT / "tools/build.py"), "--android", "--serial", str(serial)]
+    if godot:
+        command += ["--godot", godot]
     try:
-        command = [sys.executable, str(ROOT / "tools/build.py"), "--android", "--serial", str(serial)]
-        if godot:
-            command += ["--godot", godot]
         subprocess.run(command, check=True)
-        aab, meta = play_publish.built_bundle()
-        play_publish.publish(aab, int(meta["version_code"]), meta["version"], notes=notes)
-    except (subprocess.CalledProcessError, play_publish.PlayError) as error:
-        raise SystemExit(f"Catalog serial {serial} is live, but the Android app was NOT published: {error}\nRetry with: {retry}")
+    except subprocess.CalledProcessError as error:
+        raise SystemExit(f"Catalog serial {serial} is live. Android bundle build failed: {error}\n"
+                         f"Retry with: {shlex.join(command)}")
+    submit = ["python3", "tools/play_publish.py", "--skip-build", "--review-clear",
+              "--track", "internal", "--track", "beta", "--track", "production"]
+    if notes:
+        submit += ["--notes", notes]
+    print("Android bundle ready. Submit only after Play Console → Publishing overview shows no changes in review:")
+    print(shlex.join(submit))
 
 
 if __name__ == "__main__":

@@ -2,14 +2,12 @@
 """Build the Android app and publish it to Google Play.
 
     tools/play_publish.py --check             read-only: can we reach the app on Play?
-    tools/play_publish.py                     build (tools/build.py --android) and upload
-    tools/play_publish.py --skip-build        upload the .aab already in builds/android/
-    tools/play_publish.py --track production  choose the track (default: TRACK below)
+    tools/play_publish.py --review-clear --skip-build --track internal --track beta --track production
 
-tools/release_games.py --publish runs this after every catalog it publishes,
-which covers both kinds of release: a core release publishes the web build
-through it first, and a game release publishes the pack. A failure here never
-undoes the desktop or web release; re-run this script to retry.
+Release multiple tracks in one edit. Before running a publish or promotion,
+check Publishing overview in Play Console for this app. Wait if any change is
+in review. The track API does not report submission review status.
+tools/release_games.py --publish prepares the Android bundle locally.
 
 Credentials: a Google Cloud service account with the Play Developer API,
 invited in Play Console with release permissions on the app. Its JSON key is
@@ -45,6 +43,14 @@ UPLOAD = f"https://androidpublisher.googleapis.com/upload/androidpublisher/v3/ap
 
 class PlayError(Exception):
     pass
+
+
+def require_review_clear(review_clear):
+    if not review_clear:
+        raise PlayError(
+            "Check Play Console → Publishing overview. If any change is in review, wait. "
+            "Pass --review-clear only after verifying that no changes are in review."
+        )
 
 
 def _b64(data):
@@ -91,9 +97,10 @@ def _request(method, url, data=None, headers=None, timeout=60):
 class Edit:
     """One Play "edit": changes made inside it take effect only on commit."""
 
-    def __init__(self, token):
+    def __init__(self, token, *, review_clear=False):
         self.token = token
         self.id = None
+        self.review_clear = review_clear
 
     def call(self, method, path, payload=None, timeout=60):
         headers = {"Authorization": "Bearer " + self.token}
@@ -137,6 +144,7 @@ class Edit:
         self.call("PUT", f"/edits/{self.id}/tracks/{track}", {"track": track, "releases": [release]})
 
     def commit(self):
+        require_review_clear(self.review_clear)
         self.call("POST", f"/edits/{self.id}:commit")
         self.id = None
 
@@ -155,19 +163,21 @@ def check():
                 print(f"  {track['track']}: empty")
 
 
-def publish(aab, code, name, track=TRACK, notes="", upload=True):
-    """Uploads `aab` and releases it to `track` (to every user of that track).
+def publish(aab, code, name, tracks=(TRACK,), notes="", upload=True, *, review_clear=False):
+    """Upload `aab` once and commit all selected tracks in one edit.
     With upload=False, releases a build Play already has (promotion). Falls
     back to a draft while the track has never been rolled out."""
+    require_review_clear(review_clear)
     token = access_token()
     for status in ("completed", "draft"):
         try:
-            with Edit(token) as edit:
+            with Edit(token, review_clear=review_clear) as edit:
                 if upload:
                     uploaded = edit.upload_bundle(aab)
                     if uploaded != code:
                         raise PlayError(f"Play read version code {uploaded} from the bundle, expected {code}")
-                edit.set_track(track, code, name, status, notes)
+                for track in tracks:
+                    edit.set_track(track, code, name, status, notes)
                 edit.commit()
             break
         except PlayError as error:
@@ -176,11 +186,11 @@ def publish(aab, code, name, track=TRACK, notes="", upload=True):
                 continue
             raise
     if status == "draft":
-        where = "Release > Production" if track == "production" else f"Testing > {track.capitalize()} testing"
-        print(f"Uploaded {name} (code {code}) to {track} as a DRAFT. Publish it once in Play Console: "
-              f"{where} > Review and roll out (Send for review). Later releases go out on their own.")
+        print(f"Uploaded {name} (code {code}) to {', '.join(tracks)} as a DRAFT. "
+              "Review and roll out in Play Console after checking for active reviews.")
     else:
-        print(f"Released {name} (code {code}) to the {track} track. Google reviews it, then it goes out on its own.")
+        print(f"Submitted {name} (code {code}) for {', '.join(tracks)} in one Google Play edit. "
+              "Check Publishing overview for review and rollout status.")
     return status
 
 
@@ -202,7 +212,10 @@ def built_bundle():
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--check", action="store_true", help="read-only access check, changes nothing")
-    parser.add_argument("--track", default=TRACK, choices=["internal", "alpha", "beta", "production"])
+    parser.add_argument("--track", action="append", choices=["internal", "alpha", "beta", "production"],
+                        help=f"release track (repeat to submit all tracks in one edit, default: {TRACK})")
+    parser.add_argument("--review-clear", action="store_true",
+                        help="attest that Play Console shows no changes in review for Gizmo Jam")
     parser.add_argument("--skip-build", action="store_true", help="upload the .aab already built")
     parser.add_argument("--promote", action="store_true",
                         help="put the build already uploaded for this version on --track, without uploading again")
@@ -215,9 +228,12 @@ def main(argv=None):
         if args.check:
             check()
             return
+        require_review_clear(args.review_clear)
+        tracks = tuple(dict.fromkeys(args.track or [TRACK]))
         if args.promote:
             aab, meta = built_bundle()
-            publish(aab, int(meta["version_code"]), meta["version"], args.track, args.notes, upload=False)
+            publish(aab, int(meta["version_code"]), meta["version"], tracks, args.notes,
+                    upload=False, review_clear=args.review_clear)
             return
         if not args.skip_build:
             command = [sys.executable, str(ROOT / "tools/build.py"), "--android"]
@@ -229,7 +245,8 @@ def main(argv=None):
                 command += ["--android-revision", str(args.android_revision)]
             subprocess.run(command, check=True)
         aab, meta = built_bundle()
-        publish(aab, int(meta["version_code"]), meta["version"], args.track, args.notes)
+        publish(aab, int(meta["version_code"]), meta["version"], tracks, args.notes,
+                review_clear=args.review_clear)
     except PlayError as error:
         raise SystemExit(f"Google Play: {error}")
 
