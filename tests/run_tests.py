@@ -63,6 +63,7 @@ for game_test in (
     "bandwagon/tests/rules_test.gd",
     "hat_clause/tests/rules_test.gd",
     "gap_band/tests/rules_test.gd",
+    "wobble_workshop/tests/rules_test.gd",
 ):
     verify(subprocess.run(base + ["--script", "res://games/" + game_test], text=True,
                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60))

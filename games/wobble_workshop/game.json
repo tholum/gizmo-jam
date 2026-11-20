@@ -1,0 +1,16 @@
+{
+  "id": "wobble_workshop",
+  "version": "1.0.0",
+  "optional_seats": true,
+  "net": 1,
+  "core_min": 18,
+  "actions": ["j0", "j1", "j2", "j3", "j4", "j5", "j6", "j7", "j8", "j9", "r1", "r2", "r3", "r4", "r5", "cancel"],
+  "input_budget": 600,
+  "info": {
+    "number": "17",
+    "title": "WOBBLE WORKSHOP",
+    "tags": "SPRING TOY  ·  BALANCE",
+    "blurb": "Hold to wind a joint, then release in the stripes. Latch for 1 point and earn 1 more if the toy stays upright.",
+    "voice": ""
+  }
+}

@@ -315,6 +315,25 @@
         },
         "alt": "A drum machine plays numbered player notes across seven slots, including a striped muted collision and a highlighted accent."
       }
+    },
+    {
+      "id": "wobble-workshop",
+      "name": "Wobble Workshop",
+      "caption": "Latch the toy’s joints and keep it upright.",
+      "description": "Wind a joint and release in the striped band to latch it for a point. Then pick one shared joint. Every latch changes the toy’s balance, and the ghost needle previews your effect. If the toy stands at the bell, everyone who latched a joint earns a bonus.",
+      "controls": "`A` and `D` or `Left` and `Right` to select a joint. Hold `Space` to wind and release to latch. On a controller, choose with the stick or D-pad and hold A to wind.",
+      "touchControls": "tap a joint to choose it. Hold Sweep, then lift your thumb in the striped band to latch.",
+      "desktopLibrary": true,
+      "screenshot": {
+        "file": "img/wobble-workshop.webp",
+        "width": 1280,
+        "height": 800,
+        "sources": {
+          "320": "img/wobble-workshop-320.webp",
+          "640": "img/wobble-workshop-640.webp"
+        },
+        "alt": "A spring-mounted toy automaton leans on a workshop bench, with numbered joints and a shared balance gauge."
+      }
     }
   ],
   "extraScreenshots": [
