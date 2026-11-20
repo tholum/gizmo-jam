@@ -201,6 +201,25 @@
         },
         "alt": "Six colorful foam-puck launchers face hinged targets and a shared relay shelf in a plum carnival cabinet."
       }
+    },
+    {
+      "id": "sky-stack",
+      "name": "Sky Stack",
+      "caption": "Draft toy blocks and build the tallest tower.",
+      "description": "Request a block from the shared carousel, then choose a supported stud to place it. Compete for tall molds or use a wide foundation to open more landing spots later. The tallest tower after six waves wins.",
+      "controls": "`A` and `D` or `Left` and `Right` to choose a block or stud. Press `Space` to confirm. On a controller, use the left stick or D-pad and press A to confirm.",
+      "touchControls": "drag your left thumb left or right to select, then tap the right half to confirm.",
+      "desktopLibrary": true,
+      "screenshot": {
+        "file": "img/sky-stack.webp",
+        "width": 1280,
+        "height": 800,
+        "sources": {
+          "320": "img/sky-stack-320.webp",
+          "640": "img/sky-stack-640.webp"
+        },
+        "alt": "Six colorful toy towers in workshop bays, with outline previews showing where the next blocks fit."
+      }
     }
   ],
   "extraScreenshots": [

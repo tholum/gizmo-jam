@@ -1,0 +1,16 @@
+{
+  "id": "sky_stack",
+  "version": "1.0.0",
+  "optional_seats": true,
+  "net": 1,
+  "core_min": 12,
+  "actions": ["left", "right", "confirm"],
+  "input_budget": 60,
+  "info": {
+    "number": "11",
+    "title": "SKY STACK",
+    "tags": "BUILDING  ·  DRAFT",
+    "blurb": "Draft toy blocks and build the tallest tower.\nGo tall now or make room for what comes next.",
+    "voice": ""
+  }
+}

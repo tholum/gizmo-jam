@@ -35,6 +35,9 @@ console party minigames. Play on desktop, Android, or the web.
 - **10 Knockdown Carnival** — line up a foam puck and knock down hinged targets.
   Bank shots reach a shared shelf, where one hit can take down a whole chain.
   Most targets knocked down in 90 seconds wins.
+- **11 Sky Stack** — draft toy blocks from a carousel and place them on
+  supported studs. Build a base for future pieces or pick a tall block to
+  take the lead. The tallest tower after six waves wins.
 
 ## Play
 
@@ -85,6 +88,9 @@ Keyboard or gamepad on computers, touch on phones and tablets. In every game
 - **Knockdown Carnival:** **A / D**, **Left / Right**, the **left stick**, or the
   **d-pad** to choose a shot line. Press **Space / Up** or **A** on a controller
   to launch your puck.
+- **Sky Stack:** **A / D**, **Left / Right**, the **left stick**, or the
+  **d-pad** to choose a block or a stud. Press **Space** or **A** on a
+  controller to confirm.
 
 #### Several players on one screen
 
@@ -121,6 +127,8 @@ Computers, including touchscreen laptops, keep the keyboard layout unchanged.
 - **Popcorn Catch:** drag on either half of the screen to steer the bowl.
 - **Knockdown Carnival:** drag left or right with your **left thumb** to aim
   and tap the **right half** to flick the puck.
+- **Sky Stack:** drag left or right with your **left thumb** to choose a block
+  or a stud. Tap the **right half** to confirm.
 - **MENU** (top right) pauses, with any finger.
 - **Notches:** on a phone with a camera cut-out, the interface stays clear of
   it; the 3D scene still fills the screen.
