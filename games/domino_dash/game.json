@@ -1,0 +1,16 @@
+{
+  "id": "domino_dash",
+  "version": "1.0.0",
+  "optional_seats": true,
+  "net": 1,
+  "core_min": 13,
+  "actions": ["up", "down", "left", "right", "topple"],
+  "input_budget": 240,
+  "info": {
+    "number": "12",
+    "title": "DOMINO DASH",
+    "tags": "ACTION  ·  SCORE ATTACK",
+    "blurb": "Tip your numbered starter.\nRace rivals to the green bridge diamonds.",
+    "voice": ""
+  }
+}

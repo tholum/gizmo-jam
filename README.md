@@ -38,6 +38,9 @@ console party minigames. Play on desktop, Android, or the web.
 - **11 Sky Stack** — draft toy blocks from a carousel and place them on
   supported studs. Build a base for future pieces or pick a tall block to
   take the lead. The tallest tower after six waves wins.
+- **12 Domino Dash** — topple your starter row, then race to a shared bridge.
+  Tap when the diamond lines up to claim the chain. Most dominoes toppled
+  after six waves wins.
 
 ## Play
 
@@ -91,6 +94,8 @@ Keyboard or gamepad on computers, touch on phones and tablets. In every game
 - **Sky Stack:** **A / D**, **Left / Right**, the **left stick**, or the
   **d-pad** to choose a block or a stud. Press **Space** or **A** on a
   controller to confirm.
+- **Domino Dash:** **WASD**, **arrows**, the **left stick**, or the **d-pad**
+  to move. Press **Space** or **A** on a controller to topple.
 
 #### Several players on one screen
 
@@ -129,6 +134,8 @@ Computers, including touchscreen laptops, keep the keyboard layout unchanged.
   and tap the **right half** to flick the puck.
 - **Sky Stack:** drag left or right with your **left thumb** to choose a block
   or a stud. Tap the **right half** to confirm.
+- **Domino Dash:** drag your **left thumb** to move. Tap the **right half** to
+  topple a row when you’re in range.
 - **MENU** (top right) pauses, with any finger.
 - **Notches:** on a phone with a camera cut-out, the interface stays clear of
   it; the 3D scene still fills the screen.

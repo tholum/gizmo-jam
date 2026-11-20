@@ -220,6 +220,25 @@
         },
         "alt": "Six colorful toy towers in workshop bays, with outline previews showing where the next blocks fit."
       }
+    },
+    {
+      "id": "domino-dash",
+      "name": "Domino Dash",
+      "caption": "Race rivals to the bridge and topple the chain.",
+      "description": "Topple your numbered starter, then race to a shared bridge. Tap when the diamond lines up to claim the row before rivals. Each fallen domino scores a point. The most points after six waves wins.",
+      "controls": "`W``A``S``D` or the arrow keys to move. Press `Space` to topple. On a controller, use the left stick or D-pad and press A to topple.",
+      "touchControls": "drag your left thumb to move, then tap the right half to topple when you’re in range.",
+      "desktopLibrary": true,
+      "screenshot": {
+        "file": "img/domino-dash.webp",
+        "width": 1280,
+        "height": 800,
+        "sources": {
+          "320": "img/domino-dash-320.webp",
+          "640": "img/domino-dash-640.webp"
+        },
+        "alt": "Six numbered players race between colorful domino rows and diamond bridge markers on a wooden workbench."
+      }
     }
   ],
   "extraScreenshots": [
