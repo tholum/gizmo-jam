@@ -1,0 +1,16 @@
+{
+  "id": "gap_band",
+  "version": "1.0.0",
+  "optional_seats": true,
+  "net": 1,
+  "core_min": 17,
+  "actions": ["m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8", "m9", "s1", "s2", "s3", "s4", "s5", "s6", "s7"],
+  "input_budget": 120,
+  "info": {
+    "number": "16",
+    "title": "GAP BAND",
+    "tags": "DRUM MACHINE  ·  SCORE ATTACK",
+    "blurb": "Claim a drum slot, then revise once. A solo hit scores 1, or 2 on the accent. Shared slots play a rest.",
+    "voice": ""
+  }
+}

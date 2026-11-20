@@ -296,6 +296,25 @@
         },
         "alt": "Numbered players wear different hats and signal trades in front of the reserve hatcheck counter."
       }
+    },
+    {
+      "id": "gap-band",
+      "name": "Gap Band",
+      "caption": "Claim a drum slot and outguess the other players.",
+      "description": "Choose a slot, then keep your note or move it once before playback. A solo note earns one point, or two on the accent. Shared slots play a rest and earn zero. Listen or watch the drum machine play all nine measures.",
+      "controls": "`A` and `D` or the arrow keys to select a slot. Press `Space` to confirm. On a controller, choose with the stick or D-pad and press A to confirm.",
+      "touchControls": "tap a drum slot to select it, then tap Confirm.",
+      "desktopLibrary": true,
+      "screenshot": {
+        "file": "img/gap-band.webp",
+        "width": 1280,
+        "height": 800,
+        "sources": {
+          "320": "img/gap-band-320.webp",
+          "640": "img/gap-band-640.webp"
+        },
+        "alt": "A drum machine plays numbered player notes across seven slots, including a striped muted collision and a highlighted accent."
+      }
     }
   ],
   "extraScreenshots": [
