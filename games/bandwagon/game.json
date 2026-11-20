@@ -1,0 +1,16 @@
+{
+  "id": "bandwagon",
+  "version": "1.0.0",
+  "optional_seats": true,
+  "net": 1,
+  "core_min": 15,
+  "actions": ["up", "down", "left", "right", "hold"],
+  "input_budget": 240,
+  "info": {
+    "number": "14",
+    "title": "BANDWAGON",
+    "tags": "TUG OF WAR  ·  SCORE ATTACK",
+    "blurb": "Hold your hitch and tug the parade toward your crest.\nRide through the arch for 1 point. Match its crest for +1.",
+    "voice": ""
+  }
+}

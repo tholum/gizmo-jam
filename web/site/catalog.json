@@ -258,6 +258,25 @@
         },
         "alt": "Six numbered players open drawers in a frosted cabinet. Striped temperature bands and arrows between drawers show which treats are warming."
       }
+    },
+    {
+      "id": "bandwagon",
+      "name": "Bandwagon",
+      "caption": "Tug a toy parade toward your crest’s arch.",
+      "description": "Latch onto the parade and tug left or right to vote for an arch. The tie arrow decides even votes. Ride through to score one point and earn another if your crest matches. Visit a booth to switch crests before the turnout locks. Highest score after six crossings wins.",
+      "controls": "`W``A``S``D` or the arrow keys to steer. Hold `Space` at your numbered hitch to latch, then press left or right to tug. On a controller, steer with the left stick or D-pad and hold A to latch.",
+      "touchControls": "drag your left thumb to steer and tug. Hold your right thumb down to latch at your numbered hitch.",
+      "desktopLibrary": true,
+      "screenshot": {
+        "file": "img/bandwagon.webp",
+        "width": 1280,
+        "height": 800,
+        "sources": {
+          "320": "img/bandwagon-320.webp",
+          "640": "img/bandwagon-640.webp"
+        },
+        "alt": "Numbered toy floats pull the parade engine toward star and diamond arches. The tug tally shows which arch is ahead."
+      }
     }
   ],
   "extraScreenshots": [
